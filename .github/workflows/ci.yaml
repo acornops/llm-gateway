@@ -1,0 +1,275 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "feat/*" ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.filter.outputs.run_full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        name: Detect docs-only changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]] && git rev-parse --verify HEAD^1 >/dev/null 2>&1 && git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+            files="$(git diff --name-only HEAD^1 HEAD^2)"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "${base}" =~ ^0+$ ]]; then
+              base="$(git rev-list --max-parents=0 "${head}")"
+            fi
+
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+              echo "run_full=true" >> "${GITHUB_OUTPUT}"
+              echo "Unable to resolve diff range; running full CI."
+              exit 0
+            fi
+
+            files="$(git diff --name-only "${base}" "${head}")"
+          fi
+          if [[ -z "${files}" ]]; then
+            run_full=true
+          else
+            docs_only=true
+            while IFS= read -r file; do
+              [[ -z "${file}" ]] && continue
+              case "${file}" in
+                *.md|*.mdx|docs/**|README|README.*|CHANGELOG|CHANGELOG.*|CONTRIBUTING|CONTRIBUTING.*|LICENSE|LICENSE.*)
+                  ;;
+                *)
+                  docs_only=false
+                  ;;
+              esac
+            done <<< "${files}"
+
+            if [[ "${docs_only}" == "true" ]]; then
+              run_full=false
+            else
+              run_full=true
+            fi
+          fi
+
+          echo "run_full=${run_full}" >> "${GITHUB_OUTPUT}"
+          echo "run_full=${run_full}"
+
+  docs-only:
+    needs: changes
+    if: needs.changes.outputs.run_full != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip expensive CI
+        run: echo "Only Markdown/docs files changed; expensive CI jobs skipped."
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+          cache: "pip"
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[test]' -c constraints.txt
+      - name: Run Ruff
+        run: ruff check .
+
+  unit-tests:
+    needs: [changes, lint]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+          cache: "pip"
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[test]' -c constraints.txt
+      - name: Run unit tests
+        run: |
+          export PYTHONPATH=$PYTHONPATH:.
+          export DATABASE_URL=sqlite+aiosqlite:///test.db
+          export AUTH_JWKS_URL=http://localhost:8003/jwks.json
+          export AUTH_ISSUER=llm-gateway
+          export AUTH_AUDIENCE=execution-gateway
+          export SECRETS_KEK_BASE64=SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=
+          pytest test --ignore=test/integration --cov=app --cov-report=term-missing --cov-report=xml
+          python scripts/check-contracts.py
+          python scripts/check-harness.py
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-gateway-coverage
+          path: coverage.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: llm-gateway
+          fail_ci_if_error: false
+
+  integration-tests:
+    needs: [changes, unit-tests]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+          cache: "pip"
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[test]' -c constraints.txt
+      - name: Build and run infrastructure
+        run: |
+          docker compose up -d postgres redis mock-mcp mock-auth
+          # Wait for postgres to be ready
+          until docker exec "$(docker ps -qf "name=postgres")" pg_isready -U gateway_user -d gateway; do
+            sleep 1
+          done
+      - name: Run migrations and seed
+        run: |
+          export PYTHONPATH=$PYTHONPATH:.
+          export DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway
+          export AUTH_JWKS_URL=http://localhost:8003/jwks.json
+          export AUTH_ISSUER=llm-gateway
+          export AUTH_AUDIENCE=execution-gateway
+          export SECRETS_KEK_BASE64=SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=
+          alembic upgrade head
+          python scripts/seed_db.py
+      - name: Run integration tests
+        run: |
+          export PYTHONPATH=$PYTHONPATH:.
+          export DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway
+          export AUTH_JWKS_URL=http://localhost:8003/jwks.json
+          export AUTH_ISSUER=llm-gateway
+          export AUTH_AUDIENCE=execution-gateway
+          export SECRETS_KEK_BASE64=SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=
+          pytest test/
+
+  image-supply-chain:
+    needs: [changes, integration-tests]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+          cache: "pip"
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r requirements.lock
+          pip install '.[test]' -c constraints.txt
+          pip-audit
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deployments/Dockerfile.gateway
+          push: false
+          tags: acornops/llm-gateway:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: acornops/llm-gateway:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-gateway-sbom
+          path: sbom.spdx.json
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: acornops/llm-gateway:ci
+          format: table
+          output: trivy-results.txt
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+      - name: Block on actionable Trivy findings
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: acornops/llm-gateway:ci
+          format: table
+          output: trivy-actionable-results.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Upload Trivy report artifact
+        if: ${{ always() && hashFiles('trivy-results.txt') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-gateway-trivy-report
+          path: |
+            trivy-results.txt
+            trivy-actionable-results.txt
+      - name: Publish Trivy summary
+        if: ${{ always() && hashFiles('trivy-results.txt') != '' }}
+        run: |
+          {
+            echo "### Trivy image scan"
+            echo "<details><summary>HIGH/CRITICAL findings (full report)</summary>"
+            echo ""
+            echo '```text'
+            cat trivy-results.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

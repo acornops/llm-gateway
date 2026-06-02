@@ -1,0 +1,17 @@
+.agents
+.git
+.github
+.pytest_cache
+.ruff_cache
+.venv
+build/
+__pycache__/
+*.py[cod]
+*.db
+.env
+.env.*
+test/*
+!test/mock_auth_server.py
+!test/mock_mcp_server.py
+docs/exec-plans/
+llm_gateway.egg-info/

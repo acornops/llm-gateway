@@ -1,0 +1,93 @@
+{
+  "repo": "llm-gateway",
+  "version": 1,
+  "runtimeDependencies": ["control-plane", "execution-engine"],
+  "counterparts": {
+    "execution-engine": {
+      "streamPath": "POST /api/v1/llm/chat-completions:stream",
+      "toolCallPath": "POST /api/v1/mcp/tool-call",
+      "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; run-scoped JWTs remain required",
+      "streamRequestFields": [
+        "run_id",
+        "workspace_id",
+        "target_id",
+        "target_type",
+        "session_id",
+        "provider",
+        "model",
+        "messages",
+        "temperature",
+        "max_output_tokens",
+        "tools"
+      ],
+      "streamResponseTypes": ["delta", "tool_call", "final", "error"],
+      "localDeterministicStreamEnv": "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
+      "toolCallRequestFields": [
+        "run_id",
+        "workspace_id",
+        "target_id",
+        "target_type",
+        "tool",
+        "arguments"
+      ],
+      "toolCallResponseFields": ["result", "is_error"]
+    },
+    "control-plane": {
+      "adminPaths": [
+        "GET /api/v1/internal/mcp/servers",
+        "GET /api/v1/internal/mcp/tools",
+        "PATCH /api/v1/internal/mcp/tools/{tool_name}",
+        "POST /api/v1/internal/mcp/servers",
+        "PATCH /api/v1/internal/mcp/servers/{server_id}",
+        "POST /api/v1/internal/mcp/servers/{server_id}/test",
+        "DELETE /api/v1/internal/mcp/servers/{server_id}"
+      ],
+      "adminScopeFields": ["workspace_id", "target_id", "target_type"],
+      "serverFields": [
+        "id",
+        "workspace_id",
+        "target_id",
+        "target_type",
+        "server_name",
+        "server_url",
+        "enabled",
+        "auth_type",
+        "auth_secret_name",
+        "auth_header_name",
+        "auth_header_prefix",
+        "public_headers",
+        "connection_status",
+        "last_discovery_at",
+        "last_discovery_error",
+        "tools"
+      ],
+      "toolFields": [
+        "name",
+        "mcp_server_url",
+        "timeout_ms",
+        "description",
+        "capability",
+        "version",
+        "source",
+        "input_schema",
+        "enabled"
+      ],
+      "jwksPath": "GET /api/v1/auth/jwks.json",
+      "runJwtPermissionFields": [
+        "allowed_providers",
+        "allowed_models",
+        "allowed_tools",
+        "allowed_tool_operations?",
+        "max_output_tokens"
+      ],
+      "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",
+      "builtinBridge": {
+        "serverName": "acornops-cluster-agent",
+        "serverUrl": "http://control-plane:8081/internal/v1/mcp",
+        "authHeader": "Authorization: Bearer <run-scoped-jwt>",
+        "scopeSource": "run-scoped-jwt-claims",
+        "callPath": "POST /internal/v1/mcp/tools/call"
+      }
+    }
+  }
+}

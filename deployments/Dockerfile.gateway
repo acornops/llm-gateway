@@ -1,0 +1,51 @@
+# Stage 1: Build dependencies
+FROM python:3.12.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+
+# Stage 2: Final image
+FROM python:3.12.11-slim
+
+# Create a non-root user
+RUN groupadd -r gateway && useradd -r -g gateway gateway
+
+WORKDIR /app
+
+# Install runtime dependencies for Postgres
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtualenv from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY . .
+
+# Set ownership
+RUN chown -R gateway:gateway /app
+
+# Use the non-root user
+USER gateway
+
+ENV PYTHONPATH=/app
+
+EXPOSE 8001
+
+CMD ["python", "-m", "app.serve"]

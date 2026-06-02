@@ -1,0 +1,81 @@
+services:
+  gateway:
+    image: ${LLM_GATEWAY_IMAGE:-ghcr.io/acornops/llm-gateway:0.0.1-experimental.1}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gateway_user:gateway_password@postgres:5432/gateway
+      REDIS_URL: redis://redis:6379/0
+      SECRETS_BACKEND: ${SECRETS_BACKEND:-database}
+      SECRETS_KEK_BASE64: ${SECRETS_KEK_BASE64:-SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=}
+      VAULT_ADDR: ${VAULT_ADDR:-}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      VAULT_NAMESPACE: ${VAULT_NAMESPACE:-}
+      VAULT_MOUNT: ${VAULT_MOUNT:-secret}
+      VAULT_PATH_PREFIX: ${VAULT_PATH_PREFIX:-acornops}
+      VAULT_TIMEOUT_MS: ${VAULT_TIMEOUT_MS:-5000}
+      VAULT_VERIFY_TLS: ${VAULT_VERIFY_TLS:-true}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-https://api.${BASE_DOMAIN:-acornops.dev}/api/v1/auth/jwks.json}
+      AUTH_ISSUER: ${AUTH_ISSUER:-llm-gateway}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-execution-gateway}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gateway-init:
+        condition: service_completed_successfully
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  gateway-init:
+    image: ${LLM_GATEWAY_IMAGE:-ghcr.io/acornops/llm-gateway:0.0.1-experimental.1}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gateway_user:gateway_password@postgres:5432/gateway
+      REDIS_URL: redis://redis:6379/0
+      SECRETS_BACKEND: ${SECRETS_BACKEND:-database}
+      SECRETS_KEK_BASE64: ${SECRETS_KEK_BASE64:-SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=}
+    command: ["sh", "-c", "alembic upgrade head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: gateway_user
+      POSTGRES_PASSWORD: gateway_password
+      POSTGRES_DB: gateway
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_user -d gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - gateway-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - gateway-redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  gateway-postgres-data:
+  gateway-redis-data:
