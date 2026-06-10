@@ -7,6 +7,43 @@ from app.secrets.vault_secret_store import VaultSecretStore
 
 
 @pytest.mark.anyio
+async def test_vault_secret_store_candidate_scopes_do_not_duplicate_workspace_scope() -> None:
+    store = VaultSecretStore(
+        vault_addr="http://vault.example",
+        vault_token="token",
+        mount="secret",
+        path_prefix="acornops",
+        timeout_ms=1000,
+        verify_tls=True,
+    )
+    try:
+        assert store._candidate_scopes({"workspace_id": "workspace"}) == [
+            {"workspace_id": "workspace"}
+        ]
+        assert store._candidate_scopes(
+            {
+                "workspace_id": "workspace",
+                "target_id": "cluster",
+                "target_type": "kubernetes",
+            }
+        ) == [
+            {
+                "workspace_id": "workspace",
+                "target_id": "cluster",
+                "target_type": "kubernetes",
+            },
+            {
+                "workspace_id": "workspace",
+                "target_id": "*",
+                "target_type": "kubernetes",
+            },
+            {"workspace_id": "workspace"},
+        ]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_vault_secret_store_does_not_cache_plaintext_when_ttl_disabled() -> None:
     requests = 0
 

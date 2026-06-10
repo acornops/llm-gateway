@@ -107,9 +107,10 @@ task validate
   - optional `VAULT_MOUNT` (default `secret`)
   - optional `VAULT_PATH_PREFIX` (default `acornops`)
   - optional `VAULT_TIMEOUT_MS` / `VAULT_VERIFY_TLS`
-- Target-specific provider and MCP auth secrets are scoped by
-  `workspace_id`, `target_id`, and `target_type`; workspace-scoped fallback
-  secrets remain supported for shared provider credentials.
+- LLM provider credentials are workspace-scoped and are configured through
+  workspace AI settings.
+- MCP auth secrets remain target-scoped by `workspace_id`, `target_id`, and
+  `target_type`.
 - For local Vault testing, the override includes a `vault` service under the `vault` profile:
 
 ```bash
@@ -222,11 +223,13 @@ Optional re-seed command:
 docker compose run --rm gateway-init sh -c "alembic upgrade head && python scripts/seed_db.py"
 ```
 
-To test real inference in local development, set provider API keys before seeding.
+To test real inference in local development, set dev seed provider API keys before
+seeding. The seed job stores these as workspace-scoped provider credentials;
+production traffic should configure credentials through workspace settings.
 Gemini is the recommended demo default:
 
 ```bash
-export GEMINI_API_KEY='<your-gemini-api-key>'
+export ACORNOPS_DEV_SEED_GEMINI_API_KEY='<your-gemini-api-key>'
 docker compose run --rm gateway-init sh -c "alembic upgrade head && python scripts/seed_db.py"
 ```
 

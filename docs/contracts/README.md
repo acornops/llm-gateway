@@ -17,7 +17,7 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 | Counterpart | Direction | Contract surface |
 | --- | --- | --- |
 | Execution engine | execution-engine -> llm-gateway | LLM streaming API and MCP tool-call API |
-| Control plane | control-plane -> llm-gateway | Internal MCP admin API |
+| Control plane | control-plane -> llm-gateway | Internal MCP admin API and workspace AI provider credential admin API |
 | Control plane | llm-gateway -> control-plane | JWKS fetch for run JWT validation and builtin MCP bridge |
 
 ## Shared Invariants
@@ -121,8 +121,11 @@ remain required in both modes.
 
 ### Control plane -> llm-gateway admin API
 
-Control plane manages target tool and MCP registry state through:
+Control plane manages workspace AI provider credential status and target tool/MCP registry state through:
 
+- `GET /api/v1/internal/llm/provider-credentials?workspace_id=<workspaceId>`
+- `PUT /api/v1/internal/llm/provider-credentials/{provider}`
+- `DELETE /api/v1/internal/llm/provider-credentials/{provider}?workspace_id=<workspaceId>`
 - `GET /api/v1/internal/mcp/servers`
 - `GET /api/v1/internal/mcp/tools`
 - `PATCH /api/v1/internal/mcp/tools/{tool_name}`
@@ -135,7 +138,16 @@ Admin auth:
 
 - `Authorization: Bearer <ADMIN_API_TOKEN>`
 
-Target scope is required and supplied via `workspace_id`, `target_id`, and `target_type` query/body fields. Supported target types are `kubernetes` and `virtual_machine`.
+Provider credential status/write/delete scope is workspace-only. LLM provider
+secret names are `{provider}_api_key` and tenant scope is
+`{"workspace_id":"<workspaceId>"}`. Target-scoped secrets are reserved for
+MCP/server credentials. Provider credential status responses include only
+`provider`, `configured`, and `enabled`; they must not expose key values,
+ciphertexts, or secret names.
+
+Target scope is required for MCP registry endpoints and supplied via
+`workspace_id`, `target_id`, and `target_type` query/body fields. Supported
+target types are `kubernetes` and `virtual_machine`.
 For an existing target-scoped tool, `target_type` is immutable. A caller that supplies the same `workspace_id`, `target_id`, and tool name with a different `target_type` must receive a conflict instead of silently moving the tool between target types.
 
 Fields control plane depends on preserving in server/tool payloads:

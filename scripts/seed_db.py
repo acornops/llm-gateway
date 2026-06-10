@@ -1,52 +1,27 @@
 import asyncio
 import os
 
-from app.examples import EXAMPLE_TARGET_ID, EXAMPLE_VM_TARGET_ID, EXAMPLE_WORKSPACE_ID
+from app.examples import EXAMPLE_TARGET_ID, EXAMPLE_WORKSPACE_ID
 from app.mcp.registry.models import Tool
 from app.mcp.registry.store import tool_registry
 from app.secrets.store import secret_store
-from app.target_types import KUBERNETES_TARGET_TYPE, VIRTUAL_MACHINE_TARGET_TYPE
+from app.target_types import KUBERNETES_TARGET_TYPE
 
 
 async def seed():
-    openai_api_key = os.getenv("OPENAI_API_KEY", "sk-fake-openai-key")
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "sk-fake-anthropic-key")
-    gemini_api_key = os.getenv("GEMINI_API_KEY", "fake-gemini-key")
+    openai_api_key = os.getenv("ACORNOPS_DEV_SEED_OPENAI_API_KEY", "sk-fake-openai-key")
+    anthropic_api_key = os.getenv(
+        "ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY", "sk-fake-anthropic-key"
+    )
+    gemini_api_key = os.getenv("ACORNOPS_DEV_SEED_GEMINI_API_KEY", "fake-gemini-key")
 
     # Seed secrets
     print("Seeding secrets...")
     try:
-        for target_id, target_type in (
-            (EXAMPLE_TARGET_ID, KUBERNETES_TARGET_TYPE),
-            (EXAMPLE_VM_TARGET_ID, VIRTUAL_MACHINE_TARGET_TYPE),
-        ):
-            await secret_store.put_secret(
-                "openai_api_key",
-                openai_api_key,
-                {
-                    "workspace_id": EXAMPLE_WORKSPACE_ID,
-                    "target_id": target_id,
-                    "target_type": target_type,
-                },
-            )
-            await secret_store.put_secret(
-                "anthropic_api_key",
-                anthropic_api_key,
-                {
-                    "workspace_id": EXAMPLE_WORKSPACE_ID,
-                    "target_id": target_id,
-                    "target_type": target_type,
-                },
-            )
-            await secret_store.put_secret(
-                "gemini_api_key",
-                gemini_api_key,
-                {
-                    "workspace_id": EXAMPLE_WORKSPACE_ID,
-                    "target_id": target_id,
-                    "target_type": target_type,
-                },
-            )
+        workspace_scope = {"workspace_id": EXAMPLE_WORKSPACE_ID}
+        await secret_store.put_secret("openai_api_key", openai_api_key, workspace_scope)
+        await secret_store.put_secret("anthropic_api_key", anthropic_api_key, workspace_scope)
+        await secret_store.put_secret("gemini_api_key", gemini_api_key, workspace_scope)
     except Exception as e:
         print(f"Secret seeding failed (maybe already exists): {e}")
 

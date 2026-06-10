@@ -457,6 +457,46 @@ async def test_llm_stream_missing_provider_credentials_are_sanitized():
             assert response.status_code == 500
             assert response.json()["detail"] == "Provider credentials are not configured"
             assert "openai_api_key" not in response.json()["detail"]
-            mock_get_secret.assert_awaited()
+            mock_get_secret.assert_awaited_with(
+                "openai_api_key",
+                {"workspace_id": EXAMPLE_WORKSPACE_ID},
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_treats_blank_provider_credentials_as_missing():
+    mock_claims = build_token_claims()
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret",
+        new_callable=AsyncMock,
+        return_value="   ",
+    ) as mock_get_secret:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/chat-completions:stream",
+                    json=build_llm_stream_payload(),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == 500
+            assert response.json()["detail"] == "Provider credentials are not configured"
+            mock_get_secret.assert_awaited_with(
+                "openai_api_key",
+                {"workspace_id": EXAMPLE_WORKSPACE_ID},
+            )
         finally:
             app.dependency_overrides.clear()

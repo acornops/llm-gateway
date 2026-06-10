@@ -66,8 +66,13 @@ class VaultSecretStore(SecretStore):
             wildcard_scope = dict(tenant_scope)
             wildcard_scope["target_id"] = "*"
             candidate_scopes.append(wildcard_scope)
-        if "workspace_id" in tenant_scope:
-            candidate_scopes.append({"workspace_id": tenant_scope["workspace_id"]})
+        workspace_scope = (
+            {"workspace_id": tenant_scope["workspace_id"]}
+            if "workspace_id" in tenant_scope
+            else None
+        )
+        if workspace_scope and workspace_scope not in candidate_scopes:
+            candidate_scopes.append(workspace_scope)
         return candidate_scopes
 
     def _validate_scope(self, tenant_scope: dict[str, str]) -> None:
@@ -89,6 +94,10 @@ class VaultSecretStore(SecretStore):
             parts.extend([workspace_id, target_id, secret_name])
         encoded = "/".join(quote(part, safe="") for part in parts)
         return f"/v1/{self._mount}/data/{encoded}"
+
+    def _metadata_path_for_scope(self, secret_name: str, tenant_scope: dict[str, str]) -> str:
+        data_path = self._path_for_scope(secret_name, tenant_scope)
+        return data_path.replace(f"/v1/{self._mount}/data/", f"/v1/{self._mount}/metadata/", 1)
 
     async def _record_dependency_reachable(self, dependency_key: str) -> None:
         await dependency_circuit_breaker.record_success(dependency_key)
@@ -181,6 +190,17 @@ class VaultSecretStore(SecretStore):
             raise RuntimeError(
                 f"Vault put failed ({response.status_code}): {response.text}"
             )
+
+        self._evict_secret_cache(secret_name)
+        await self._publish_secret_invalidation(secret_name)
+
+    async def delete_secret(self, secret_name: str, tenant_scope: dict[str, str]) -> None:
+        response = await self._client.delete(
+            self._metadata_path_for_scope(secret_name, tenant_scope),
+            headers=self._headers(),
+        )
+        if response.status_code not in (204, 404):
+            response.raise_for_status()
 
         self._evict_secret_cache(secret_name)
         await self._publish_secret_invalidation(secret_name)
