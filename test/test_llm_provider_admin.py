@@ -9,6 +9,10 @@ from app.secrets.errors import SecretNotFoundError
 ADMIN_HEADERS = {"Authorization": "Bearer dev_orchestrator_token"}
 
 
+def _providers_by_name(response_json: dict) -> dict[str, dict]:
+    return {provider["provider"]: provider for provider in response_json["providers"]}
+
+
 @pytest.mark.anyio
 async def test_provider_credential_admin_status_write_and_delete():
     with (
@@ -42,12 +46,13 @@ async def test_provider_credential_admin_status_write_and_delete():
             )
 
     assert status_response.status_code == 200
-    assert status_response.json()["providers"][0]["configured"] is False
+    status_providers = status_response.json()["providers"]
+    assert _providers_by_name(status_response.json())["openai"]["configured"] is False
     assert put_response.status_code == 200
     assert put_response.json() == {"provider": "openai", "configured": True, "enabled": True}
     assert delete_response.status_code == 200
     assert delete_response.json() == {"provider": "openai", "configured": False, "enabled": True}
-    assert mock_get_secret.await_count == 3
+    assert mock_get_secret.await_count == len(status_providers)
     mock_put_secret.assert_awaited_once_with(
         "openai_api_key",
         "sk-test",
@@ -78,8 +83,11 @@ async def test_provider_credential_admin_status_treats_blank_secret_as_missing()
             )
 
     assert response.status_code == 200
-    providers = response.json()["providers"]
-    assert providers[0] == {"provider": "openai", "configured": False, "enabled": True}
+    assert _providers_by_name(response.json())["openai"] == {
+        "provider": "openai",
+        "configured": False,
+        "enabled": True,
+    }
 
 
 @pytest.mark.anyio
