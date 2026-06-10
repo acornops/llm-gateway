@@ -119,6 +119,19 @@ async def test_db_secret_store_serves_cached_secret_after_database_row_removed(t
 
 
 @pytest.mark.anyio
+async def test_db_secret_store_validates_scope_before_cache_lookup(tmp_path):
+    store = DbSecretStore(f"sqlite+aiosqlite:///{tmp_path / 'cache-validation.db'}")
+    invalid_scope = {"workspace_id": "ws-1", "target_id": "cluster-a"}
+    cache_key = ("provider_api_key", json.dumps(invalid_scope, sort_keys=True))
+    store._cache[cache_key] = ("cached-secret", time.time() + 60)
+    try:
+        with pytest.raises(ValueError, match="target_id and target_type"):
+            await store.get_secret("provider_api_key", invalid_scope)
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_db_secret_store_does_not_cache_plaintext_when_ttl_disabled(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'no-cache.db'}"
     await _create_schema(database_url)

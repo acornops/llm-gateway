@@ -36,6 +36,8 @@ class ProviderCredentialUpsertRequest(BaseModel):
 
 def _provider_or_404(provider: str) -> str:
     normalized = normalize_provider_name(provider)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="provider must not be blank")
     if normalized not in SUPPORTED_LLM_PROVIDERS:
         raise HTTPException(status_code=404, detail="Unsupported provider")
     return normalized

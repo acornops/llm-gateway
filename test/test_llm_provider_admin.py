@@ -134,3 +134,20 @@ async def test_provider_credential_admin_rejects_blank_workspace_query():
 
     assert response.status_code == 422
     mock_delete_secret.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_provider_credential_admin_rejects_blank_provider_path():
+    with patch(
+        "app.api.handlers_llm_provider_admin.secret_store.delete_secret",
+        new_callable=AsyncMock,
+    ) as mock_delete_secret:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            response = await ac.delete(
+                "/api/v1/internal/llm/provider-credentials/%20%20%20?workspace_id=ws-1",
+                headers=ADMIN_HEADERS,
+            )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "provider must not be blank"
+    mock_delete_secret.assert_not_awaited()

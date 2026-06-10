@@ -58,6 +58,7 @@ class DbSecretStore(SecretStore):
         """
         Retrieves a secret from cache or database.
         """
+        self._validate_scope(tenant_scope)
         cache_key = (secret_name, json.dumps(tenant_scope, sort_keys=True))
         if self._cache_ttl > 0 and cache_key in self._cache:
             plaintext, expires_at = self._cache[cache_key]
