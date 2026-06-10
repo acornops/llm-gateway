@@ -19,6 +19,36 @@ async def _create_schema(database_url: str) -> None:
 
 
 @pytest.mark.anyio
+async def test_db_secret_store_candidate_scopes_do_not_duplicate_workspace_scope(tmp_path):
+    store = DbSecretStore(f"sqlite+aiosqlite:///{tmp_path / 'candidate.db'}")
+    try:
+        assert store._candidate_scopes({"workspace_id": "ws-1"}) == [
+            {"workspace_id": "ws-1"}
+        ]
+        assert store._candidate_scopes(
+            {
+                "workspace_id": "ws-1",
+                "target_id": "cluster-a",
+                "target_type": "kubernetes",
+            }
+        ) == [
+            {
+                "workspace_id": "ws-1",
+                "target_id": "cluster-a",
+                "target_type": "kubernetes",
+            },
+            {
+                "workspace_id": "ws-1",
+                "target_id": "*",
+                "target_type": "kubernetes",
+            },
+            {"workspace_id": "ws-1"},
+        ]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_db_secret_store_prefers_exact_then_wildcard_then_workspace_scope(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'secrets.db'}"
     await _create_schema(database_url)
@@ -89,6 +119,19 @@ async def test_db_secret_store_serves_cached_secret_after_database_row_removed(t
 
 
 @pytest.mark.anyio
+async def test_db_secret_store_validates_scope_before_cache_lookup(tmp_path):
+    store = DbSecretStore(f"sqlite+aiosqlite:///{tmp_path / 'cache-validation.db'}")
+    invalid_scope = {"workspace_id": "ws-1", "target_id": "cluster-a"}
+    cache_key = ("provider_api_key", json.dumps(invalid_scope, sort_keys=True))
+    store._cache[cache_key] = ("cached-secret", time.time() + 60)
+    try:
+        with pytest.raises(ValueError, match="target_id and target_type"):
+            await store.get_secret("provider_api_key", invalid_scope)
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_db_secret_store_does_not_cache_plaintext_when_ttl_disabled(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'no-cache.db'}"
     await _create_schema(database_url)
@@ -103,6 +146,26 @@ async def test_db_secret_store_does_not_cache_plaintext_when_ttl_disabled(tmp_pa
         await store.put_secret("provider_api_key", "uncached-secret", scope)
 
         assert await store.get_secret("provider_api_key", scope) == "uncached-secret"
+        assert store._cache == {}
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_db_secret_store_delete_secret_removes_row_and_cache(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'delete.db'}"
+    await _create_schema(database_url)
+    store = DbSecretStore(database_url)
+    scope = {"workspace_id": "ws-1"}
+    try:
+        await store.put_secret("provider_api_key", "secret", scope)
+        assert await store.get_secret("provider_api_key", scope) == "secret"
+
+        await store.delete_secret("provider_api_key", scope)
+
+        async with store.async_session() as session:
+            result = await session.execute(select(Secret))
+            assert result.scalars().first() is None
         assert store._cache == {}
     finally:
         await store.close()

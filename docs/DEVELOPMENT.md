@@ -71,7 +71,8 @@ Important variables:
 - `SECRETS_KEK_BASE64`
 - `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES` for local smoke runs that should not
   call external providers
-- provider API keys when seeding or testing provider-backed flows
+- dev seed provider API keys or workspace AI settings when testing
+  provider-backed flows
 
 ## Migrations
 

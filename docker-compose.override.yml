@@ -49,9 +49,9 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       SECRETS_BACKEND: ${SECRETS_BACKEND:-database}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ACORNOPS_DEV_SEED_OPENAI_API_KEY: ${ACORNOPS_DEV_SEED_OPENAI_API_KEY:-}
+      ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY: ${ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY:-}
+      ACORNOPS_DEV_SEED_GEMINI_API_KEY: ${ACORNOPS_DEV_SEED_GEMINI_API_KEY:-}
     command: ["sh", "-c", "alembic upgrade head && python scripts/seed_db.py"]
     depends_on:
       mock-mcp:

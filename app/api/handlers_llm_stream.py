@@ -191,11 +191,10 @@ async def stream_chat(req: NormalizedLLMRequest, claims: TokenClaims = Depends(g
             media_type="application/x-ndjson",
         )
 
-    # Resolve API key
+    # Resolve workspace-owned provider credentials. Target-scoped secrets are
+    # reserved for MCP/tool auth, not LLM provider keys.
     secret_scope = {
         "workspace_id": req.workspace_id,
-        "target_id": req.target_id,
-        "target_type": req.target_type,
     }
     secret_names = [f"{req.provider}_api_key"]
 
@@ -203,8 +202,9 @@ async def stream_chat(req: NormalizedLLMRequest, claims: TokenClaims = Depends(g
     last_secret_error: Exception | None = None
     for secret_name in secret_names:
         try:
-            api_key = await secret_store.get_secret(secret_name, secret_scope)
-            if api_key:
+            resolved_api_key = await secret_store.get_secret(secret_name, secret_scope)
+            if resolved_api_key and resolved_api_key.strip():
+                api_key = resolved_api_key.strip()
                 break
         except Exception as e:
             if _is_missing_secret_error(e):

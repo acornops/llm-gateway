@@ -5,7 +5,7 @@ import time
 
 import structlog
 from redis.asyncio import Redis
-from sqlalchemy import desc, select, text
+from sqlalchemy import delete, desc, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import settings
@@ -38,6 +38,22 @@ class DbSecretStore(SecretStore):
         if has_target_id != has_target_type:
             raise ValueError("Secret target scope requires both target_id and target_type")
 
+    def _candidate_scopes(self, tenant_scope: dict[str, str]) -> list[dict[str, str]]:
+        self._validate_scope(tenant_scope)
+        candidate_scopes = [tenant_scope]
+        if "target_id" in tenant_scope:
+            wildcard_scope = dict(tenant_scope)
+            wildcard_scope["target_id"] = "*"
+            candidate_scopes.append(wildcard_scope)
+        workspace_scope = (
+            {"workspace_id": tenant_scope["workspace_id"]}
+            if "workspace_id" in tenant_scope
+            else None
+        )
+        if workspace_scope and workspace_scope not in candidate_scopes:
+            candidate_scopes.append(workspace_scope)
+        return candidate_scopes
+
     async def get_secret(self, secret_name: str, tenant_scope: dict[str, str]) -> str:
         """
         Retrieves a secret from cache or database.
@@ -51,16 +67,8 @@ class DbSecretStore(SecretStore):
             self._cache.pop(cache_key, None)
 
         async with self.async_session() as session:
-            candidate_scopes = [tenant_scope]
-            if "target_id" in tenant_scope:
-                wildcard_scope = dict(tenant_scope)
-                wildcard_scope["target_id"] = "*"
-                candidate_scopes.append(wildcard_scope)
-            if "workspace_id" in tenant_scope:
-                candidate_scopes.append({"workspace_id": tenant_scope["workspace_id"]})
-
             secret_record = None
-            for scope in candidate_scopes:
+            for scope in self._candidate_scopes(tenant_scope):
                 stmt = (
                     select(Secret)
                     .where(Secret.secret_name == secret_name, Secret.tenant_scope == scope)
@@ -135,6 +143,20 @@ class DbSecretStore(SecretStore):
                     version=1,
                 )
                 session.add(secret_record)
+            await session.commit()
+
+        self._evict_secret_cache(secret_name)
+        await self._publish_secret_invalidation(secret_name)
+
+    async def delete_secret(self, secret_name: str, tenant_scope: dict[str, str]) -> None:
+        self._validate_scope(tenant_scope)
+        async with self.async_session() as session:
+            await session.execute(
+                delete(Secret).where(
+                    Secret.secret_name == secret_name,
+                    Secret.tenant_scope == tenant_scope,
+                )
+            )
             await session.commit()
 
         self._evict_secret_cache(secret_name)
