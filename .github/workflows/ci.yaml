@@ -224,6 +224,7 @@ jobs:
         with:
           context: .
           file: deployments/Dockerfile.gateway
+          no-cache: true
           push: false
           tags: acornops/llm-gateway:ci
           load: true
