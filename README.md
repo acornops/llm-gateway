@@ -45,7 +45,7 @@ Primary docs:
 ## Features
 
 - **LLM Proxy**: Unified interface for OpenAI, Anthropic, and Gemini (Google).
-- **Streaming Support**: NDJSON-based streaming for chat completions.
+- **Streaming Support**: NDJSON-based streaming for provider generations.
 - **MCP Tool Broker**: Execute tools via Model Context Protocol (MCP) servers.
 - **Security**:
   - JWT authentication with JWKS validation.
@@ -325,9 +325,9 @@ pytest --cov=app
      }'
    ```
 
-2. **Stream Chat Completions**:
+2. **Stream Provider Generations**:
    ```bash
-   curl -X POST http://localhost:8001/api/v1/llm/chat-completions:stream \
+   curl -X POST http://localhost:8001/api/v1/llm/generations:stream \
      -H "Authorization: Bearer <TOKEN>" \
      -H "Content-Type: application/json" \
      -d '{

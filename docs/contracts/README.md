@@ -37,7 +37,7 @@ Transport may be plaintext HTTP by default or HTTPS/mTLS when enabled by Helm
 
 Execution-engine calls:
 
-- `POST /api/v1/llm/chat-completions:stream`
+- `POST /api/v1/llm/generations:stream`
 
 Required auth:
 
@@ -55,6 +55,7 @@ Request body:
 - `messages`
 - `temperature`
 - optional `max_output_tokens`
+- optional `reasoning.{summary_mode,effort}`
 - optional `tools[]`
 
 Response media type:
@@ -65,8 +66,13 @@ Response event shapes:
 
 - `{"type":"delta","text":...}`
 - `{"type":"tool_call","call_id":...,"tool":...,"arguments":{...}}`
-- `{"type":"final","usage":{"input_tokens":...,"output_tokens":...,"tool_calls":...}}`
+- `{"type":"reasoning_summary_delta","text":...,"provider":...}`
+- `{"type":"reasoning_summary_completed","text":...,"provider":...}`
+- `{"type":"reasoning_summary_unavailable","provider":...,"reason":...}`
+- `{"type":"final","usage":{"input_tokens":...,"output_tokens":...,"tool_calls":...,"reasoning_tokens":...}}`
 - `{"type":"error","code":...,"message":...,"retryable":...}`
+
+Reasoning summary events contain provider-generated summaries only. The gateway must not emit raw chain-of-thought, encrypted reasoning items, thinking signatures, provider credentials, or provider-internal reasoning state.
 
 Local development may set `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` to make the gateway emit deterministic NDJSON events for smoke tests after all JWT scope, provider/model, and tool-allowlist checks pass. This mode is rejected in production settings and is not a production provider contract.
 

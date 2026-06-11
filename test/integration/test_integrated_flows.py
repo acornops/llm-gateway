@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -106,7 +107,7 @@ async def test_full_tool_call_flow_integrated():
 
 
 @pytest.mark.anyio
-async def test_llm_stream_integrated_openai():
+async def test_llm_stream_integrated_openai(monkeypatch: pytest.MonkeyPatch):
     """
     Tests the LLM streaming flow, mocking the OpenAI API with respx.
     """
@@ -134,61 +135,66 @@ async def test_llm_stream_integrated_openai():
     ) as mock_get_secret:
         mock_get_secret.return_value = "sk-fake-openai-key"
 
-        # Mock OpenAI API
-        with respx.mock:
-            # OpenAI SDK uses httpx internally, so respx should work if we target the right URL
-            respx.post("https://api.openai.com/v1/chat/completions").mock(
-                return_value=Response(
-                    200,
-                    content=(
-                        'data: {"choices": [{"delta": {"content": "Hello"}, "index": 0}]}\n\n'
-                        'data: {"choices": [{"delta": {"content": " world"}, "index": 0}]}\n\n'
-                        'data: {"choices": [], "usage": {"prompt_tokens": 10, '
-                        '"completion_tokens": 2}}\n\n'
-                        "data: [DONE]\n"
-                    ),
-                )
+        async def stream_response():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Hello")
+            yield SimpleNamespace(type="response.output_text.delta", delta=" world")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+                ),
             )
 
-            # Override Auth
-            from app.auth.claims import TokenClaims
-            from app.auth.jwt_validator import validator
+        class FakeResponses:
+            async def create(self, **_kwargs):
+                return stream_response()
 
-            async def override_validate():
-                return TokenClaims(**mock_claims)
+        class FakeClient:
+            def __init__(self, api_key: str):
+                del api_key
+                self.responses = FakeResponses()
 
-            app.dependency_overrides[validator.validate] = override_validate
+        monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
 
-            try:
-                # Execute request
-                async with AsyncClient(
-                    transport=ASGITransport(app=app), base_url="http://test"
-                ) as ac:
-                    payload = {
-                        "run_id": "run_888",
-                        "workspace_id": "ws_888",
-                        "target_id": "cl_888",
-                        "target_type": "kubernetes",
-                        "session_id": "sess_888",
-                        "provider": "openai",
-                        "model": "gpt-4",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "temperature": 0.7,
-                        "max_output_tokens": 1000,
-                    }
-                    headers = {"Authorization": "Bearer fake-token"}
-                    response = await ac.post(
-                        "/api/v1/llm/chat-completions:stream", json=payload, headers=headers
-                    )
+        # Override Auth
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
 
-                assert response.status_code == 200
-                lines = response.text.strip().split("\n")
-                chunks = [json.loads(line) for line in lines]
+        async def override_validate():
+            return TokenClaims(**mock_claims)
 
-                assert any(c["type"] == "delta" and c["text"] == "Hello" for c in chunks)
-                assert any(
-                    c["type"] == "final" and c["usage"]["input_tokens"] == 10 for c in chunks
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            # Execute request
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                payload = {
+                    "run_id": "run_888",
+                    "workspace_id": "ws_888",
+                    "target_id": "cl_888",
+                    "target_type": "kubernetes",
+                    "session_id": "sess_888",
+                    "provider": "openai",
+                    "model": "gpt-4",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "temperature": 0.7,
+                    "max_output_tokens": 1000,
+                }
+                headers = {"Authorization": "Bearer fake-token"}
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream", json=payload, headers=headers
                 )
 
-            finally:
-                app.dependency_overrides.clear()
+            assert response.status_code == 200
+            lines = response.text.strip().split("\n")
+            chunks = [json.loads(line) for line in lines]
+
+            assert any(c["type"] == "delta" and c["text"] == "Hello" for c in chunks)
+            assert any(
+                c["type"] == "final" and c["usage"]["input_tokens"] == 10 for c in chunks
+            )
+
+        finally:
+            app.dependency_overrides.clear()

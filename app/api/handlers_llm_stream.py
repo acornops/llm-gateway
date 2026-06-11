@@ -10,9 +10,16 @@ from app.auth.jwt_validator import get_current_claims
 from app.auth.tool_permissions import disallowed_tools
 from app.config.settings import settings
 from app.llm.adapters.registry import get_adapter, is_provider_enabled
-from app.llm.service import NormalizedLLMRequest, StreamEvent, normalize_provider_name
+from app.llm.service import (
+    NormalizedLLMRequest,
+    StreamEvent,
+    normalize_provider_name,
+    reasoning_summaries_enabled,
+)
 from app.observability.metrics import (
     GATEWAY_LLM_PROVIDER_REQUESTS_TOTAL,
+    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL,
+    GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL,
     GATEWAY_STREAM_SESSIONS_ACTIVE,
 )
 from app.resilience.rate_limit import rate_limiter
@@ -59,6 +66,28 @@ def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
 
 
 async def _deterministic_dev_events(req: NormalizedLLMRequest):
+    if reasoning_summaries_enabled(req):
+        GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+            provider=req.provider,
+            model=req.model,
+            status="delta",
+        ).inc()
+        yield StreamEvent(
+            type="reasoning_summary_delta",
+            text="Reviewing the request and available context.",
+            provider=req.provider,
+        ).model_dump_json() + "\n"
+        GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+            provider=req.provider,
+            model=req.model,
+            status="completed",
+        ).inc()
+        yield StreamEvent(
+            type="reasoning_summary_completed",
+            text="Reviewing the request and available context.",
+            provider=req.provider,
+        ).model_dump_json() + "\n"
+
     tool_name = _select_deterministic_tool(req)
     if tool_name:
         yield StreamEvent(
@@ -86,17 +115,33 @@ async def _deterministic_dev_events(req: NormalizedLLMRequest):
     ).model_dump_json() + "\n"
 
 
-@router.post("/chat-completions:stream")
-async def stream_chat(req: NormalizedLLMRequest, claims: TokenClaims = Depends(get_current_claims)):
+@router.post("/generations:stream")
+async def stream_generation(
+    req: NormalizedLLMRequest,
+    claims: TokenClaims = Depends(get_current_claims),
+):
     # Audit log: request received
+    summaries_enabled = reasoning_summaries_enabled(req)
     logger.info(
         "llm_request_received",
         run_id=req.run_id,
         workspace_id=req.workspace_id,
         provider=req.provider,
         model=req.model,
+        reasoning_summary_mode=req.reasoning.summary_mode,
+        reasoning_summary_requested=summaries_enabled,
         sub=claims.sub,
     )
+    if summaries_enabled:
+        logger.info(
+            "llm_reasoning_summary_requested",
+            run_id=req.run_id,
+            workspace_id=req.workspace_id,
+            provider=req.provider,
+            model=req.model,
+            reasoning_summary_mode=req.reasoning.summary_mode,
+            reasoning_effort=req.reasoning.effort,
+        )
 
     # Apply rate limit
     if rate_limiter:
@@ -254,6 +299,38 @@ async def stream_chat(req: NormalizedLLMRequest, claims: TokenClaims = Depends(g
             async for event in adapter.stream(req, api_key):
                 if event.type == "error":
                     saw_error = True
+                if event.type == "reasoning_summary_delta":
+                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                        provider=event.provider or req.provider,
+                        model=req.model,
+                        status="delta",
+                    ).inc()
+                elif event.type == "reasoning_summary_completed":
+                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                        provider=event.provider or req.provider,
+                        model=req.model,
+                        status="completed",
+                    ).inc()
+                elif event.type == "reasoning_summary_unavailable":
+                    reason = event.reason or "provider_omitted"
+                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                        provider=event.provider or req.provider,
+                        model=req.model,
+                        status="unavailable",
+                    ).inc()
+                    GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL.labels(
+                        provider=event.provider or req.provider,
+                        model=req.model,
+                        reason=reason,
+                    ).inc()
+                    logger.info(
+                        "llm_reasoning_summary_unavailable",
+                        run_id=req.run_id,
+                        workspace_id=req.workspace_id,
+                        provider=event.provider or req.provider,
+                        model=req.model,
+                        reason=reason,
+                    )
                 yield event.model_dump_json() + "\n"
         except Exception:
             saw_error = True

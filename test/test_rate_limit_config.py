@@ -1,6 +1,6 @@
 import pytest
 
-from app.api.handlers_llm_stream import stream_chat
+from app.api.handlers_llm_stream import stream_generation
 from app.api.handlers_tool_call import ToolCallRequest, execute_tool_call
 from app.auth.claims import Permissions, TokenClaims
 from app.auth.jwt_validator import TokenContext
@@ -51,7 +51,7 @@ async def test_llm_rate_limit_uses_configured_values(monkeypatch: pytest.MonkeyP
     )
 
     with pytest.raises(RuntimeError, match="stop after rate-limit check"):
-        await stream_chat(request, claims())
+        await stream_generation(request, claims())
 
     assert limiter.calls == [("llm:ws-1", 17, 11)]
 

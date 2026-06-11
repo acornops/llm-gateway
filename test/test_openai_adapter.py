@@ -1,4 +1,3 @@
-import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,14 +7,12 @@ import httpx
 import pytest
 
 from app.llm.adapters.common import (
-    alternate_openai_output_token_param,
-    resolve_openai_output_token_param,
-    should_retry_openai_with_alt_token_param,
+    should_retry_openai_without_reasoning,
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
 )
 from app.llm.adapters.openai_adapter import OpenAIAdapter
-from app.llm.service import NormalizedLLMRequest
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig
 from app.resilience.outbound import CircuitOpenError
 
 OPENAI_STREAM_REPLAY_FIXTURES = json.loads(
@@ -48,41 +45,25 @@ def _to_namespace(value):
     return value
 
 
-def _normalize_chunk_fixture(chunk: dict) -> dict:
-    normalized = copy.deepcopy(chunk)
-    normalized.setdefault("usage", None)
-    normalized.setdefault("choices", [])
-    for choice in normalized["choices"]:
-        choice.setdefault("finish_reason", None)
-        delta = choice.setdefault("delta", {})
-        delta.setdefault("content", None)
-        delta.setdefault("tool_calls", None)
-    return normalized
-
-
 def test_openai_output_token_param_resolution() -> None:
-    assert resolve_openai_output_token_param("gpt-4o") == "max_tokens"
-    assert resolve_openai_output_token_param("o4-mini") == "max_completion_tokens"
-    assert resolve_openai_output_token_param("gpt-5-mini") == "max_completion_tokens"
     assert supports_openai_custom_temperature("gpt-4o") is True
     assert supports_openai_custom_temperature("gpt-5-nano") is False
-    assert alternate_openai_output_token_param("max_tokens") == "max_completion_tokens"
-    assert alternate_openai_output_token_param("max_completion_tokens") == "max_tokens"
 
 
-def test_retry_detection_for_openai_token_param_error() -> None:
-    message = (
-        "Unsupported parameter: 'max_tokens' is not supported with this model. "
-        "Use 'max_completion_tokens' instead."
-    )
-    assert should_retry_openai_with_alt_token_param(message, "max_tokens") is True
-    assert should_retry_openai_with_alt_token_param("random failure", "max_tokens") is False
+def test_retry_detection_for_openai_temperature_error() -> None:
     temperature_error = (
         "Unsupported value: 'temperature' does not support 0.2 with this model. "
         "Only the default (1) value is supported."
     )
     assert should_retry_openai_without_temperature(temperature_error, True) is True
     assert should_retry_openai_without_temperature(temperature_error, False) is False
+
+
+def test_retry_detection_for_openai_reasoning_error() -> None:
+    assert should_retry_openai_without_reasoning("Unsupported parameter: 'reasoning'.", True)
+    assert should_retry_openai_without_reasoning("This model does not support reasoning.", True)
+    assert not should_retry_openai_without_reasoning("Invalid request: bad input.", True)
+    assert not should_retry_openai_without_reasoning("Unsupported parameter: 'reasoning'.", False)
 
 
 @pytest.mark.anyio
@@ -97,15 +78,15 @@ async def test_openai_adapter_replays_stream_contract_fixtures(
 ) -> None:
     async def stream_response():
         for chunk in case["chunks"]:
-            yield _to_namespace(_normalize_chunk_fixture(chunk))
+            yield _to_namespace(chunk)
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **_kwargs):
             return stream_response()
 
     class FakeClient:
         def __init__(self, **_kwargs):
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
 
@@ -119,18 +100,20 @@ async def test_openai_adapter_replays_stream_contract_fixtures(
 
 
 @pytest.mark.anyio
-async def test_openai_adapter_uses_max_completion_tokens_for_o_series(
+async def test_openai_adapter_uses_responses_max_output_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
 
     async def stream_response():
         yield SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
-            choices=[],
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            ),
         )
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **kwargs):
             calls.append(kwargs)
             return stream_response()
@@ -138,7 +121,7 @@ async def test_openai_adapter_uses_max_completion_tokens_for_o_series(
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
 
@@ -146,12 +129,166 @@ async def test_openai_adapter_uses_max_completion_tokens_for_o_series(
     events = [event async for event in adapter.stream(_build_request("o4-mini"), "fake-key")]
     assert any(event.type == "final" for event in events)
     assert len(calls) == 1
-    assert "max_completion_tokens" in calls[0]
+    assert calls[0]["max_output_tokens"] == 128
     assert "max_tokens" not in calls[0]
+    assert "max_completion_tokens" not in calls[0]
 
 
 @pytest.mark.anyio
-async def test_openai_adapter_retries_with_alternate_token_param(
+async def test_openai_adapter_maps_reasoning_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def stream_response():
+        yield SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="Checked cluster status.",
+        )
+        yield SimpleNamespace(
+            type="response.reasoning_text.delta",
+            delta="raw private chain-of-thought",
+        )
+        yield SimpleNamespace(
+            type="response.reasoning_summary_text.done",
+            text="Checked cluster status.",
+        )
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=12,
+                    output_tokens=7,
+                    output_tokens_details=SimpleNamespace(reasoning_tokens=3),
+                ),
+            ),
+        )
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            del api_key
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+
+    adapter = OpenAIAdapter()
+    req = _build_request("gpt-4o-mini").model_copy(
+        update={
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="low"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in adapter.stream(req, "fake-key")
+    ]
+
+    assert calls[0]["reasoning"] == {"summary": "auto", "effort": "low"}
+    assert events == [
+        {
+            "type": "reasoning_summary_delta",
+            "text": "Checked cluster status.",
+            "provider": "openai",
+        },
+        {
+            "type": "reasoning_summary_completed",
+            "text": "Checked cluster status.",
+            "provider": "openai",
+        },
+        {
+            "type": "final",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "tool_calls": 0,
+                "reasoning_tokens": 3,
+            },
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_openai_adapter_maps_reasoning_summary_part_done_without_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def stream_response():
+        yield SimpleNamespace(
+            type="response.reasoning_summary_text.done",
+            item_id="rs_1",
+            output_index=0,
+            summary_index=0,
+            text="Checked cluster status.",
+        )
+        yield SimpleNamespace(
+            type="response.reasoning_summary_part.done",
+            item_id="rs_1",
+            output_index=0,
+            summary_index=0,
+            part=SimpleNamespace(type="summary_text", text="Checked cluster status."),
+        )
+        yield SimpleNamespace(
+            type="response.reasoning_summary_part.done",
+            item_id="rs_1",
+            output_index=0,
+            summary_index=1,
+            part=SimpleNamespace(type="summary_text", text="Reviewed recent rollout events."),
+        )
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=7),
+            ),
+        )
+
+    class FakeResponses:
+        async def create(self, **_kwargs):
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            del api_key
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+
+    req = _build_request("gpt-4o-mini").model_copy(
+        update={
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in OpenAIAdapter().stream(req, "fake-key")
+    ]
+
+    assert events == [
+        {
+            "type": "reasoning_summary_completed",
+            "text": "Checked cluster status.",
+            "provider": "openai",
+        },
+        {
+            "type": "reasoning_summary_completed",
+            "text": "Reviewed recent rollout events.",
+            "provider": "openai",
+        },
+        {
+            "type": "final",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "tool_calls": 0,
+            },
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_openai_adapter_retries_without_reasoning_when_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
@@ -161,34 +298,99 @@ async def test_openai_adapter_retries_with_alternate_token_param(
 
     async def stream_response():
         yield SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=7),
-            choices=[],
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=7),
+            ),
         )
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **kwargs):
             calls.append(kwargs)
             if len(calls) == 1:
-                raise FakeBadRequestError(
-                    "Unsupported parameter: 'max_tokens' is not supported with this model. "
-                    "Use 'max_completion_tokens' instead."
-                )
+                raise FakeBadRequestError("Unsupported parameter: 'reasoning'.")
             return stream_response()
 
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("app.llm.adapters.openai_adapter.BadRequestError", FakeBadRequestError)
 
-    adapter = OpenAIAdapter()
-    events = [event async for event in adapter.stream(_build_request("gpt-4o-mini"), "fake-key")]
-    assert any(event.type == "final" for event in events)
+    req = _build_request("gpt-4o-mini").model_copy(
+        update={
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in OpenAIAdapter().stream(req, "fake-key")
+    ]
+
     assert len(calls) == 2
-    assert "max_tokens" in calls[0]
-    assert "max_completion_tokens" in calls[1]
+    assert calls[0]["reasoning"] == {"summary": "auto"}
+    assert "reasoning" not in calls[1]
+    assert events == [
+        {
+            "type": "reasoning_summary_unavailable",
+            "provider": "openai",
+            "reason": "unsupported_model",
+        },
+        {
+            "type": "final",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "tool_calls": 0,
+            },
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_openai_adapter_does_not_degrade_unrelated_bad_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    class FakeBadRequestError(Exception):
+        pass
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            raise FakeBadRequestError("Invalid request: malformed tool schema.")
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            del api_key
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.BadRequestError", FakeBadRequestError)
+
+    req = _build_request("gpt-4o-mini").model_copy(
+        update={
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in OpenAIAdapter().stream(req, "fake-key")
+    ]
+
+    assert len(calls) == 1
+    assert calls[0]["reasoning"] == {"summary": "auto"}
+    assert events == [
+        {
+            "type": "error",
+            "code": "OPENAI_ERROR",
+            "message": "Provider request failed",
+            "retryable": False,
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -199,11 +401,13 @@ async def test_openai_adapter_retries_transient_connection_error_before_stream_s
 
     async def stream_response():
         yield SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
-            choices=[],
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            ),
         )
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **kwargs):
             calls.append(kwargs)
             if len(calls) == 1:
@@ -213,7 +417,7 @@ async def test_openai_adapter_retries_transient_connection_error_before_stream_s
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("app.llm.adapters.openai_adapter.settings.PROVIDER_RETRY_BACKOFF_MS", 1)
@@ -232,7 +436,7 @@ async def test_openai_adapter_returns_sanitized_error_when_circuit_is_open(
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=SimpleNamespace())
+            self.responses = SimpleNamespace()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
     monkeypatch.setattr(
@@ -263,11 +467,13 @@ async def test_openai_adapter_omits_temperature_for_gpt5_models(
 
     async def stream_response():
         yield SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
-            choices=[],
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            ),
         )
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **kwargs):
             calls.append(kwargs)
             return stream_response()
@@ -275,7 +481,7 @@ async def test_openai_adapter_omits_temperature_for_gpt5_models(
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
 
@@ -284,7 +490,7 @@ async def test_openai_adapter_omits_temperature_for_gpt5_models(
     assert any(event.type == "final" for event in events)
     assert len(calls) == 1
     assert "temperature" not in calls[0]
-    assert "max_completion_tokens" in calls[0]
+    assert calls[0]["max_output_tokens"] == 128
 
 
 @pytest.mark.anyio
@@ -298,11 +504,13 @@ async def test_openai_adapter_retries_without_temperature_when_rejected(
 
     async def stream_response():
         yield SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=7),
-            choices=[],
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=7),
+            ),
         )
 
-    class FakeCompletions:
+    class FakeResponses:
         async def create(self, **kwargs):
             calls.append(kwargs)
             if len(calls) == 1:
@@ -315,7 +523,7 @@ async def test_openai_adapter_retries_without_temperature_when_rejected(
     class FakeClient:
         def __init__(self, api_key: str):
             del api_key
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("app.llm.adapters.openai_adapter.BadRequestError", FakeBadRequestError)

@@ -97,7 +97,7 @@ async def test_llm_stream_contract():
                 ) as ac:
                     headers = {"Authorization": "Bearer fake-token"}
                     response = await ac.post(
-                        "/api/v1/llm/chat-completions:stream",
+                        "/api/v1/llm/generations:stream",
                         json=build_llm_stream_payload(),
                         headers=headers,
                     )
@@ -144,7 +144,7 @@ async def test_llm_stream_rejects_cluster_and_session_scope_mismatch(field: str,
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(**{field: value}),
                     headers={"Authorization": "Bearer fake-token"},
                 )
@@ -199,7 +199,7 @@ async def test_llm_stream_enforces_permission_checks(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=payload,
                     headers={"Authorization": "Bearer fake-token"},
                 )
@@ -238,7 +238,7 @@ async def test_llm_stream_can_emit_deterministic_dev_tool_call(monkeypatch: pyte
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(
                         target_type="virtual_machine",
                         tools=[{"name": "get_host_summary"}],
@@ -282,7 +282,7 @@ async def test_llm_stream_deterministic_dev_skips_tools_that_require_arguments(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(
                         tools=[
                             {
@@ -340,7 +340,7 @@ async def test_llm_stream_deterministic_dev_response_summarizes_tool_feedback(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(
                         target_type="virtual_machine",
                         messages=[{"role": "user", "content": "Live tool results:\n{}"}],
@@ -379,7 +379,7 @@ async def test_llm_stream_rejects_unknown_provider_names():
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(
                         provider="google", model="gemini-2.0-flash"
                     ),
@@ -414,7 +414,7 @@ async def test_llm_stream_returns_503_when_secret_backend_is_unavailable():
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(),
                     headers={"Authorization": "Bearer fake-token"},
                 )
@@ -449,7 +449,7 @@ async def test_llm_stream_missing_provider_credentials_are_sanitized():
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(),
                     headers={"Authorization": "Bearer fake-token"},
                 )
@@ -487,7 +487,7 @@ async def test_llm_stream_treats_blank_provider_credentials_as_missing():
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
                 response = await ac.post(
-                    "/api/v1/llm/chat-completions:stream",
+                    "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(),
                     headers={"Authorization": "Bearer fake-token"},
                 )
