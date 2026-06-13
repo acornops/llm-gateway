@@ -9,7 +9,12 @@ from google.genai import types
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_gemini_tools
-from app.llm.service import LLMAdapter, NormalizedLLMRequest, StreamEvent
+from app.llm.service import (
+    LLMAdapter,
+    NormalizedLLMRequest,
+    StreamEvent,
+    reasoning_summaries_enabled,
+)
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -53,6 +58,35 @@ def _function_call_args(function_call: Any) -> dict[str, Any]:
     return dict(args or {})
 
 
+def _extract_text_parts(chunk: Any) -> list[tuple[str, bool]]:
+    parts: list[tuple[str, bool]] = []
+    for candidate in getattr(chunk, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                parts.append((str(text), bool(getattr(part, "thought", False))))
+    return parts
+
+
+def _thinking_config_kwargs(model: str, effort: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"include_thoughts": True}
+    normalized = model.lower()
+    if "gemini-3" in normalized and effort != "default":
+        kwargs["thinking_level"] = {
+            "low": "LOW",
+            "medium": "MEDIUM",
+            "high": "HIGH",
+        }.get(effort, "MEDIUM")
+    elif "gemini-2.5" in normalized and effort != "default":
+        kwargs["thinking_budget"] = {
+            "low": 1024,
+            "medium": 4096,
+            "high": 8192,
+        }.get(effort, 4096)
+    return kwargs
+
+
 class GeminiAdapter(LLMAdapter):
     """
     Adapter for Google's Gemini API via google-genai.
@@ -81,6 +115,10 @@ class GeminiAdapter(LLMAdapter):
             generation_config_kwargs["tool_config"] = types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="AUTO")
             )
+        if reasoning_summaries_enabled(req):
+            generation_config_kwargs["thinking_config"] = types.ThinkingConfig(
+                **_thinking_config_kwargs(req.model, req.reasoning.effort)
+            )
 
         request_config = types.GenerateContentConfig(**generation_config_kwargs)
 
@@ -93,6 +131,8 @@ class GeminiAdapter(LLMAdapter):
                 tool_calls_count = 0
                 tool_call_seq = 0
                 emitted_event = False
+                summary_text = ""
+                summary_seen = False
                 try:
                     await dependency_circuit_breaker.before_call(
                         dependency_key, "provider", "gemini"
@@ -107,13 +147,28 @@ class GeminiAdapter(LLMAdapter):
                     async for chunk in response:
                         usage = getattr(chunk, "usage_metadata", None) or usage
 
-                        try:
-                            if chunk.text:
+                        text_parts = _extract_text_parts(chunk)
+                        if text_parts:
+                            for text, is_thought in text_parts:
                                 emitted_event = True
-                                yield StreamEvent(type="delta", text=chunk.text)
-                        except ValueError:
-                            # The SDK raises when a chunk contains only function calls.
-                            pass
+                                if is_thought:
+                                    summary_seen = True
+                                    summary_text += text
+                                    yield StreamEvent(
+                                        type="reasoning_summary_delta",
+                                        text=text,
+                                        provider="gemini",
+                                    )
+                                else:
+                                    yield StreamEvent(type="delta", text=text)
+                        else:
+                            try:
+                                if chunk.text:
+                                    emitted_event = True
+                                    yield StreamEvent(type="delta", text=chunk.text)
+                            except ValueError:
+                                # The SDK raises when a chunk contains only function calls.
+                                pass
 
                         for fn in _extract_function_calls(chunk):
                             tool_calls_count += 1
@@ -126,14 +181,46 @@ class GeminiAdapter(LLMAdapter):
                                 arguments=_function_call_args(fn),
                             )
 
+                    if reasoning_summaries_enabled(req):
+                        if summary_seen and summary_text:
+                            emitted_event = True
+                            yield StreamEvent(
+                                type="reasoning_summary_completed",
+                                text=summary_text,
+                                provider="gemini",
+                            )
+                        elif not summary_seen:
+                            emitted_event = True
+                            logger.info(
+                                "provider_reasoning_summary_degraded",
+                                provider="gemini",
+                                model=req.model,
+                                run_id=req.run_id,
+                                workspace_id=req.workspace_id,
+                                reason="provider_omitted",
+                            )
+                            yield StreamEvent(
+                                type="reasoning_summary_unavailable",
+                                provider="gemini",
+                                reason="provider_omitted",
+                            )
+
+                    reasoning_tokens = (
+                        int(getattr(usage, "thoughts_token_count", 0) or 0)
+                        if usage
+                        else 0
+                    )
+                    usage_payload = {
+                        "input_tokens": usage.prompt_token_count if usage else 0,
+                        "output_tokens": usage.candidates_token_count if usage else 0,
+                        "tool_calls": tool_calls_count,
+                    }
+                    if reasoning_tokens:
+                        usage_payload["reasoning_tokens"] = reasoning_tokens
                     emitted_event = True
                     yield StreamEvent(
                         type="final",
-                        usage={
-                            "input_tokens": usage.prompt_token_count if usage else 0,
-                            "output_tokens": usage.candidates_token_count if usage else 0,
-                            "tool_calls": tool_calls_count,
-                        },
+                        usage=usage_payload,
                     )
                     await dependency_circuit_breaker.record_success(dependency_key)
                     return

@@ -26,6 +26,18 @@ GATEWAY_LLM_PROVIDER_REQUESTS_TOTAL = Counter(
     ["provider", "model", "status"],
 )
 
+GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL = Counter(
+    "gateway_llm_reasoning_summary_events_total",
+    "Reasoning summary stream events emitted by the LLM gateway",
+    ["provider", "model", "status"],
+)
+
+GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL = Counter(
+    "gateway_llm_reasoning_summary_unavailable_total",
+    "Reasoning summary unavailable events emitted by the LLM gateway",
+    ["provider", "model", "reason"],
+)
+
 GATEWAY_JWT_VALIDATIONS_TOTAL = Counter(
     "gateway_jwt_validations_total",
     "Total number of JWT validation attempts",

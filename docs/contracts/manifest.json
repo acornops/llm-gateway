@@ -4,7 +4,7 @@
   "runtimeDependencies": ["control-plane", "execution-engine"],
   "counterparts": {
     "execution-engine": {
-      "streamPath": "POST /api/v1/llm/chat-completions:stream",
+      "streamPath": "POST /api/v1/llm/generations:stream",
       "toolCallPath": "POST /api/v1/mcp/tool-call",
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; run-scoped JWTs remain required",
       "streamRequestFields": [
@@ -18,9 +18,18 @@
         "messages",
         "temperature",
         "max_output_tokens",
+        "reasoning",
         "tools"
       ],
-      "streamResponseTypes": ["delta", "tool_call", "final", "error"],
+      "streamResponseTypes": [
+        "delta",
+        "tool_call",
+        "reasoning_summary_delta",
+        "reasoning_summary_completed",
+        "reasoning_summary_unavailable",
+        "final",
+        "error"
+      ],
       "localDeterministicStreamEnv": "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
       "toolCallRequestFields": [
         "run_id",

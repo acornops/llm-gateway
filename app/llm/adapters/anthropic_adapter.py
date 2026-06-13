@@ -7,7 +7,12 @@ from anthropic import AsyncAnthropic
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_anthropic_tools
-from app.llm.service import LLMAdapter, NormalizedLLMRequest, StreamEvent
+from app.llm.service import (
+    LLMAdapter,
+    NormalizedLLMRequest,
+    StreamEvent,
+    reasoning_summaries_enabled,
+)
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -20,6 +25,21 @@ logger = structlog.get_logger()
 
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
 PROVIDER_REQUEST_FAILED = "Provider request failed"
+
+
+def _thinking_budget(max_tokens: int, effort: str) -> int:
+    requested = {
+        "low": 1024,
+        "default": 2048,
+        "medium": 4096,
+        "high": 8192,
+    }.get(effort, 2048)
+    return max(1, min(requested, max_tokens - 1))
+
+
+def _uses_adaptive_thinking(model: str) -> bool:
+    normalized = model.lower()
+    return "4-6" in normalized or "4.6" in normalized
 
 
 class AnthropicAdapter(LLMAdapter):
@@ -36,6 +56,7 @@ class AnthropicAdapter(LLMAdapter):
         client = AsyncAnthropic(api_key=api_key)
         tool_calls_map = {}
         anthropic_tools = build_anthropic_tools(req.tools)
+        max_tokens = req.max_output_tokens or self.DEFAULT_MAX_TOKENS
 
         stream_kwargs = {
             "model": req.model,
@@ -46,11 +67,26 @@ class AnthropicAdapter(LLMAdapter):
             ],
             "system": next((m.content for m in req.messages if m.role == "system"), None),
             # Anthropic requires max_tokens in request payload.
-            "max_tokens": req.max_output_tokens or self.DEFAULT_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "temperature": req.temperature,
         }
         if anthropic_tools:
             stream_kwargs["tools"] = anthropic_tools
+        if reasoning_summaries_enabled(req):
+            if _uses_adaptive_thinking(req.model):
+                thinking: dict[str, object] = {
+                    "type": "adaptive",
+                    "display": "summarized",
+                }
+                if req.reasoning.effort != "default":
+                    thinking["effort"] = req.reasoning.effort
+            else:
+                thinking = {
+                    "type": "enabled",
+                    "budget_tokens": _thinking_budget(max_tokens, req.reasoning.effort),
+                    "display": "summarized",
+                }
+            stream_kwargs["thinking"] = thinking
 
         dependency_key = "provider:anthropic"
         attempts = max(1, settings.PROVIDER_RETRY_ATTEMPTS)
@@ -59,6 +95,9 @@ class AnthropicAdapter(LLMAdapter):
         while attempt <= attempts:
             tool_calls_map = {}
             emitted_event = False
+            thinking_text = ""
+            thinking_summary_emitted = False
+            unavailable_emitted = False
             try:
                 await dependency_circuit_breaker.before_call(
                     dependency_key,
@@ -78,10 +117,30 @@ class AnthropicAdapter(LLMAdapter):
                                     "name": event.content_block.name,
                                     "input": "",
                                 }
+                            elif event.content_block.type == "thinking":
+                                block_text = str(getattr(event.content_block, "thinking", "") or "")
+                                if block_text:
+                                    thinking_text += block_text
+                                    emitted_event = True
+                                    yield StreamEvent(
+                                        type="reasoning_summary_delta",
+                                        text=block_text,
+                                        provider="anthropic",
+                                    )
                         elif event.type == "content_block_delta":
                             if event.delta.type == "text_delta":
                                 emitted_event = True
                                 yield StreamEvent(type="delta", text=event.delta.text)
+                            elif event.delta.type == "thinking_delta":
+                                delta_text = str(getattr(event.delta, "thinking", "") or "")
+                                if delta_text:
+                                    thinking_text += delta_text
+                                    emitted_event = True
+                                    yield StreamEvent(
+                                        type="reasoning_summary_delta",
+                                        text=delta_text,
+                                        provider="anthropic",
+                                    )
                             elif (
                                 event.delta.type == "input_json_delta"
                                 and event.index in tool_calls_map
@@ -97,9 +156,38 @@ class AnthropicAdapter(LLMAdapter):
                                     tool=tc["name"],
                                     arguments=json.loads(tc["input"]) if tc["input"] else {},
                                 )
+                            elif thinking_text:
+                                emitted_event = True
+                                yield StreamEvent(
+                                    type="reasoning_summary_completed",
+                                    text=thinking_text,
+                                    provider="anthropic",
+                                )
+                                thinking_text = ""
+                                thinking_summary_emitted = True
                         elif event.type == "message_start":
                             pass
                         elif event.type == "message_delta" and event.usage:
+                            if (
+                                reasoning_summaries_enabled(req)
+                                and not thinking_summary_emitted
+                                and not unavailable_emitted
+                            ):
+                                emitted_event = True
+                                unavailable_emitted = True
+                                logger.info(
+                                    "provider_reasoning_summary_degraded",
+                                    provider="anthropic",
+                                    model=req.model,
+                                    run_id=req.run_id,
+                                    workspace_id=req.workspace_id,
+                                    reason="provider_omitted",
+                                )
+                                yield StreamEvent(
+                                    type="reasoning_summary_unavailable",
+                                    provider="anthropic",
+                                    reason="provider_omitted",
+                                )
                             emitted_event = True
                             yield StreamEvent(
                                 type="final",

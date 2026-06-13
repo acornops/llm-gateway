@@ -35,6 +35,15 @@ def normalize_provider_name(provider: str) -> str:
     return provider.strip().lower()
 
 
+class ReasoningConfig(BaseModel):
+    summary_mode: Literal["off", "auto", "concise", "detailed"] = "off"
+    effort: Literal["default", "low", "medium", "high"] = "default"
+
+
+def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
+    return req.reasoning.summary_mode != "off"
+
+
 class NormalizedLLMRequest(BaseModel):
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
@@ -47,6 +56,7 @@ class NormalizedLLMRequest(BaseModel):
     tools: list[ToolSpec] = []
     temperature: float = 0.7
     max_output_tokens: int | None = None
+    reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -94,14 +104,22 @@ class NormalizedLLMRequest(BaseModel):
                 ],
                 "temperature": 0.2,
                 "max_output_tokens": 4000,
+                "reasoning": {"summary_mode": "off", "effort": "default"},
             }
         }
     }
 
 
 class StreamEvent(BaseModel):
-    type: str  # "delta", "tool_call", "final", "error"
+    type: str  # "delta", "tool_call", "reasoning_summary_*", "final", "error"
     text: str | None = None
+    provider: Literal["openai", "anthropic", "gemini"] | None = None
+    reason: Literal[
+        "disabled",
+        "unsupported_model",
+        "unsupported_provider",
+        "provider_omitted",
+    ] | None = None
     call_id: str | None = None
     tool: str | None = None
     arguments: dict[str, Any] | None = None
