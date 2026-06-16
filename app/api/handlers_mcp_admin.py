@@ -41,6 +41,7 @@ from app.api.mcp_admin_schemas import (
     ToolUpdateRequest,
 )
 from app.auth.service_token import require_admin_service_token
+from app.config.settings import settings
 from app.examples import EXAMPLE_MCP_SERVER_ID, EXAMPLE_WORKSPACE_ID
 from app.mcp.egress_policy import McpEgressPolicyError, validate_mcp_server_url
 from app.mcp.header_policy import validate_auth_header_value
@@ -49,6 +50,21 @@ from app.target_types import TARGET_TYPE_EXAMPLES, TargetType
 
 router = APIRouter()
 logger = structlog.get_logger()
+
+
+def _is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
+    return (
+        request.server_name == settings.BUILTIN_MCP_SERVER_NAME
+        and request.server_url == settings.BUILTIN_MCP_SERVER_URL
+        and request.auth_type == "none"
+        and request.auth_secret_name is None
+        and request.auth_secret_value is None
+        and request.auth_header_name is None
+        and request.auth_header_prefix is None
+        and request.public_headers is None
+        and len(request.tools) > 0
+        and all(tool.source == "builtin" for tool in request.tools)
+    )
 
 
 @router.get("/servers", response_model=list[McpServerResponse])
@@ -163,10 +179,12 @@ async def create_mcp_server(
     request: McpServerCreateRequest,
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerResponse:
-    try:
-        await validate_mcp_server_url(request.server_url)
-    except McpEgressPolicyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    is_builtin_bridge = _is_builtin_bridge_registration(request)
+    if not is_builtin_bridge:
+        try:
+            await validate_mcp_server_url(request.server_url)
+        except McpEgressPolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     auth_secret_name = request.auth_secret_name
     if request.auth_secret_value:

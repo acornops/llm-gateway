@@ -154,7 +154,7 @@ Each MCP server also tracks `connection_status`, `last_discovery_at`, and `last_
 If discovery fails or returns empty, server creation still succeeds but no tools are mapped until discovery succeeds.
 MCP server `public_headers` are visible non-secret metadata. Credential-bearing headers must use secret-backed auth fields.
 
-MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an explicit `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`.
+MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an explicit `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`. The configured AcornOps builtin bridge URL is the only internal HTTP exception, and only when control plane registers tools with `source: builtin`.
 
 LLM and tool-call limits are configured by `LLM_RATE_LIMIT_PER_WINDOW`, `TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. In production, `REQUIRE_REDIS_RATE_LIMITS_IN_PRODUCTION=true` makes missing Redis configuration a startup error.
 

@@ -28,6 +28,7 @@
 - Remote MCP server URLs are validated before registration and before outbound calls.
 - Production requires HTTPS by default and blocks loopback, link-local, multicast, private, reserved, and unspecified IP ranges after DNS resolution.
 - Local development may use short Docker service names such as `mock-mcp`; production private/internal MCP servers require an explicit `MCP_EGRESS_ALLOWED_HOSTS` entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`.
+- The configured builtin AcornOps bridge URL is allowed as internal HTTP only when a control-plane registration supplies builtin tools and no configurable MCP auth or public headers.
 - Do not allow private MCP egress in public SaaS deployments unless the network boundary and tenant ownership model are explicitly reviewed.
 
 ## Rate Limits

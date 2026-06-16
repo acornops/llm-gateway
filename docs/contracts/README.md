@@ -189,6 +189,10 @@ llm-gateway then reaches the control plane via:
 - `POST /internal/v1/mcp/tools/call`
 - `Authorization: Bearer <run-scoped-jwt>`
 
+This builtin bridge is the only internal HTTP exception to remote MCP egress
+validation. Registration must use the configured builtin server name and URL,
+auth type `none`, no public headers, and tools marked with `source: builtin`.
+
 For builtin tools, scope source is `run-scoped-jwt-claims`: workspace, target, run, session, and allowed-tool scope come from the run-scoped JWT. llm-gateway must not forward configurable MCP `public_headers`, MCP secret-store auth headers, or caller-supplied platform scope headers to the builtin bridge.
 
 Request body:

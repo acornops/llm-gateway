@@ -378,6 +378,115 @@ async def test_create_server_rejects_unsafe_private_url() -> None:
 
 
 @pytest.mark.anyio
+async def test_create_builtin_server_allows_configured_internal_http_bridge() -> None:
+    workspace_id = "ws-builtin"
+    target_id = "cl-builtin"
+    server_url = "http://control-plane:8081/internal/v1/mcp"
+    created_server = SimpleNamespace(
+        id="srv-builtin",
+        workspace_id=workspace_id,
+        target_id=target_id,
+        target_type="kubernetes",
+        server_name="acornops-cluster-agent",
+        server_url=server_url,
+        enabled=True,
+        auth_type="none",
+        auth_secret_name=None,
+        auth_header_name=None,
+        auth_header_prefix=None,
+        public_headers=None,
+        connection_status="unknown",
+        last_discovery_at=None,
+        last_discovery_error=None,
+    )
+    registered_tool = _make_tool(
+        name="list_resources",
+        server_url=server_url,
+        source="builtin",
+        capability="read",
+    )
+
+    with (
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.create_server",
+            new=AsyncMock(return_value=created_server),
+        ) as create_server_mock,
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.upsert_tool",
+            new=AsyncMock(return_value=registered_tool),
+        ) as upsert_tool_mock,
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            new=AsyncMock(return_value=[registered_tool]),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.mcp_transport.list_tools",
+            new=AsyncMock(),
+        ) as discovery_mock,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/internal/mcp/servers",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+                json={
+                    "workspace_id": workspace_id,
+                    "target_id": target_id,
+                    "target_type": "kubernetes",
+                    "server_name": "acornops-cluster-agent",
+                    "server_url": server_url,
+                    "enabled": True,
+                    "tools": [
+                        {
+                            "name": "list_resources",
+                            "source": "builtin",
+                            "capability": "read",
+                            "enabled": True,
+                        }
+                    ],
+                },
+            )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["server_url"] == server_url
+    assert payload["tools"][0]["source"] == "builtin"
+    create_server_mock.assert_awaited_once()
+    upsert_tool_mock.assert_awaited_once()
+    discovery_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_create_builtin_server_does_not_bypass_egress_for_mcp_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.mcp.egress_policy.settings.APP_ENV", "production")
+    monkeypatch.setattr("app.mcp.egress_policy.settings.NODE_ENV", None)
+
+    with patch(
+        "app.api.handlers_mcp_admin.mcp_server_registry.create_server",
+        new=AsyncMock(),
+    ) as create_server_mock:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/internal/mcp/servers",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+                json={
+                    "workspace_id": "ws-builtin-mcp",
+                    "target_id": "cl-builtin-mcp",
+                    "target_type": "kubernetes",
+                    "server_name": "acornops-cluster-agent",
+                    "server_url": "http://control-plane:8081/internal/v1/mcp",
+                    "enabled": True,
+                    "tools": [{"name": "external.lookup", "source": "mcp"}],
+                },
+            )
+
+    assert response.status_code == 400
+    assert "HTTPS" in response.json()["detail"]
+    create_server_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_list_mcp_servers_requires_admin_token() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(
