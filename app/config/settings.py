@@ -36,6 +36,16 @@ def _database_password(database_url: str) -> str | None:
     return unquote(parsed.password) if parsed.password else None
 
 
+def _is_allowed_internal_http_host(hostname: str, allowed_hosts: set[str]) -> bool:
+    service_name = hostname.split(".", 1)[0]
+    for allowed_host in allowed_hosts:
+        if hostname == allowed_host or service_name == allowed_host:
+            return True
+        if service_name.endswith(f"-{allowed_host}"):
+            return "." not in hostname or ".svc" in hostname
+    return False
+
+
 def _unsafe_url(value: str, *, allow_internal_http_hosts: set[str] | None = None) -> bool:
     parsed = urlparse(value)
     hostname = (parsed.hostname or "").lower()
@@ -47,7 +57,10 @@ def _unsafe_url(value: str, *, allow_internal_http_hosts: set[str] | None = None
         return True
     if parsed.scheme == "https":
         return False
-    return parsed.scheme != "http" or hostname not in (allow_internal_http_hosts or set())
+    return parsed.scheme != "http" or not _is_allowed_internal_http_host(
+        hostname,
+        allow_internal_http_hosts or set(),
+    )
 
 
 class Settings(BaseSettings):

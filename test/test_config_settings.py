@@ -39,6 +39,19 @@ def test_production_settings_accept_generated_secrets():
     assert settings.SECRETS_CACHE_TTL_SEC == 0
 
 
+def test_production_settings_accept_release_qualified_control_plane_jwks_url():
+    settings = production_settings(
+        AUTH_JWKS_URL=(
+            "http://acornops-acornops-platform-control-plane:8081"
+            "/api/v1/auth/jwks.json"
+        ),
+    )
+
+    assert settings.AUTH_JWKS_URL.startswith(
+        "http://acornops-acornops-platform-control-plane:8081"
+    )
+
+
 def test_internal_transport_tls_defaults_disabled():
     settings = Settings()
 
