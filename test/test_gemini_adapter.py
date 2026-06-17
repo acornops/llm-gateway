@@ -46,6 +46,16 @@ def _request() -> NormalizedLLMRequest:
     )
 
 
+def _request_with_system_messages() -> NormalizedLLMRequest:
+    payload = _request().model_dump()
+    payload["messages"] = [
+        {"role": "system", "content": "Use read-only tools only."},
+        {"role": "system", "content": "Explain blocked write actions clearly."},
+        {"role": "user", "content": "restart the workload"},
+    ]
+    return NormalizedLLMRequest(**payload)
+
+
 async def _chunk_stream():
     yield SimpleNamespace(
         text="Hello",
@@ -119,6 +129,43 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
         "output_tokens": 4,
         "tool_calls": 1,
     }
+
+
+@pytest.mark.anyio
+async def test_gemini_adapter_passes_system_messages_as_system_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    class FakeModels:
+        async def generate_content_stream(self, **kwargs):
+            calls.append(kwargs)
+            return _chunk_stream()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.aio = SimpleNamespace(models=FakeModels())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
+
+    events = [
+        event async for event in GeminiAdapter().stream(_request_with_system_messages(), "key")
+    ]
+
+    assert [event.type for event in events] == ["delta", "tool_call", "final"]
+    assert calls[0]["contents"] == [
+        {"role": "user", "parts": [{"text": "restart the workload"}]}
+    ]
+    assert (
+        calls[0]["config"].system_instruction
+        == "Use read-only tools only.\n\nExplain blocked write actions clearly."
+    )
 
 
 def test_extract_function_calls_reads_candidate_parts():

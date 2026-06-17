@@ -101,13 +101,21 @@ class GeminiAdapter(LLMAdapter):
         tool_calls_count = 0
         tool_call_seq = 0
 
+        system_instruction = "\n\n".join(
+            m.content for m in req.messages if m.role == "system"
+        ).strip()
+
         # Convert messages to Gemini format
         contents = []
         for m in req.messages:
+            if m.role == "system":
+                continue
             role = "user" if m.role == "user" else "model"
             contents.append({"role": role, "parts": [{"text": m.content}]})
 
         generation_config_kwargs = {"temperature": req.temperature}
+        if system_instruction:
+            generation_config_kwargs["system_instruction"] = system_instruction
         if req.max_output_tokens is not None:
             generation_config_kwargs["max_output_tokens"] = req.max_output_tokens
         if req.tools:
