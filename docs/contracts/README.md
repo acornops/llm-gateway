@@ -119,6 +119,9 @@ The JWT must validate against control-plane JWKS and include:
 
 This repo must reject requests whose body scope does not match token scope.
 
+Workspace workflow runs continue to rely on the control-plane-signed JWT. Workflow tokens add workflow scope fields such as `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current step id, allowed tools, allowed tool operations, and context grants. The gateway enforces those token claims and must not infer workflow MCP access from management-console UI state.
+For `POST /api/v1/mcp/tool-call`, target-scoped runs must include `target_id` and `target_type`; workspace workflow runs must include `scope.type = "workspace"` plus the workflow identifiers and may omit target fields unless the workflow step is explicitly target-bound. Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge with the original run-scoped JWT, without consulting target MCP registry state.
+
 ## Control-Plane Contract
 
 Transport may be plaintext HTTP by default or HTTPS/mTLS when enabled by Helm

@@ -22,6 +22,7 @@ MCP_ADMIN_SOURCE = read("app/api/handlers_mcp_admin.py") + read("app/api/mcp_adm
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
 TRANSPORT_SOURCE = read("app/mcp/transports/http_transport.py")
 SETTINGS_SOURCE = read("app/config/settings.py")
+SEED_SOURCE = read("scripts/seed_db.py")
 EXECUTION_ENGINE_CONTRACT = MANIFEST["counterparts"]["execution-engine"]
 CONTROL_PLANE_CONTRACT = MANIFEST["counterparts"]["control-plane"]
 
@@ -59,8 +60,12 @@ for heading in (
 for field in (
     "run_id: str",
     "workspace_id: str",
-    "target_id: str",
-    "target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)",
+    "scope: RequestScope = Field(default_factory=RequestScope)",
+    "target_id: str | None = Field(default=None, examples=[EXAMPLE_TARGET_ID])",
+    "target_type: TargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
+    "workflow_id: str | None = None",
+    "workflow_run_id: str | None = None",
+    "workflow_session_id: str | None = None",
     "session_id: str",
     'provider: Literal["openai", "anthropic", "gemini"]',
     "model: str",
@@ -76,13 +81,18 @@ for field in (
     "aud: str",
     "run_id: str",
     "workspace_id: str",
-    "target_id: str",
-    "target_type: TargetType",
+    "scope: Scope = Scope()",
+    "target_id: str | None = None",
+    "target_type: TargetType | None = None",
+    "workflow_id: str | None = None",
+    "workflow_run_id: str | None = None",
+    "workflow_session_id: str | None = None",
     "session_id: str",
     "allowed_providers: list[str] = []",
     "allowed_models: list[str] = []",
     "allowed_tools: list[str] = []",
     'allowed_tool_operations: dict[str, Literal["read", "write"]] = {}',
+    "context_grants: list[str] = []",
     "max_output_tokens: int | None = None",
 ):
     expect_in(CLAIMS_SOURCE, field, "Token claim model")
@@ -137,6 +147,8 @@ for needle in (
 
 for needle in (
     'tool.source == "builtin"',
+    'if claims.scope.type == "workspace":',
+    "WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS",
     "and server.server_name == BUILTIN_MCP_SERVER_NAME",
     "and server.server_url == BUILTIN_MCP_SERVER_URL",
     "and tool.mcp_server_url == BUILTIN_MCP_SERVER_URL",
@@ -145,6 +157,12 @@ for needle in (
     "detail=f\"Tool {req.tool} is not permitted for this run\"",
 ):
     expect_in(TOOL_HANDLER_SOURCE, needle, "Tool handler")
+
+for needle in (
+    'scope.type = "workspace"',
+    "Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge",
+):
+    expect_in(DOC, needle, "Workspace workflow tool-call doc")
 
 for needle in (
     *CONTROL_PLANE_CONTRACT["serverFields"],
@@ -169,6 +187,19 @@ for needle in (
 ):
     expect_in(SETTINGS_SOURCE, needle, "Gateway settings")
     expect_in(DOC, needle, "Documented gateway setting")
+
+for needle in (
+    'LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES',
+    'if _env_flag("LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES")',
+    'Skipping {secret_name}: no dev seed key configured',
+):
+    expect_in(SEED_SOURCE, needle, "Deterministic local seed behavior")
+
+expect_in(
+    README,
+    "fake\nlocal-only provider keys",
+    "Documented deterministic local seed behavior",
+)
 
 for field in EXECUTION_ENGINE_CONTRACT["streamResponseTypes"]:
     expect_in(DOC, f'`{{"type":"{field}"', "Documented stream response type")

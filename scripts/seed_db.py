@@ -8,20 +8,35 @@ from app.secrets.store import secret_store
 from app.target_types import KUBERNETES_TARGET_TYPE
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _seed_provider_key(env_name: str, deterministic_fallback: str) -> str | None:
+    value = os.getenv(env_name)
+    if value and value.strip():
+        return value.strip()
+    if _env_flag("LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES"):
+        return deterministic_fallback
+    return None
+
+
 async def seed():
-    openai_api_key = os.getenv("ACORNOPS_DEV_SEED_OPENAI_API_KEY", "sk-fake-openai-key")
-    anthropic_api_key = os.getenv(
-        "ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY", "sk-fake-anthropic-key"
-    )
-    gemini_api_key = os.getenv("ACORNOPS_DEV_SEED_GEMINI_API_KEY", "fake-gemini-key")
+    provider_keys = {
+        "openai_api_key": _seed_provider_key("ACORNOPS_DEV_SEED_OPENAI_API_KEY", "sk-fake-openai-key"),
+        "anthropic_api_key": _seed_provider_key("ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY", "sk-fake-anthropic-key"),
+        "gemini_api_key": _seed_provider_key("ACORNOPS_DEV_SEED_GEMINI_API_KEY", "fake-gemini-key"),
+    }
 
     # Seed secrets
     print("Seeding secrets...")
     try:
         workspace_scope = {"workspace_id": EXAMPLE_WORKSPACE_ID}
-        await secret_store.put_secret("openai_api_key", openai_api_key, workspace_scope)
-        await secret_store.put_secret("anthropic_api_key", anthropic_api_key, workspace_scope)
-        await secret_store.put_secret("gemini_api_key", gemini_api_key, workspace_scope)
+        for secret_name, api_key in provider_keys.items():
+            if api_key:
+                await secret_store.put_secret(secret_name, api_key, workspace_scope)
+            else:
+                print(f"Skipping {secret_name}: no dev seed key configured")
     except Exception as e:
         print(f"Secret seeding failed (maybe already exists): {e}")
 

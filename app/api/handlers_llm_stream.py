@@ -44,6 +44,28 @@ def _schema_allows_empty_arguments(schema: dict[str, Any]) -> bool:
     return not isinstance(required, list) or len(required) == 0
 
 
+def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims) -> bool:
+    if (
+        req.run_id != claims.run_id
+        or req.workspace_id != claims.workspace_id
+        or req.session_id != claims.session_id
+        or req.scope.type != claims.scope.type
+    ):
+        return False
+
+    if claims.scope.type == "workspace":
+        return (
+            req.workflow_id == claims.workflow_id
+            and req.workflow_run_id == claims.workflow_run_id
+            and req.workflow_session_id == claims.workflow_session_id
+            and req.workflow_step_id == claims.workflow_step_id
+            and req.target_id == claims.target_id
+            and req.target_type == claims.target_type
+        )
+
+    return req.target_id == claims.target_id and req.target_type == claims.target_type
+
+
 def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
     if any(LIVE_TOOL_RESULTS_MARKER in message.content for message in req.messages):
         return None
@@ -154,13 +176,7 @@ async def stream_generation(
     start_time = time.time()
 
     # Verify claims match request
-    if (
-        req.run_id != claims.run_id
-        or req.workspace_id != claims.workspace_id
-        or req.target_id != claims.target_id
-        or req.target_type != claims.target_type
-        or req.session_id != claims.session_id
-    ):
+    if not _request_matches_claim_scope(req, claims):
         logger.warning(
             "llm_request_forbidden",
             run_id=req.run_id,
@@ -168,11 +184,21 @@ async def stream_generation(
             target_id=req.target_id,
             target_type=req.target_type,
             session_id=req.session_id,
+            scope_type=req.scope.type,
+            workflow_id=req.workflow_id,
+            workflow_run_id=req.workflow_run_id,
+            workflow_session_id=req.workflow_session_id,
+            workflow_step_id=req.workflow_step_id,
             claims_run_id=claims.run_id,
             claims_workspace_id=claims.workspace_id,
             claims_target_id=claims.target_id,
             claims_target_type=claims.target_type,
             claims_session_id=claims.session_id,
+            claims_scope_type=claims.scope.type,
+            claims_workflow_id=claims.workflow_id,
+            claims_workflow_run_id=claims.workflow_run_id,
+            claims_workflow_session_id=claims.workflow_session_id,
+            claims_workflow_step_id=claims.workflow_step_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
 
@@ -228,6 +254,10 @@ async def stream_generation(
             workspace_id=req.workspace_id,
             target_id=req.target_id,
             target_type=req.target_type,
+            scope_type=req.scope.type,
+            workflow_id=req.workflow_id,
+            workflow_run_id=req.workflow_run_id,
+            workflow_step_id=req.workflow_step_id,
             provider=req.provider,
             model=req.model,
         )

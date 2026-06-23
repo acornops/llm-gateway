@@ -58,6 +58,22 @@ def build_tool_call_payload(**overrides):
     return payload
 
 
+def build_workflow_tool_call_payload(**overrides):
+    payload = {
+        "run_id": EXAMPLE_RUN_ID,
+        "workspace_id": EXAMPLE_WORKSPACE_ID,
+        "scope": {"type": "workspace"},
+        "workflow_id": "workspace-tool-exposure-audit",
+        "workflow_run_id": "workflow-run-1",
+        "workflow_session_id": "workflow-session-1",
+        "workflow_step_id": "inventory-scope",
+        "tool": "mcp.tools.list",
+        "arguments": {},
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.mark.anyio
 async def test_tool_call_contract():
     mock_claims = build_token_claims()
@@ -534,6 +550,79 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
             mock_call_tool.assert_not_awaited()
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer run-scoped-jwt",
+            }
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_workspace_workflow_tool_call_forwards_run_token_to_control_plane_bridge_without_target_registry():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        target_id=None,
+        target_type=None,
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+        permissions={
+            "allowed_tools": ["mcp.tools.list"],
+            "allowed_tool_operations": {"mcp.tools.list": "read"},
+            "context_grants": ["workspace_metadata"],
+        },
+    )
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool", new_callable=AsyncMock
+        ) as mock_get_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
+            new_callable=AsyncMock,
+        ) as mock_get_server,
+        patch(
+            "app.api.handlers_tool_call.post_builtin_mcp_tool",
+            new_callable=AsyncMock,
+            return_value={
+                "content": [{"type": "text", "text": '{"tools":["mcp.tools.list"]}'}],
+                "isError": False,
+            },
+        ) as mock_builtin_call,
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+        ) as mock_call_tool,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 200
+            assert response.json() == {
+                "result": [{"type": "text", "text": '{"tools":["mcp.tools.list"]}'}],
+                "is_error": False,
+            }
+            mock_get_tool.assert_not_awaited()
+            mock_get_server.assert_not_awaited()
+            mock_call_tool.assert_not_awaited()
+            assert mock_builtin_call.await_args.args[0] == "http://control-plane:8081/internal/v1/mcp"
+            assert mock_builtin_call.await_args.args[1] == "mcp.tools.list"
+            assert mock_builtin_call.await_args.args[4] == {
+                "Authorization": "Bearer workflow-run-jwt",
             }
         finally:
             app.dependency_overrides.clear()

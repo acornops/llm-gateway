@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.examples import (
     EXAMPLE_RUN_ID,
@@ -40,6 +40,10 @@ class ReasoningConfig(BaseModel):
     effort: Literal["default", "low", "medium", "high"] = "default"
 
 
+class RequestScope(BaseModel):
+    type: Literal["target", "workspace"] = "target"
+
+
 def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
     return req.reasoning.summary_mode != "off"
 
@@ -47,8 +51,13 @@ def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
 class NormalizedLLMRequest(BaseModel):
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
-    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    scope: RequestScope = Field(default_factory=RequestScope)
+    target_id: str | None = Field(default=None, examples=[EXAMPLE_TARGET_ID])
+    target_type: TargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflow_id: str | None = None
+    workflow_run_id: str | None = None
+    workflow_session_id: str | None = None
+    workflow_step_id: str | None = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     provider: Literal["openai", "anthropic", "gemini"] = Field(examples=["gemini"])
     model: str = Field(examples=["gemini-2.0-flash"])
@@ -57,6 +66,28 @@ class NormalizedLLMRequest(BaseModel):
     temperature: float = 0.7
     max_output_tokens: int | None = None
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.scope.type == "target":
+            if not self.target_id or not self.target_type:
+                raise ValueError("target scope requires target_id and target_type")
+            return self
+
+        missing = [
+            name
+            for name, value in (
+                ("workflow_id", self.workflow_id),
+                ("workflow_run_id", self.workflow_run_id),
+                ("workflow_session_id", self.workflow_session_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+            raise ValueError("workflow target binding requires both target_id and target_type")
+        return self
 
     @field_validator("provider", mode="before")
     @classmethod

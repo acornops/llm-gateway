@@ -224,9 +224,12 @@ docker compose run --rm gateway-init sh -c "alembic upgrade head && python scrip
 ```
 
 To test real inference in local development, set dev seed provider API keys before
-seeding. The seed job stores these as workspace-scoped provider credentials;
-production traffic should configure credentials through workspace settings.
-Gemini is the recommended demo default:
+seeding. The seed job stores non-blank values as workspace-scoped provider
+credentials; production traffic should configure credentials through workspace
+settings. For providerless deterministic smoke runs,
+`LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` makes the seed job write fake
+local-only provider keys so upstream services can exercise credential preflight
+without calling a real provider. Gemini is the recommended demo default:
 
 ```bash
 export ACORNOPS_DEV_SEED_GEMINI_API_KEY='<your-gemini-api-key>'

@@ -1,11 +1,11 @@
 import time
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as jsonschema_validate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth.claims import TokenClaims
 from app.auth.jwt_validator import TokenContext, get_current_token_context
@@ -36,6 +36,7 @@ BUILTIN_MCP_BRIDGE_NOT_CONFIGURED = "Builtin MCP bridge is not configured for th
 TOOL_EXECUTION_FAILED_MESSAGE = "Tool execution failed"
 BUILTIN_MCP_SERVER_NAME = settings.BUILTIN_MCP_SERVER_NAME
 BUILTIN_MCP_SERVER_URL = settings.BUILTIN_MCP_SERVER_URL
+WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS = 10000
 
 
 def _is_missing_secret_error(exc: Exception) -> bool:
@@ -43,12 +44,42 @@ def _is_missing_secret_error(exc: Exception) -> bool:
 
 
 class ToolCallRequest(BaseModel):
+    class Scope(BaseModel):
+        type: Literal["target", "workspace"] = "target"
+
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
-    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    scope: Scope = Field(default_factory=Scope)
+    target_id: str | None = Field(default=None, examples=[EXAMPLE_TARGET_ID])
+    target_type: TargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflow_id: str | None = None
+    workflow_run_id: str | None = None
+    workflow_session_id: str | None = None
+    workflow_step_id: str | None = None
     tool: str = Field(examples=["get_resource_logs"])
     arguments: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.scope.type == "target":
+            if not self.target_id or not self.target_type:
+                raise ValueError("target scope requires target_id and target_type")
+            return self
+
+        missing = [
+            name
+            for name, value in (
+                ("workflow_id", self.workflow_id),
+                ("workflow_run_id", self.workflow_run_id),
+                ("workflow_session_id", self.workflow_session_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+            raise ValueError("workflow target binding requires both target_id and target_type")
+        return self
 
     model_config = {
         "json_schema_extra": {
@@ -71,6 +102,23 @@ class ToolCallRequest(BaseModel):
 class ToolCallResponse(BaseModel):
     result: Any
     is_error: bool
+
+
+def _request_matches_claim_scope(req: ToolCallRequest, claims: TokenClaims) -> bool:
+    if req.run_id != claims.run_id or req.workspace_id != claims.workspace_id:
+        return False
+    if req.scope.type != claims.scope.type:
+        return False
+    if claims.scope.type == "workspace":
+        return (
+            req.workflow_id == claims.workflow_id
+            and req.workflow_run_id == claims.workflow_run_id
+            and req.workflow_session_id == claims.workflow_session_id
+            and req.workflow_step_id == claims.workflow_step_id
+            and req.target_id == claims.target_id
+            and req.target_type == claims.target_type
+        )
+    return req.target_id == claims.target_id and req.target_type == claims.target_type
 
 
 @router.post("/tool-call", response_model=ToolCallResponse)
@@ -97,25 +145,58 @@ async def execute_tool_call(
 
     start_time = time.time()
     # Verify claims match request
-    if req.run_id != claims.run_id or req.workspace_id != claims.workspace_id:
+    if not _request_matches_claim_scope(req, claims):
         logger.warning(
             "tool_call_forbidden",
             run_id=req.run_id,
             workspace_id=req.workspace_id,
             claims_run_id=claims.run_id,
             claims_workspace_id=claims.workspace_id,
+            scope_type=req.scope.type,
+            claims_scope_type=claims.scope.type,
+            workflow_id=req.workflow_id,
+            claims_workflow_id=claims.workflow_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
-    if req.target_id != claims.target_id or req.target_type != claims.target_type:
-        raise HTTPException(
-            status_code=403,
-            detail="Target scope mismatch between token and request",
-        )
     if not is_tool_permitted(req.tool, claims.permissions.allowed_tools):
         raise HTTPException(
             status_code=403,
             detail=f"Tool {req.tool} is not permitted for this run",
         )
+
+    if claims.scope.type == "workspace":
+        try:
+            mcp_response = await post_builtin_mcp_tool(
+                BUILTIN_MCP_SERVER_URL,
+                req.tool,
+                req.arguments,
+                WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS,
+                {"Authorization": f"Bearer {token_context.token}"},
+            )
+            is_error = mcp_response.get("isError", False)
+            GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=is_error).inc()
+            GATEWAY_TOOL_CALL_LATENCY_MS.labels(tool=req.tool).observe(
+                (time.time() - start_time) * 1000
+            )
+            return ToolCallResponse(result=mcp_response.get("content", []), is_error=is_error)
+        except Exception as e:
+            GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=True).inc()
+            logger.warning(
+                "workflow_tool_call_execution_failed",
+                workspace_id=req.workspace_id,
+                workflow_id=req.workflow_id,
+                workflow_run_id=req.workflow_run_id,
+                tool=req.tool,
+                error=str(e),
+                exc_info=True,
+            )
+            return ToolCallResponse(
+                result={
+                    "code": ErrorCode.TOOL_EXECUTION_FAILED,
+                    "message": TOOL_EXECUTION_FAILED_MESSAGE,
+                },
+                is_error=True,
+            )
 
     # Resolve tool from registry
     tool = await tool_registry.get_tool(
