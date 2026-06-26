@@ -19,7 +19,8 @@
         "temperature",
         "max_output_tokens",
         "reasoning",
-        "tools"
+        "tools",
+        "native_tools"
       ],
       "streamResponseTypes": [
         "delta",
@@ -92,6 +93,7 @@
         "allowed_providers",
         "allowed_models",
         "allowed_tools",
+        "allowed_native_tools",
         "allowed_tool_operations?",
         "max_output_tokens"
       ],

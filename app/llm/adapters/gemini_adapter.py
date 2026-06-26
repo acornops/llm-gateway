@@ -118,8 +118,14 @@ class GeminiAdapter(LLMAdapter):
             generation_config_kwargs["system_instruction"] = system_instruction
         if req.max_output_tokens is not None:
             generation_config_kwargs["max_output_tokens"] = req.max_output_tokens
+        gemini_tools: list[Any] = []
         if req.tools:
-            generation_config_kwargs["tools"] = build_gemini_tools(req.tools)
+            gemini_tools.extend(build_gemini_tools(req.tools))
+        if any(tool.id == "web_search" for tool in req.native_tools):
+            gemini_tools.append(types.Tool(google_search=types.GoogleSearch()))
+        if gemini_tools:
+            generation_config_kwargs["tools"] = gemini_tools
+        if req.tools:
             generation_config_kwargs["tool_config"] = types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="AUTO")
             )

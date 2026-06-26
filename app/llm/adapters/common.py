@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.llm.service import ToolSpec
+from app.llm.service import NativeToolSpec, ToolSpec
 
 _OPENAI_DEFAULT_TEMPERATURE_ONLY_MODELS: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
 
@@ -92,9 +92,24 @@ def sanitize_gemini_schema(value: Any, in_properties: bool = False) -> Any:
     return value
 
 
-def build_openai_response_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def _web_search_domain_filters(native_tool: NativeToolSpec) -> tuple[list[str], list[str]]:
+    domain_filters = native_tool.config.get("domainFilters") or {}
+    if not isinstance(domain_filters, dict):
+        return [], []
+    allowed = domain_filters.get("allowedDomains") or []
+    blocked = domain_filters.get("blockedDomains") or []
+    return (
+        list(allowed) if isinstance(allowed, list) else [],
+        list(blocked) if isinstance(blocked, list) else [],
+    )
+
+
+def build_openai_response_tools(
+    tools: list[ToolSpec],
+    native_tools: list[NativeToolSpec] | None = None,
+) -> list[dict[str, Any]]:
     """Builds OpenAI Responses API function tool declarations."""
-    return [
+    declarations = [
         {
             "type": "function",
             "name": tool.name,
@@ -103,11 +118,28 @@ def build_openai_response_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
         }
         for tool in tools
     ]
+    for native_tool in native_tools or []:
+        if native_tool.id != "web_search":
+            continue
+        web_search: dict[str, Any] = {"type": "web_search"}
+        allowed, blocked = _web_search_domain_filters(native_tool)
+        filters: dict[str, Any] = {}
+        if allowed:
+            filters["allowed_domains"] = allowed
+        if blocked:
+            filters["blocked_domains"] = blocked
+        if filters:
+            web_search["filters"] = filters
+        declarations.append(web_search)
+    return declarations
 
 
-def build_anthropic_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def build_anthropic_tools(
+    tools: list[ToolSpec],
+    native_tools: list[NativeToolSpec] | None = None,
+) -> list[dict[str, Any]]:
     """Builds Anthropic Messages API tool declarations."""
-    return [
+    declarations = [
         {
             "name": tool.name,
             "description": tool.description or f"Execute tool '{tool.name}'.",
@@ -115,6 +147,20 @@ def build_anthropic_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
         }
         for tool in tools
     ]
+    for native_tool in native_tools or []:
+        if native_tool.id != "web_search":
+            continue
+        web_search: dict[str, Any] = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+        }
+        allowed, blocked = _web_search_domain_filters(native_tool)
+        if allowed:
+            web_search["allowed_domains"] = allowed
+        if blocked:
+            web_search["blocked_domains"] = blocked
+        declarations.append(web_search)
+    return declarations
 
 
 def build_gemini_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:

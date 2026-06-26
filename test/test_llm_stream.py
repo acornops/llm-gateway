@@ -28,6 +28,7 @@ BASE_CLAIMS = {
     "permissions": {
         "allowed_providers": ["openai"],
         "allowed_tools": ["*"],
+        "allowed_native_tools": [],
         "max_output_tokens": 4096,
     },
 }
@@ -205,6 +206,153 @@ async def test_llm_stream_enforces_permission_checks(
                 )
 
             assert response.status_code == 403
+            assert expected_detail in response.json()["detail"].lower()
+            mock_get_secret.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_allows_native_web_search_when_claim_matches():
+    native_tools = [
+        {
+            "id": "web_search",
+            "config": {
+                "domainFilters": {
+                    "allowedDomains": ["docs.example.com"],
+                    "blockedDomains": ["ads.example.com"],
+                }
+            },
+        }
+    ]
+    mock_claims = build_token_claims(
+        permissions={"allowed_native_tools": deepcopy(native_tools)}
+    )
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        mock_get_secret.return_value = "fake-api-key"
+
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            with patch("app.llm.adapters.openai_adapter.OpenAIAdapter.stream") as mock_stream:
+
+                async def mock_generator(*args, **kwargs):
+                    yield StreamEvent(
+                        type="final",
+                        usage={"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+                    )
+
+                mock_stream.side_effect = mock_generator
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as ac:
+                    response = await ac.post(
+                        "/api/v1/llm/generations:stream",
+                        json=build_llm_stream_payload(native_tools=native_tools),
+                        headers={"Authorization": "Bearer fake-token"},
+                    )
+
+            assert response.status_code == 200
+            mock_get_secret.assert_awaited_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("claims_native_tools", "request_native_tools", "expected_status", "expected_detail"),
+    [
+        (
+            [],
+            [{"id": "web_search", "config": {"domainFilters": {}}}],
+            403,
+            "native tool(s) not allowed",
+        ),
+        (
+            [{"id": "web_search", "config": {"domainFilters": {"allowedDomains": []}}}],
+            [{"id": "web_search", "config": {"domainFilters": {"blockedDomains": []}}}],
+            403,
+            "native tool(s) not allowed",
+        ),
+        (
+            [
+                {
+                    "id": "web_search",
+                    "config": {
+                        "domainFilters": {
+                            "allowedDomains": ["docs.example.com"],
+                            "blockedDomains": [],
+                        }
+                    },
+                }
+            ],
+            [
+                {
+                    "id": "web_search",
+                    "config": {
+                        "domainFilters": {
+                            "allowedDomains": ["docs.example.com"],
+                            "blockedDomains": [],
+                        }
+                    },
+                }
+            ],
+            400,
+            "does not support alloweddomains",
+        ),
+    ],
+)
+async def test_llm_stream_rejects_unapproved_or_unsupported_native_tools(
+    claims_native_tools: list[dict[str, object]],
+    request_native_tools: list[dict[str, object]],
+    expected_status: int,
+    expected_detail: str,
+):
+    provider = "gemini" if expected_status == 400 else "openai"
+    mock_claims = build_token_claims(
+        permissions={
+            "allowed_providers": [provider],
+            "allowed_native_tools": deepcopy(claims_native_tools),
+        }
+    )
+    payload = build_llm_stream_payload(
+        provider=provider,
+        model="gemini-2.0-flash" if provider == "gemini" else "gpt-4",
+        native_tools=request_native_tools,
+    )
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=payload,
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == expected_status
             assert expected_detail in response.json()["detail"].lower()
             mock_get_secret.assert_not_awaited()
         finally:

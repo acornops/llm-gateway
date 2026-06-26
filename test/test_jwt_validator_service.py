@@ -100,7 +100,10 @@ async def test_jwt_validator_returns_workspace_workflow_claims(monkeypatch: pyte
         "app.auth.jwt_validator.jwks_manager.get_signing_key",
         AsyncMock(return_value="key"),
     )
-    monkeypatch.setattr("app.auth.jwt_validator.jwt.decode", lambda *args, **kwargs: _workflow_payload())
+    monkeypatch.setattr(
+        "app.auth.jwt_validator.jwt.decode",
+        lambda *args, **kwargs: _workflow_payload(),
+    )
     monkeypatch.setattr("app.auth.jwt_validator.GATEWAY_JWT_VALIDATIONS_TOTAL", metrics)
     monkeypatch.setattr("app.auth.jwt_validator.settings.AUTH_AUDIENCE", "audience")
     monkeypatch.setattr("app.auth.jwt_validator.settings.AUTH_ISSUER", "issuer")

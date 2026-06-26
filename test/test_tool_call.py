@@ -150,7 +150,7 @@ async def test_tool_call_contract():
     [
         ({"allowed_tools": ["approved_tool"]}, {}, "not permitted"),
         ({"allowed_tools": []}, {}, "not permitted"),
-        ({}, {"target_id": "other-cluster"}, "target scope mismatch"),
+        ({}, {"target_id": "other-cluster"}, "scope mismatch"),
     ],
 )
 async def test_tool_call_rejects_permission_and_scope_mismatches(
@@ -556,7 +556,7 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
 
 
 @pytest.mark.anyio
-async def test_workspace_workflow_tool_call_forwards_run_token_to_control_plane_bridge_without_target_registry():
+async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without_target_registry():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
         target_id=None,

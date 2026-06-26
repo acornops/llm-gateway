@@ -66,6 +66,56 @@ def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims)
     return req.target_id == claims.target_id and req.target_type == claims.target_type
 
 
+def _domain_filters(config: dict[str, Any]) -> tuple[list[str], list[str]]:
+    filters = config.get("domainFilters") or {}
+    if not isinstance(filters, dict):
+        return [], []
+    allowed = filters.get("allowedDomains") or []
+    blocked = filters.get("blockedDomains") or []
+    return (
+        list(allowed) if isinstance(allowed, list) else [],
+        list(blocked) if isinstance(blocked, list) else [],
+    )
+
+
+def _validate_native_tools(req: NormalizedLLMRequest, claims: TokenClaims) -> None:
+    if not req.native_tools:
+        return
+    allowed_by_id = {
+        tool.id: tool.config
+        for tool in claims.permissions.allowed_native_tools
+    }
+    disallowed: list[str] = []
+    for tool in req.native_tools:
+        allowed_config = allowed_by_id.get(tool.id)
+        if allowed_config is None or tool.config != allowed_config:
+            disallowed.append(tool.id)
+    if disallowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Native tool(s) not allowed for this run: {', '.join(disallowed)}",
+        )
+
+    if req.provider == "gemini":
+        for tool in req.native_tools:
+            if tool.id != "web_search":
+                continue
+            allowed_domains, blocked_domains = _domain_filters(tool.config)
+            if allowed_domains:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Gemini web_search does not support allowedDomains policy",
+                )
+            if blocked_domains:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Gemini web_search domain filtering is not supported by the "
+                        "current Gemini API surface"
+                    ),
+                )
+
+
 def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
     if any(LIVE_TOOL_RESULTS_MARKER in message.content for message in req.messages):
         return None
@@ -246,6 +296,8 @@ async def stream_generation(
                 status_code=403,
                 detail=f"Tool(s) not allowed for this run: {', '.join(disallowed)}",
             )
+
+    _validate_native_tools(req, claims)
 
     if settings.LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES:
         logger.info(

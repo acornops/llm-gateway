@@ -170,6 +170,63 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
 
 
 @pytest.mark.anyio
+async def test_anthropic_adapter_maps_native_web_search_domain_filters(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                    )
+                ]
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    payload = _request(include_tools=False).model_dump()
+    payload["native_tools"] = [
+        {
+            "id": "web_search",
+            "config": {
+                "domainFilters": {
+                    "allowedDomains": ["docs.example.com"],
+                    "blockedDomains": ["ads.example.com"],
+                }
+            },
+        }
+    ]
+    req = NormalizedLLMRequest(**payload)
+
+    events = [event async for event in AnthropicAdapter().stream(req, "anthropic-key")]
+
+    assert [event.type for event in events] == ["final"]
+    assert messages.calls[0]["tools"] == [
+        {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "allowed_domains": ["docs.example.com"],
+            "blocked_domains": ["ads.example.com"],
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_anthropic_adapter_retries_retryable_failures_before_stream_starts(
     monkeypatch: pytest.MonkeyPatch,
 ):

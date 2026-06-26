@@ -135,6 +135,61 @@ async def test_openai_adapter_uses_responses_max_output_tokens(
 
 
 @pytest.mark.anyio
+async def test_openai_adapter_maps_native_web_search_domain_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def stream_response():
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+            ),
+        )
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            del api_key
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+
+    payload = _build_request("gpt-4o-mini").model_dump()
+    payload["native_tools"] = [
+        {
+            "id": "web_search",
+            "config": {
+                "domainFilters": {
+                    "allowedDomains": ["docs.example.com"],
+                    "blockedDomains": ["ads.example.com"],
+                }
+            },
+        }
+    ]
+    req = NormalizedLLMRequest(**payload)
+
+    events = [event async for event in OpenAIAdapter().stream(req, "fake-key")]
+
+    assert any(event.type == "final" for event in events)
+    assert calls[0]["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {
+                "allowed_domains": ["docs.example.com"],
+                "blocked_domains": ["ads.example.com"],
+            },
+        }
+    ]
+    assert calls[0]["tool_choice"] == "auto"
+
+
+@pytest.mark.anyio
 async def test_openai_adapter_maps_reasoning_summaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

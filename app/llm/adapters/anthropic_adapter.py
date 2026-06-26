@@ -55,7 +55,7 @@ class AnthropicAdapter(LLMAdapter):
         """
         client = AsyncAnthropic(api_key=api_key)
         tool_calls_map = {}
-        anthropic_tools = build_anthropic_tools(req.tools)
+        anthropic_tools = build_anthropic_tools(req.tools, req.native_tools)
         max_tokens = req.max_output_tokens or self.DEFAULT_MAX_TOKENS
 
         stream_kwargs = {

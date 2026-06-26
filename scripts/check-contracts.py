@@ -71,6 +71,7 @@ for field in (
     "model: str",
     "messages: list[Message]",
     "tools: list[ToolSpec] = []",
+    "native_tools: list[NativeToolSpec] = []",
     "temperature: float = 0.7",
     "max_output_tokens: int | None = None",
 ):
@@ -91,6 +92,7 @@ for field in (
     "allowed_providers: list[str] = []",
     "allowed_models: list[str] = []",
     "allowed_tools: list[str] = []",
+    "allowed_native_tools: list[NativeToolPermission] = []",
     'allowed_tool_operations: dict[str, Literal["read", "write"]] = {}',
     "context_grants: list[str] = []",
     "max_output_tokens: int | None = None",
@@ -99,6 +101,27 @@ for field in (
 
 for field in CONTROL_PLANE_CONTRACT["runJwtPermissionFields"]:
     expect_in(DOC, field.replace("?", ""), "Documented run JWT permission field")
+
+for needle in (
+    "class NativeToolPermission",
+    "id: str",
+    "config: dict[str, Any] = Field(default_factory=dict)",
+):
+    expect_in(CLAIMS_SOURCE, needle, "Native tool permission claim model")
+
+for needle in (
+    "class NativeToolSpec",
+    'id: Literal["web_search"]',
+    "config: dict[str, Any] = Field(default_factory=dict)",
+):
+    expect_in(LLM_SERVICE_SOURCE, needle, "Native tool request model")
+
+for needle in (
+    "requested built-in native tool",
+    "allowed_native_tools",
+    "For Gemini, `web_search`",
+):
+    expect_in(DOC, needle, "Documented native tool authorization")
 
 for needle in (
     'capability: Literal["read", "write"] = "write"',

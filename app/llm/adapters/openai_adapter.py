@@ -44,7 +44,7 @@ class OpenAIAdapter(LLMAdapter):
         """
         client = AsyncOpenAI(api_key=api_key)
 
-        openai_tools = build_openai_response_tools(req.tools)
+        openai_tools = build_openai_response_tools(req.tools, req.native_tools)
         include_temperature = supports_openai_custom_temperature(req.model)
         summary_requested = reasoning_summaries_enabled(req)
 

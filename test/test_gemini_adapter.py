@@ -132,6 +132,52 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
 
 
 @pytest.mark.anyio
+async def test_gemini_adapter_maps_native_web_search_without_domain_filters(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    class FakeModels:
+        async def generate_content_stream(self, **kwargs):
+            calls.append(kwargs)
+            return _chunk_stream()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.aio = SimpleNamespace(models=FakeModels())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
+
+    payload = _request().model_dump()
+    payload["tools"] = []
+    payload["native_tools"] = [
+        {
+            "id": "web_search",
+            "config": {
+                "domainFilters": {
+                    "allowedDomains": [],
+                    "blockedDomains": [],
+                }
+            },
+        }
+    ]
+    req = NormalizedLLMRequest(**payload)
+
+    events = [event async for event in GeminiAdapter().stream(req, "gemini-key")]
+
+    assert [event.type for event in events] == ["delta", "tool_call", "final"]
+    config = calls[0]["config"]
+    assert config.tools[0].google_search is not None
+    assert config.tool_config is None
+
+
+@pytest.mark.anyio
 async def test_gemini_adapter_passes_system_messages_as_system_instruction(
     monkeypatch: pytest.MonkeyPatch,
 ):

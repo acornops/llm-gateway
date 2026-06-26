@@ -28,6 +28,11 @@ class ToolSpec(BaseModel):
     )
 
 
+class NativeToolSpec(BaseModel):
+    id: Literal["web_search"]
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 SUPPORTED_LLM_PROVIDERS = ("openai", "anthropic", "gemini")
 
 
@@ -63,6 +68,7 @@ class NormalizedLLMRequest(BaseModel):
     model: str = Field(examples=["gemini-2.0-flash"])
     messages: list[Message]
     tools: list[ToolSpec] = []
+    native_tools: list[NativeToolSpec] = []
     temperature: float = 0.7
     max_output_tokens: int | None = None
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
@@ -84,7 +90,9 @@ class NormalizedLLMRequest(BaseModel):
             if not value
         ]
         if missing:
-            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+            raise ValueError(
+                f"workspace workflow scope missing required fields: {', '.join(missing)}"
+            )
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
         return self

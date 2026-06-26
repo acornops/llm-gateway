@@ -57,6 +57,7 @@ Request body:
 - optional `max_output_tokens`
 - optional `reasoning.{summary_mode,effort}`
 - optional `tools[]`
+- optional `native_tools[]` for built-in runtime tools. v1 supports `web_search` with optional `config.domainFilters.allowedDomains` and `config.domainFilters.blockedDomains`.
 
 Response media type:
 
@@ -74,7 +75,7 @@ Response event shapes:
 
 Reasoning summary events contain provider-generated summaries only. The gateway must not emit raw chain-of-thought, encrypted reasoning items, thinking signatures, provider credentials, or provider-internal reasoning state.
 
-Local development may set `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` to make the gateway emit deterministic NDJSON events for smoke tests after all JWT scope, provider/model, and tool-allowlist checks pass. This mode is rejected in production settings and is not a production provider contract.
+Local development may set `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` to make the gateway emit deterministic NDJSON events for smoke tests after all JWT scope, provider/model, tool-allowlist, and native-tool allowlist checks pass. This mode is rejected in production settings and is not a production provider contract.
 
 ### Tool-call API
 
@@ -114,10 +115,13 @@ The JWT must validate against control-plane JWKS and include:
 - `permissions.allowed_providers`
 - `permissions.allowed_models`
 - `permissions.allowed_tools`
+- `permissions.allowed_native_tools`
 - optional `permissions.allowed_tool_operations` mapping tool names to `read` or `write` for downstream audit classification. This field is accepted but does not alter gateway authorization.
 - `permissions.max_output_tokens`
 
 This repo must reject requests whose body scope does not match token scope.
+It must also reject any requested built-in native tool that is missing from `permissions.allowed_native_tools`, or whose requested config does not exactly match the run-scoped claim.
+For Gemini, `web_search` rejects non-empty `allowedDomains` and currently rejects domain filtering when blocked domains are requested, because the supported request surface does not expose equivalent domain filter controls.
 
 Workspace workflow runs continue to rely on the control-plane-signed JWT. Workflow tokens add workflow scope fields such as `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current step id, allowed tools, allowed tool operations, and context grants. The gateway enforces those token claims and must not infer workflow MCP access from management-console UI state.
 For `POST /api/v1/mcp/tool-call`, target-scoped runs must include `target_id` and `target_type`; workspace workflow runs must include `scope.type = "workspace"` plus the workflow identifiers and may omit target fields unless the workflow step is explicitly target-bound. Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge with the original run-scoped JWT, without consulting target MCP registry state.

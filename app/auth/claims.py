@@ -1,8 +1,13 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.target_types import TargetType
+
+
+class NativeToolPermission(BaseModel):
+    id: str
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class Scope(BaseModel):
@@ -13,6 +18,7 @@ class Permissions(BaseModel):
     allowed_providers: list[str] = []
     allowed_models: list[str] = []
     allowed_tools: list[str] = []
+    allowed_native_tools: list[NativeToolPermission] = []
     allowed_tool_operations: dict[str, Literal["read", "write"]] = {}
     context_grants: list[str] = []
     max_output_tokens: int | None = None
@@ -53,7 +59,9 @@ class TokenClaims(BaseModel):
             if not value
         ]
         if missing:
-            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+            raise ValueError(
+                f"workspace workflow scope missing required fields: {', '.join(missing)}"
+            )
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
         return self
