@@ -13,6 +13,7 @@ from app.llm.adapters.registry import get_adapter, is_provider_enabled
 from app.llm.service import (
     NormalizedLLMRequest,
     StreamEvent,
+    model_reasoning_enabled,
     normalize_provider_name,
     reasoning_summaries_enabled,
 )
@@ -197,6 +198,7 @@ async def stream_generation(
 ):
     # Audit log: request received
     summaries_enabled = reasoning_summaries_enabled(req)
+    model_reasoning_requested = model_reasoning_enabled(req)
     logger.info(
         "llm_request_received",
         run_id=req.run_id,
@@ -204,6 +206,8 @@ async def stream_generation(
         provider=req.provider,
         model=req.model,
         reasoning_summary_mode=req.reasoning.summary_mode,
+        reasoning_effort=req.reasoning.effort,
+        model_reasoning_requested=model_reasoning_requested,
         reasoning_summary_requested=summaries_enabled,
         sub=claims.sub,
     )

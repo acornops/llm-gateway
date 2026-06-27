@@ -13,6 +13,7 @@ from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
     StreamEvent,
+    model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
 from app.resilience.outbound import (
@@ -69,8 +70,8 @@ def _extract_text_parts(chunk: Any) -> list[tuple[str, bool]]:
     return parts
 
 
-def _thinking_config_kwargs(model: str, effort: str) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"include_thoughts": True}
+def _thinking_config_kwargs(model: str, effort: str, include_thoughts: bool) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"include_thoughts": include_thoughts}
     normalized = model.lower()
     if "gemini-3" in normalized and effort != "default":
         kwargs["thinking_level"] = {
@@ -100,6 +101,7 @@ class GeminiAdapter(LLMAdapter):
         client = genai.Client(api_key=api_key)
         tool_calls_count = 0
         tool_call_seq = 0
+        summary_requested = reasoning_summaries_enabled(req)
 
         system_instruction = "\n\n".join(
             m.content for m in req.messages if m.role == "system"
@@ -129,9 +131,9 @@ class GeminiAdapter(LLMAdapter):
             generation_config_kwargs["tool_config"] = types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="AUTO")
             )
-        if reasoning_summaries_enabled(req):
+        if model_reasoning_enabled(req):
             generation_config_kwargs["thinking_config"] = types.ThinkingConfig(
-                **_thinking_config_kwargs(req.model, req.reasoning.effort)
+                **_thinking_config_kwargs(req.model, req.reasoning.effort, summary_requested)
             )
 
         request_config = types.GenerateContentConfig(**generation_config_kwargs)
@@ -164,8 +166,8 @@ class GeminiAdapter(LLMAdapter):
                         text_parts = _extract_text_parts(chunk)
                         if text_parts:
                             for text, is_thought in text_parts:
-                                emitted_event = True
-                                if is_thought:
+                                if is_thought and summary_requested:
+                                    emitted_event = True
                                     summary_seen = True
                                     summary_text += text
                                     yield StreamEvent(
@@ -173,7 +175,8 @@ class GeminiAdapter(LLMAdapter):
                                         text=text,
                                         provider="gemini",
                                     )
-                                else:
+                                elif not is_thought:
+                                    emitted_event = True
                                     yield StreamEvent(type="delta", text=text)
                         else:
                             try:
@@ -195,7 +198,7 @@ class GeminiAdapter(LLMAdapter):
                                 arguments=_function_call_args(fn),
                             )
 
-                    if reasoning_summaries_enabled(req):
+                    if summary_requested:
                         if summary_seen and summary_text:
                             emitted_event = True
                             yield StreamEvent(

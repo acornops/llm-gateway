@@ -11,6 +11,7 @@ from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
     StreamEvent,
+    model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
 from app.resilience.outbound import (
@@ -37,6 +38,10 @@ def _thinking_budget(max_tokens: int, effort: str) -> int:
     return max(1, min(requested, max_tokens - 1))
 
 
+def _can_request_thinking(max_tokens: int) -> bool:
+    return max_tokens > 1
+
+
 def _uses_adaptive_thinking(model: str) -> bool:
     normalized = model.lower()
     return "4-6" in normalized or "4.6" in normalized
@@ -57,6 +62,7 @@ class AnthropicAdapter(LLMAdapter):
         tool_calls_map = {}
         anthropic_tools = build_anthropic_tools(req.tools, req.native_tools)
         max_tokens = req.max_output_tokens or self.DEFAULT_MAX_TOKENS
+        summary_requested = reasoning_summaries_enabled(req)
 
         stream_kwargs = {
             "model": req.model,
@@ -72,20 +78,22 @@ class AnthropicAdapter(LLMAdapter):
         }
         if anthropic_tools:
             stream_kwargs["tools"] = anthropic_tools
-        if reasoning_summaries_enabled(req):
+        if model_reasoning_enabled(req) and _can_request_thinking(max_tokens):
             if _uses_adaptive_thinking(req.model):
                 thinking: dict[str, object] = {
                     "type": "adaptive",
-                    "display": "summarized",
                 }
+                if summary_requested:
+                    thinking["display"] = "summarized"
                 if req.reasoning.effort != "default":
                     thinking["effort"] = req.reasoning.effort
             else:
                 thinking = {
                     "type": "enabled",
                     "budget_tokens": _thinking_budget(max_tokens, req.reasoning.effort),
-                    "display": "summarized",
                 }
+                if summary_requested:
+                    thinking["display"] = "summarized"
             stream_kwargs["thinking"] = thinking
 
         dependency_key = "provider:anthropic"
@@ -119,7 +127,7 @@ class AnthropicAdapter(LLMAdapter):
                                 }
                             elif event.content_block.type == "thinking":
                                 block_text = str(getattr(event.content_block, "thinking", "") or "")
-                                if block_text:
+                                if block_text and summary_requested:
                                     thinking_text += block_text
                                     emitted_event = True
                                     yield StreamEvent(
@@ -133,7 +141,7 @@ class AnthropicAdapter(LLMAdapter):
                                 yield StreamEvent(type="delta", text=event.delta.text)
                             elif event.delta.type == "thinking_delta":
                                 delta_text = str(getattr(event.delta, "thinking", "") or "")
-                                if delta_text:
+                                if delta_text and summary_requested:
                                     thinking_text += delta_text
                                     emitted_event = True
                                     yield StreamEvent(
@@ -156,7 +164,7 @@ class AnthropicAdapter(LLMAdapter):
                                     tool=tc["name"],
                                     arguments=json.loads(tc["input"]) if tc["input"] else {},
                                 )
-                            elif thinking_text:
+                            elif summary_requested and thinking_text:
                                 emitted_event = True
                                 yield StreamEvent(
                                     type="reasoning_summary_completed",
@@ -169,7 +177,7 @@ class AnthropicAdapter(LLMAdapter):
                             pass
                         elif event.type == "message_delta" and event.usage:
                             if (
-                                reasoning_summaries_enabled(req)
+                                summary_requested
                                 and not thinking_summary_emitted
                                 and not unavailable_emitted
                             ):

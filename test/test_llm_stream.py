@@ -11,7 +11,7 @@ from app.examples import (
     EXAMPLE_TARGET_ID,
     EXAMPLE_WORKSPACE_ID,
 )
-from app.llm.service import StreamEvent
+from app.llm.service import NormalizedLLMRequest, StreamEvent
 from app.main import app
 
 BASE_CLAIMS = {
@@ -58,6 +58,12 @@ def build_llm_stream_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+@pytest.mark.parametrize("max_output_tokens", [0, -1])
+def test_normalized_llm_request_rejects_non_positive_max_output_tokens(max_output_tokens: int):
+    with pytest.raises(ValueError):
+        NormalizedLLMRequest(**build_llm_stream_payload(max_output_tokens=max_output_tokens))
 
 
 @pytest.mark.anyio

@@ -53,6 +53,10 @@ def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
     return req.reasoning.summary_mode != "off"
 
 
+def model_reasoning_enabled(req: "NormalizedLLMRequest") -> bool:
+    return reasoning_summaries_enabled(req) or req.reasoning.effort != "default"
+
+
 class NormalizedLLMRequest(BaseModel):
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
@@ -73,7 +77,7 @@ class NormalizedLLMRequest(BaseModel):
     tools: list[ToolSpec] = []
     native_tools: list[NativeToolSpec] = []
     temperature: float = 0.7
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1)
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
 
     @model_validator(mode="after")

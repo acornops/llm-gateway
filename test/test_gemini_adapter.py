@@ -17,7 +17,7 @@ from app.llm.adapters.gemini_adapter import (
     _extract_function_calls,
     _function_call_args,
 )
-from app.llm.service import NormalizedLLMRequest
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig
 from app.resilience.outbound import CircuitOpenError
 
 
@@ -129,6 +129,74 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
         "output_tokens": 4,
         "tool_calls": 1,
     }
+
+
+@pytest.mark.anyio
+async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    async def thought_stream():
+        yield SimpleNamespace(
+            text=None,
+            function_calls=[],
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[SimpleNamespace(text="hidden summary", thought=True)]
+                    )
+                )
+            ],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=5,
+                candidates_token_count=2,
+                thoughts_token_count=3,
+            ),
+        )
+
+    class FakeModels:
+        async def generate_content_stream(self, **kwargs):
+            calls.append(kwargs)
+            return thought_stream()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.aio = SimpleNamespace(models=FakeModels())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
+
+    req = _request().model_copy(
+        update={
+            "model": "gemini-2.5-pro",
+            "reasoning": ReasoningConfig(summary_mode="off", effort="high"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in GeminiAdapter().stream(req, "gemini-key")
+    ]
+
+    thinking_config = calls[0]["config"].thinking_config
+    assert thinking_config.include_thoughts is False
+    assert thinking_config.thinking_budget == 8192
+    assert events == [
+        {
+            "type": "final",
+            "usage": {
+                "input_tokens": 5,
+                "output_tokens": 2,
+                "tool_calls": 0,
+                "reasoning_tokens": 3,
+            },
+        }
+    ]
 
 
 @pytest.mark.anyio

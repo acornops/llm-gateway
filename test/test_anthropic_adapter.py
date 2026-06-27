@@ -12,7 +12,7 @@ from app.examples import (
 )
 from app.llm.adapters import anthropic_adapter
 from app.llm.adapters.anthropic_adapter import AnthropicAdapter
-from app.llm.service import NormalizedLLMRequest
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig
 from app.resilience.outbound import CircuitOpenError
 
 
@@ -223,6 +223,116 @@ async def test_anthropic_adapter_maps_native_web_search_domain_filters(
             "allowed_domains": ["docs.example.com"],
             "blocked_domains": ["ads.example.com"],
         }
+    ]
+
+
+@pytest.mark.anyio
+async def test_anthropic_adapter_sends_thinking_effort_without_streaming_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=0,
+                        delta=SimpleNamespace(type="thinking_delta", thinking="hidden summary"),
+                    ),
+                    SimpleNamespace(
+                        type="message_delta",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                    ),
+                ]
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    req = _request(include_tools=False).model_copy(
+        update={"reasoning": ReasoningConfig(summary_mode="off", effort="high")}
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in AnthropicAdapter().stream(req, "anthropic-key")
+    ]
+
+    assert messages.calls[0]["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 127,
+    }
+    assert events == [
+        {
+            "type": "final",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_anthropic_adapter_omits_thinking_when_token_budget_cannot_support_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                    ),
+                ]
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    req = _request(include_tools=False).model_copy(
+        update={
+            "max_output_tokens": 1,
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="high"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in AnthropicAdapter().stream(req, "anthropic-key")
+    ]
+
+    assert "thinking" not in messages.calls[0]
+    assert events == [
+        {
+            "type": "reasoning_summary_unavailable",
+            "provider": "anthropic",
+            "reason": "provider_omitted",
+        },
+        {
+            "type": "final",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+        },
     ]
 
 

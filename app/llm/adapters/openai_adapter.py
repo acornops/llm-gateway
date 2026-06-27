@@ -16,6 +16,7 @@ from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
     StreamEvent,
+    model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
 from app.resilience.outbound import (
@@ -47,6 +48,7 @@ class OpenAIAdapter(LLMAdapter):
         openai_tools = build_openai_response_tools(req.tools, req.native_tools)
         include_temperature = supports_openai_custom_temperature(req.model)
         summary_requested = reasoning_summaries_enabled(req)
+        reasoning_requested = model_reasoning_enabled(req)
 
         def build_request_kwargs(include_temp: bool, include_reasoning: bool) -> dict:
             request_kwargs = {
@@ -62,10 +64,13 @@ class OpenAIAdapter(LLMAdapter):
                 request_kwargs["tools"] = openai_tools
                 request_kwargs["tool_choice"] = "auto"
             if include_reasoning:
-                reasoning = {"summary": req.reasoning.summary_mode}
+                reasoning = {}
+                if summary_requested:
+                    reasoning["summary"] = req.reasoning.summary_mode
                 if req.reasoning.effort != "default":
                     reasoning["effort"] = req.reasoning.effort
-                request_kwargs["reasoning"] = reasoning
+                if reasoning:
+                    request_kwargs["reasoning"] = reasoning
             return request_kwargs
 
         dependency_key = "provider:openai"
@@ -83,7 +88,7 @@ class OpenAIAdapter(LLMAdapter):
                 stream = None
                 compatibility_attempts_remaining = 3
                 current_include_temperature = include_temperature
-                current_include_reasoning = summary_requested
+                current_include_reasoning = reasoning_requested
                 while stream is None and compatibility_attempts_remaining > 0:
                     request_kwargs = build_request_kwargs(
                         current_include_temperature,
@@ -105,20 +110,21 @@ class OpenAIAdapter(LLMAdapter):
                             current_include_reasoning,
                         ):
                             current_include_reasoning = False
-                            logger.info(
-                                "provider_reasoning_summary_degraded",
-                                provider="openai",
-                                model=req.model,
-                                run_id=req.run_id,
-                                workspace_id=req.workspace_id,
-                                reason="unsupported_model",
-                            )
-                            yield StreamEvent(
-                                type="reasoning_summary_unavailable",
-                                provider="openai",
-                                reason="unsupported_model",
-                            )
-                            emitted_event = True
+                            if summary_requested:
+                                logger.info(
+                                    "provider_reasoning_summary_degraded",
+                                    provider="openai",
+                                    model=req.model,
+                                    run_id=req.run_id,
+                                    workspace_id=req.workspace_id,
+                                    reason="unsupported_model",
+                                )
+                                yield StreamEvent(
+                                    type="reasoning_summary_unavailable",
+                                    provider="openai",
+                                    reason="unsupported_model",
+                                )
+                                emitted_event = True
                             continue
                         raise
                 if stream is None:
@@ -135,6 +141,8 @@ class OpenAIAdapter(LLMAdapter):
                         continue
 
                     if event_type == "response.reasoning_summary_text.delta":
+                        if not summary_requested:
+                            continue
                         text = getattr(chunk, "delta", "") or ""
                         if text:
                             emitted_event = True
@@ -146,6 +154,8 @@ class OpenAIAdapter(LLMAdapter):
                         continue
 
                     if event_type == "response.reasoning_summary_text.done":
+                        if not summary_requested:
+                            continue
                         text = getattr(chunk, "text", "") or ""
                         if text:
                             completed_summary_keys.add((
@@ -162,6 +172,8 @@ class OpenAIAdapter(LLMAdapter):
                         continue
 
                     if event_type == "response.reasoning_summary_part.done":
+                        if not summary_requested:
+                            continue
                         part = getattr(chunk, "part", None)
                         text = getattr(part, "text", "") or ""
                         part_type = getattr(part, "type", "")

@@ -267,6 +267,59 @@ async def test_openai_adapter_maps_reasoning_summaries(
 
 
 @pytest.mark.anyio
+async def test_openai_adapter_sends_reasoning_effort_without_streaming_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def stream_response():
+        yield SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="hidden summary",
+        )
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=7),
+            ),
+        )
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            del api_key
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+
+    req = _build_request("gpt-5-mini").model_copy(
+        update={
+            "reasoning": ReasoningConfig(summary_mode="off", effort="high"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in OpenAIAdapter().stream(req, "fake-key")
+    ]
+
+    assert calls[0]["reasoning"] == {"effort": "high"}
+    assert events == [
+        {
+            "type": "final",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "tool_calls": 0,
+            },
+        },
+    ]
+
+
+@pytest.mark.anyio
 async def test_openai_adapter_maps_reasoning_summary_part_done_without_duplicate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
