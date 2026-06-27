@@ -30,8 +30,8 @@ PROVIDER_REQUEST_FAILED = "Provider request failed"
 
 def _thinking_budget(max_tokens: int, effort: str) -> int:
     requested = {
+        "off": 1024,
         "low": 1024,
-        "default": 2048,
         "medium": 4096,
         "high": 8192,
     }.get(effort, 2048)
@@ -44,7 +44,13 @@ def _can_request_thinking(max_tokens: int) -> bool:
 
 def _uses_adaptive_thinking(model: str) -> bool:
     normalized = model.lower()
-    return "4-6" in normalized or "4.6" in normalized
+    return (
+        "fable-5" in normalized
+        or "opus-4-8" in normalized
+        or "opus-4.8" in normalized
+        or "4-6" in normalized
+        or "4.6" in normalized
+    )
 
 
 class AnthropicAdapter(LLMAdapter):
@@ -85,7 +91,7 @@ class AnthropicAdapter(LLMAdapter):
                 }
                 if summary_requested:
                     thinking["display"] = "summarized"
-                if req.reasoning.effort != "default":
+                if req.reasoning.effort != "off":
                     thinking["effort"] = req.reasoning.effort
             else:
                 thinking = {

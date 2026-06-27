@@ -365,7 +365,7 @@ async def test_openai_adapter_maps_reasoning_summary_part_done_without_duplicate
 
     req = _build_request("gpt-4o-mini").model_copy(
         update={
-            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="off"),
         }
     )
     events = [
@@ -429,7 +429,7 @@ async def test_openai_adapter_retries_without_reasoning_when_unsupported(
 
     req = _build_request("gpt-4o-mini").model_copy(
         update={
-            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="off"),
         }
     )
     events = [
@@ -481,7 +481,7 @@ async def test_openai_adapter_does_not_degrade_unrelated_bad_request(
 
     req = _build_request("gpt-4o-mini").model_copy(
         update={
-            "reasoning": ReasoningConfig(summary_mode="auto", effort="default"),
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="off"),
         }
     )
     events = [

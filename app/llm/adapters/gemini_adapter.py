@@ -73,13 +73,13 @@ def _extract_text_parts(chunk: Any) -> list[tuple[str, bool]]:
 def _thinking_config_kwargs(model: str, effort: str, include_thoughts: bool) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"include_thoughts": include_thoughts}
     normalized = model.lower()
-    if "gemini-3" in normalized and effort != "default":
+    if "gemini-3" in normalized and effort != "off":
         kwargs["thinking_level"] = {
             "low": "LOW",
             "medium": "MEDIUM",
             "high": "HIGH",
         }.get(effort, "MEDIUM")
-    elif "gemini-2.5" in normalized and effort != "default":
+    elif "gemini-2.5" in normalized and effort != "off":
         kwargs["thinking_budget"] = {
             "low": 1024,
             "medium": 4096,

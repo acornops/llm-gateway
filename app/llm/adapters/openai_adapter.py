@@ -67,7 +67,7 @@ class OpenAIAdapter(LLMAdapter):
                 reasoning = {}
                 if summary_requested:
                     reasoning["summary"] = req.reasoning.summary_mode
-                if req.reasoning.effort != "default":
+                if req.reasoning.effort != "off":
                     reasoning["effort"] = req.reasoning.effort
                 if reasoning:
                     request_kwargs["reasoning"] = reasoning

@@ -227,6 +227,65 @@ async def test_anthropic_adapter_maps_native_web_search_domain_filters(
 
 
 @pytest.mark.anyio
+async def test_anthropic_adapter_uses_adaptive_thinking_for_current_adaptive_models(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                    ),
+                ]
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    req = _request(include_tools=False).model_copy(
+        update={
+            "model": "claude-fable-5",
+            "reasoning": ReasoningConfig(summary_mode="auto", effort="high"),
+        }
+    )
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in AnthropicAdapter().stream(req, "anthropic-key")
+    ]
+
+    assert messages.calls[0]["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "effort": "high",
+    }
+    assert events == [
+        {
+            "type": "reasoning_summary_unavailable",
+            "provider": "anthropic",
+            "reason": "provider_omitted",
+        },
+        {
+            "type": "final",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+        },
+    ]
+
+
+@pytest.mark.anyio
 async def test_anthropic_adapter_sends_thinking_effort_without_streaming_summaries(
     monkeypatch: pytest.MonkeyPatch,
 ):

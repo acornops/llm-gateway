@@ -42,7 +42,7 @@ def normalize_provider_name(provider: str) -> str:
 
 class ReasoningConfig(BaseModel):
     summary_mode: Literal["off", "auto", "concise", "detailed"] = "off"
-    effort: Literal["default", "low", "medium", "high"] = "default"
+    effort: Literal["off", "low", "medium", "high"] = "off"
 
 
 class RequestScope(BaseModel):
@@ -54,7 +54,7 @@ def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
 
 
 def model_reasoning_enabled(req: "NormalizedLLMRequest") -> bool:
-    return reasoning_summaries_enabled(req) or req.reasoning.effort != "default"
+    return reasoning_summaries_enabled(req) or req.reasoning.effort != "off"
 
 
 class NormalizedLLMRequest(BaseModel):
@@ -150,7 +150,7 @@ class NormalizedLLMRequest(BaseModel):
                 ],
                 "temperature": 0.2,
                 "max_output_tokens": 4000,
-                "reasoning": {"summary_mode": "off", "effort": "default"},
+                "reasoning": {"summary_mode": "off", "effort": "off"},
             }
         }
     }
