@@ -1,6 +1,10 @@
-from app.api.handlers_llm_stream import _request_matches_claim_scope as llm_request_matches_claim_scope
+from app.api.handlers_llm_stream import (
+    _request_matches_claim_scope as llm_request_matches_claim_scope,
+)
 from app.api.handlers_tool_call import (
     ToolCallRequest,
+)
+from app.api.handlers_tool_call import (
     _request_matches_claim_scope as tool_request_matches_claim_scope,
 )
 from app.auth.claims import Permissions, TokenClaims
