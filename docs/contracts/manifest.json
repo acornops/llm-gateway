@@ -10,8 +10,16 @@
       "streamRequestFields": [
         "run_id",
         "workspace_id",
+        "scope.type",
         "target_id",
         "target_type",
+        "workflow_id",
+        "workflow_run_id",
+        "workflow_session_id",
+        "workflow_step_id",
+        "agent_id",
+        "agent_version",
+        "trigger_id",
         "session_id",
         "provider",
         "model",
@@ -35,8 +43,16 @@
       "toolCallRequestFields": [
         "run_id",
         "workspace_id",
+        "scope.type",
         "target_id",
         "target_type",
+        "workflow_id",
+        "workflow_run_id",
+        "workflow_session_id",
+        "workflow_step_id",
+        "agent_id",
+        "agent_version",
+        "trigger_id",
         "tool",
         "arguments"
       ],
@@ -96,6 +112,17 @@
         "allowed_native_tools",
         "allowed_tool_operations?",
         "max_output_tokens"
+      ],
+      "runJwtWorkspaceScopeFields": [
+        "scope.type",
+        "workflow_id",
+        "workflow_run_id",
+        "workflow_session_id",
+        "workflow_step_id?",
+        "agent_id?",
+        "agent_version?",
+        "trigger_id?",
+        "permissions.context_grants"
       ],
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",
       "builtinBridge": {

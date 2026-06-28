@@ -56,6 +56,9 @@ class ToolCallRequest(BaseModel):
     workflow_run_id: str | None = None
     workflow_session_id: str | None = None
     workflow_step_id: str | None = None
+    agent_id: str | None = None
+    agent_version: int | None = None
+    trigger_id: str | None = None
     tool: str = Field(examples=["get_resource_logs"])
     arguments: dict[str, Any]
 
@@ -117,6 +120,9 @@ def _request_matches_claim_scope(req: ToolCallRequest, claims: TokenClaims) -> b
             and req.workflow_run_id == claims.workflow_run_id
             and req.workflow_session_id == claims.workflow_session_id
             and req.workflow_step_id == claims.workflow_step_id
+            and req.agent_id == claims.agent_id
+            and req.agent_version == claims.agent_version
+            and req.trigger_id == claims.trigger_id
             and req.target_id == claims.target_id
             and req.target_type == claims.target_type
         )
@@ -158,6 +164,12 @@ async def execute_tool_call(
             claims_scope_type=claims.scope.type,
             workflow_id=req.workflow_id,
             claims_workflow_id=claims.workflow_id,
+            agent_id=req.agent_id,
+            claims_agent_id=claims.agent_id,
+            agent_version=req.agent_version,
+            claims_agent_version=claims.agent_version,
+            trigger_id=req.trigger_id,
+            claims_trigger_id=claims.trigger_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
     if not is_tool_permitted(req.tool, claims.permissions.allowed_tools):

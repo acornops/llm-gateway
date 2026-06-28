@@ -47,8 +47,16 @@ Request body:
 
 - `run_id`
 - `workspace_id`
+- optional `scope.type`
 - `target_id`
 - `target_type`
+- optional `workflow_id`
+- optional `workflow_run_id`
+- optional `workflow_session_id`
+- optional `workflow_step_id`
+- optional `agent_id`
+- optional `agent_version`
+- optional `trigger_id`
 - `session_id`
 - `provider`
 - `model`
@@ -91,8 +99,16 @@ Request body:
 
 - `run_id`
 - `workspace_id`
+- optional `scope.type`
 - `target_id`
 - `target_type`
+- optional `workflow_id`
+- optional `workflow_run_id`
+- optional `workflow_session_id`
+- optional `workflow_step_id`
+- optional `agent_id`
+- optional `agent_version`
+- optional `trigger_id`
 - `tool`
 - `arguments`
 
@@ -111,6 +127,14 @@ The JWT must validate against control-plane JWKS and include:
 - `workspace_id`
 - `target_id`
 - `target_type`
+- optional `scope.type = "workspace"`
+- optional `workflow_id`
+- optional `workflow_run_id`
+- optional `workflow_session_id`
+- optional `workflow_step_id`
+- optional `agent_id`
+- optional `agent_version`
+- optional `trigger_id`
 - `session_id`
 - `permissions.allowed_providers`
 - `permissions.allowed_models`
@@ -123,7 +147,7 @@ This repo must reject requests whose body scope does not match token scope.
 It must also reject any requested built-in native tool that is missing from `permissions.allowed_native_tools`, or whose requested config does not exactly match the run-scoped claim.
 For Gemini, `web_search` rejects non-empty `allowedDomains` and currently rejects domain filtering when blocked domains are requested, because the supported request surface does not expose equivalent domain filter controls.
 
-Workspace workflow runs continue to rely on the control-plane-signed JWT. Workflow tokens add workflow scope fields such as `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current step id, allowed tools, allowed tool operations, and context grants. The gateway enforces those token claims and must not infer workflow MCP access from management-console UI state.
+Workspace workflow runs continue to rely on the control-plane-signed JWT. Workflow tokens add workflow scope fields such as `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current step id, optional `agent_id`, `agent_version`, `trigger_id`, allowed tools, allowed tool operations, and context grants. The gateway enforces those token claims and must not infer workflow MCP access from management-console UI state.
 For `POST /api/v1/mcp/tool-call`, target-scoped runs must include `target_id` and `target_type`; workspace workflow runs must include `scope.type = "workspace"` plus the workflow identifiers and may omit target fields unless the workflow step is explicitly target-bound. Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge with the original run-scoped JWT, without consulting target MCP registry state.
 
 ## Control-Plane Contract

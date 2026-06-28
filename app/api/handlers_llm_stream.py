@@ -59,6 +59,9 @@ def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims)
             and req.workflow_run_id == claims.workflow_run_id
             and req.workflow_session_id == claims.workflow_session_id
             and req.workflow_step_id == claims.workflow_step_id
+            and req.agent_id == claims.agent_id
+            and req.agent_version == claims.agent_version
+            and req.trigger_id == claims.trigger_id
             and req.target_id == claims.target_id
             and req.target_type == claims.target_type
         )
@@ -239,6 +242,9 @@ async def stream_generation(
             workflow_run_id=req.workflow_run_id,
             workflow_session_id=req.workflow_session_id,
             workflow_step_id=req.workflow_step_id,
+            agent_id=req.agent_id,
+            agent_version=req.agent_version,
+            trigger_id=req.trigger_id,
             claims_run_id=claims.run_id,
             claims_workspace_id=claims.workspace_id,
             claims_target_id=claims.target_id,
@@ -249,6 +255,9 @@ async def stream_generation(
             claims_workflow_run_id=claims.workflow_run_id,
             claims_workflow_session_id=claims.workflow_session_id,
             claims_workflow_step_id=claims.workflow_step_id,
+            claims_agent_id=claims.agent_id,
+            claims_agent_version=claims.agent_version,
+            claims_trigger_id=claims.trigger_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
 
@@ -310,6 +319,9 @@ async def stream_generation(
             workflow_id=req.workflow_id,
             workflow_run_id=req.workflow_run_id,
             workflow_step_id=req.workflow_step_id,
+            agent_id=req.agent_id,
+            agent_version=req.agent_version,
+            trigger_id=req.trigger_id,
             provider=req.provider,
             model=req.model,
         )

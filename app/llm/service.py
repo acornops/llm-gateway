@@ -63,6 +63,9 @@ class NormalizedLLMRequest(BaseModel):
     workflow_run_id: str | None = None
     workflow_session_id: str | None = None
     workflow_step_id: str | None = None
+    agent_id: str | None = None
+    agent_version: int | None = None
+    trigger_id: str | None = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     provider: Literal["openai", "anthropic", "gemini"] = Field(examples=["gemini"])
     model: str = Field(examples=["gemini-2.0-flash"])
