@@ -10,6 +10,7 @@ from app.api.mcp_admin_schemas import (
     ToolConfigResponse,
 )
 from app.config.settings import settings
+from app.internal_model_tools import is_reserved_internal_tool_name
 from app.mcp.header_policy import validate_auth_header_value
 from app.mcp.registry.models import McpServer, Tool
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -182,6 +183,12 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
             continue
         tool_name = raw_name.strip()
         if not tool_name or tool_name in seen_names:
+            continue
+        if is_reserved_internal_tool_name(tool_name):
+            logger.warning(
+                "mcp_tool_discovery_reserved_tool_skipped",
+                tool_name=tool_name,
+            )
             continue
         seen_names.add(tool_name)
 

@@ -67,6 +67,17 @@ Request body:
 - optional `tools[]`
 - optional `native_tools[]` for built-in runtime tools. v1 supports `web_search` with optional `config.domainFilters.allowedDomains` and `config.domainFilters.blockedDomains`.
 
+Execution-engine may include the internal model-only pseudo-tool `_acornops_load_skill`
+in `tools[]` so supported providers can request frozen target skill context. The
+gateway forwards this tool spec to the model but excludes it from
+`permissions.allowed_tools` enforcement because it is intercepted inside
+execution-engine and is never executable through MCP, approvals, public tool
+previews, or normal tool-call audit. Tool names beginning with `_acornops_` are
+reserved for AcornOps internal pseudo-tools. Streaming requests accept only the
+documented model-only names from that reserved namespace and reject any other
+`_acornops_` tool name before provider credentials are loaded. Reserved names
+must not be registered as MCP tools.
+
 Response media type:
 
 - `application/x-ndjson`
@@ -117,6 +128,12 @@ Response body:
 - `result`
 - `is_error`
 
+The tool-call API rejects internal model-only pseudo-tools such as
+`_acornops_load_skill` even when the run token has wildcard tool permission. Those
+pseudo-tools are only valid in streaming requests and are intercepted by
+execution-engine before MCP execution. The broader `_acornops_` prefix is also
+reserved and rejected for executable tool calls.
+
 ### Runtime auth expectations
 
 The JWT must validate against control-plane JWKS and include:
@@ -144,6 +161,7 @@ The JWT must validate against control-plane JWKS and include:
 - `permissions.max_output_tokens`
 
 This repo must reject requests whose body scope does not match token scope.
+It must reject requested executable tools that are missing from `permissions.allowed_tools`.
 It must also reject any requested built-in native tool that is missing from `permissions.allowed_native_tools`, or whose requested config does not exactly match the run-scoped claim.
 For Gemini, `web_search` rejects non-empty `allowedDomains` and currently rejects domain filtering when blocked domains are requested, because the supported request surface does not expose equivalent domain filter controls.
 

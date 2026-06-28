@@ -13,7 +13,11 @@ from app.api.handlers_mcp_admin import (
     _extract_discovery_error,
     _normalize_discovered_tools,
 )
-from app.api.mcp_admin_schemas import McpServerCreateRequest, McpServerUpdateRequest
+from app.api.mcp_admin_schemas import (
+    McpServerCreateRequest,
+    McpServerUpdateRequest,
+    ToolConfigRequest,
+)
 from app.main import app
 
 
@@ -92,6 +96,31 @@ def test_mcp_server_schema_accepts_public_headers_and_rejects_static_headers():
             server_url="https://mcp.example.com",
             static_headers={"Authorization": "Bearer leaked"},
         )
+
+
+def test_mcp_tool_schema_rejects_reserved_internal_tool_names():
+    with pytest.raises(ValidationError):
+        ToolConfigRequest(name="_acornops_load_skill")
+
+    with pytest.raises(ValidationError):
+        ToolConfigRequest(name="_acornops_custom")
+
+
+def test_mcp_tool_schema_rejects_blank_tool_names_after_trimming():
+    with pytest.raises(ValidationError):
+        ToolConfigRequest(name="   ")
+
+
+def test_mcp_tool_discovery_skips_reserved_internal_tool_names():
+    discovered = _normalize_discovered_tools({
+        "tools": [
+            {"name": "_acornops_load_skill", "description": "Reserved"},
+            {"name": "_acornops_custom", "description": "Reserved prefix"},
+            {"name": "example.lookup", "description": "Allowed"},
+        ]
+    })
+
+    assert [tool.name for tool in discovered] == ["example.lookup"]
 
 
 def test_mcp_server_schema_rejects_incomplete_secret_backed_auth():

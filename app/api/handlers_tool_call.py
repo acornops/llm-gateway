@@ -13,6 +13,7 @@ from app.auth.tool_permissions import is_tool_permitted
 from app.config.settings import settings
 from app.errors.codes import ErrorCode
 from app.examples import EXAMPLE_RUN_ID, EXAMPLE_TARGET_ID, EXAMPLE_WORKSPACE_ID
+from app.internal_model_tools import is_reserved_internal_tool_name
 from app.internal_transport import post_builtin_mcp_tool
 from app.mcp.header_policy import validate_auth_header_value
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -172,6 +173,14 @@ async def execute_tool_call(
             claims_trigger_id=claims.trigger_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
+    if is_reserved_internal_tool_name(req.tool):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Tool {req.tool} is reserved for internal model-only use "
+                "and cannot be executed"
+            ),
+        )
     if not is_tool_permitted(req.tool, claims.permissions.allowed_tools):
         raise HTTPException(
             status_code=403,

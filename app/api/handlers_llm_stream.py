@@ -9,6 +9,10 @@ from app.auth.claims import TokenClaims
 from app.auth.jwt_validator import get_current_claims
 from app.auth.tool_permissions import disallowed_tools
 from app.config.settings import settings
+from app.internal_model_tools import (
+    is_internal_model_only_tool_name,
+    is_reserved_internal_tool_name,
+)
 from app.llm.adapters.registry import get_adapter, is_provider_enabled
 from app.llm.service import (
     NormalizedLLMRequest,
@@ -43,6 +47,33 @@ def _is_missing_secret_error(exc: Exception) -> bool:
 def _schema_allows_empty_arguments(schema: dict[str, Any]) -> bool:
     required = schema.get("required")
     return not isinstance(required, list) or len(required) == 0
+
+
+def _authorization_checked_tool_names(req: NormalizedLLMRequest) -> list[str]:
+    return [
+        tool.name
+        for tool in req.tools
+        if not is_internal_model_only_tool_name(tool.name)
+    ]
+
+
+def _validate_stream_tool_names(req: NormalizedLLMRequest) -> None:
+    reserved_disallowed = [
+        tool.name
+        for tool in req.tools
+        if (
+            is_reserved_internal_tool_name(tool.name)
+            and not is_internal_model_only_tool_name(tool.name)
+        )
+    ]
+    if reserved_disallowed:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Tool(s) reserved for internal model-only use: "
+                f"{', '.join(reserved_disallowed)}"
+            ),
+        )
 
 
 def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims) -> bool:
@@ -133,7 +164,10 @@ def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
     eligible_tools = {
         tool.name
         for tool in req.tools
-        if _schema_allows_empty_arguments(tool.input_schema)
+        if (
+            not is_internal_model_only_tool_name(tool.name)
+            and _schema_allows_empty_arguments(tool.input_schema)
+        )
     }
     for tool_name in preferred_tools:
         if tool_name in eligible_tools:
@@ -299,7 +333,8 @@ async def stream_generation(
         )
 
     if req.tools:
-        requested_tool_names = [tool.name for tool in req.tools]
+        _validate_stream_tool_names(req)
+        requested_tool_names = _authorization_checked_tool_names(req)
         disallowed = disallowed_tools(
             requested_tool_names,
             claims.permissions.allowed_tools,

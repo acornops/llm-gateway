@@ -180,6 +180,11 @@ async def test_llm_stream_rejects_cluster_and_session_scope_mismatch(field: str,
             {"tools": [{"name": "blocked_tool"}]},
             "tool(s) not allowed",
         ),
+        (
+            {"allowed_tools": []},
+            {"tools": [{"name": "_acornops_load_skill"}, {"name": "blocked_tool"}]},
+            "tool(s) not allowed",
+        ),
     ],
 )
 async def test_llm_stream_enforces_permission_checks(
@@ -213,6 +218,112 @@ async def test_llm_stream_enforces_permission_checks(
 
             assert response.status_code == 403
             assert expected_detail in response.json()["detail"].lower()
+            mock_get_secret.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_allows_internal_model_only_skill_loader_without_tool_permission():
+    mock_claims = build_token_claims(permissions={"allowed_tools": []})
+    payload = build_llm_stream_payload(
+        tools=[
+            {
+                "name": "_acornops_load_skill",
+                "description": "Load one frozen target troubleshooting skill.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "skill_ref": {"type": "string", "enum": ["skill_1"]}
+                    },
+                    "required": ["skill_ref"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    )
+    captured_tool_names: list[str] = []
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        mock_get_secret.return_value = "fake-api-key"
+
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            with patch("app.llm.adapters.openai_adapter.OpenAIAdapter.stream") as mock_stream:
+
+                async def mock_generator(*args, **kwargs):
+                    stream_req = next(
+                        arg for arg in args if isinstance(arg, NormalizedLLMRequest)
+                    )
+                    captured_tool_names.extend(tool.name for tool in stream_req.tools)
+                    yield StreamEvent(
+                        type="final",
+                        usage={"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+                    )
+
+                mock_stream.side_effect = mock_generator
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as ac:
+                    response = await ac.post(
+                        "/api/v1/llm/generations:stream",
+                        json=payload,
+                        headers={"Authorization": "Bearer fake-token"},
+                    )
+
+            assert response.status_code == 200
+            assert captured_tool_names == ["_acornops_load_skill"]
+            mock_get_secret.assert_awaited_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_rejects_reserved_internal_tool_prefix_except_model_only_tools():
+    mock_claims = build_token_claims(permissions={"allowed_tools": ["*"]})
+    payload = build_llm_stream_payload(
+        tools=[
+            {
+                "name": "_acornops_custom_internal",
+                "description": "Reserved internal pseudo-tool.",
+                "input_schema": {"type": "object"},
+            }
+        ]
+    )
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=payload,
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == 403
+            assert "reserved for internal model-only use" in response.json()["detail"].lower()
             mock_get_secret.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
@@ -459,6 +570,48 @@ async def test_llm_stream_deterministic_dev_skips_tools_that_require_arguments(
             chunks = [json.loads(line) for line in response.text.strip().split("\n")]
             assert chunks[0]["type"] == "delta"
             assert "requested diagnostic context" in chunks[0]["text"]
+            assert chunks[1]["type"] == "final"
+            mock_get_secret.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_deterministic_dev_ignores_internal_model_only_tools(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "app.api.handlers_llm_stream.settings.LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
+        True,
+    )
+    mock_claims = build_token_claims(permissions={"allowed_tools": []})
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=build_llm_stream_payload(
+                        tools=[{"name": "_acornops_load_skill"}],
+                    ),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == 200
+            chunks = [json.loads(line) for line in response.text.strip().split("\n")]
+            assert chunks[0]["type"] == "delta"
             assert chunks[1]["type"] == "final"
             mock_get_secret.assert_not_awaited()
         finally:

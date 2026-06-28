@@ -195,6 +195,44 @@ async def test_tool_call_rejects_permission_and_scope_mismatches(
 
 
 @pytest.mark.anyio
+async def test_tool_call_rejects_internal_model_only_tool_even_with_wildcard_permission():
+    mock_claims = build_token_claims(permissions={"allowed_tools": ["*"]})
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool", new_callable=AsyncMock
+        ) as mock_get_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool", new_callable=AsyncMock
+        ) as mock_call_tool,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_tool_call_payload(tool="_acornops_load_skill"),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == 403
+            assert "reserved for internal model-only" in response.json()["detail"].lower()
+            mock_get_tool.assert_not_awaited()
+            mock_call_tool.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
 async def test_tool_call_sanitizes_server_auth_backend_failures():
     mock_claims = build_token_claims()
     mock_tool = Tool(
@@ -624,6 +662,48 @@ async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer workflow-run-jwt",
             }
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_workspace_workflow_tool_call_rejects_internal_model_only_tool_before_bridge():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        target_id=None,
+        target_type=None,
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+        permissions={"allowed_tools": ["*"]},
+    )
+
+    with patch(
+        "app.api.handlers_tool_call.post_builtin_mcp_tool",
+        new_callable=AsyncMock,
+    ) as mock_builtin_call:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(tool="_acornops_load_skill"),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 403
+            assert "reserved for internal model-only" in response.json()["detail"].lower()
+            mock_builtin_call.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
 

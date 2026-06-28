@@ -30,6 +30,7 @@
         "tools",
         "native_tools"
       ],
+      "internalModelOnlyTools": ["_acornops_load_skill"],
       "streamResponseTypes": [
         "delta",
         "tool_call",

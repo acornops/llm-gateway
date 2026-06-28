@@ -18,6 +18,7 @@ LLM_SERVICE_SOURCE = read("app/llm/service.py")
 CLAIMS_SOURCE = read("app/auth/claims.py")
 LLM_HANDLER_SOURCE = read("app/api/handlers_llm_stream.py")
 TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py")
+INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = read("app/api/handlers_mcp_admin.py") + read("app/api/mcp_admin_schemas.py")
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
 TRANSPORT_SOURCE = read("app/mcp/transports/http_transport.py")
@@ -73,7 +74,7 @@ for field in (
     "tools: list[ToolSpec] = []",
     "native_tools: list[NativeToolSpec] = []",
     "temperature: float = 0.7",
-    "max_output_tokens: int | None = None",
+    "max_output_tokens: int | None = Field(default=None, ge=1)",
 ):
     expect_in(LLM_SERVICE_SOURCE, field, "LLM request model")
 
@@ -122,6 +123,23 @@ for needle in (
     "For Gemini, `web_search`",
 ):
     expect_in(DOC, needle, "Documented native tool authorization")
+
+for needle in (
+    "_acornops_load_skill",
+    "INTERNAL_MODEL_ONLY_TOOLS",
+    "is_reserved_internal_tool_name",
+    "_validate_stream_tool_names",
+    '"internalModelOnlyTools": ["_acornops_load_skill"]',
+):
+    expect_in(
+        DOC
+        + LLM_HANDLER_SOURCE
+        + TOOL_HANDLER_SOURCE
+        + INTERNAL_MODEL_TOOLS_SOURCE
+        + read("docs/contracts/manifest.json"),
+        needle,
+        "Documented internal model-only tools",
+    )
 
 for needle in (
     'capability: Literal["read", "write"] = "write"',

@@ -4,6 +4,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.examples import EXAMPLE_WORKSPACE_ID
+from app.internal_model_tools import is_reserved_internal_tool_name
 from app.mcp.header_policy import (
     validate_auth_header_name,
     validate_auth_header_value,
@@ -27,6 +28,16 @@ class ToolConfigRequest(BaseModel):
     source: Literal["mcp", "builtin"] = "mcp"
     input_schema: dict[str, Any] | None = None
     enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _validate_tool_name(cls, value: str) -> str:
+        tool_name = value.strip()
+        if not tool_name:
+            raise ValueError("tool name is required")
+        if is_reserved_internal_tool_name(tool_name):
+            raise ValueError("tool name is reserved by the platform")
+        return tool_name
 
 
 class ToolConfigResponse(BaseModel):
