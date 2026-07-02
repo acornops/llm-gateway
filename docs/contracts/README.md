@@ -8,8 +8,8 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 - Management console -> control plane
 - Control plane <-> execution-engine
 - Control plane <-> llm-gateway
-- Control plane <-> k8s-agent
-- Control plane <-> vm-agent
+- Control plane <-> agentk
+- Control plane <-> agentv
 - Execution-engine -> llm-gateway
 
 ## Platform Dependency Summary
