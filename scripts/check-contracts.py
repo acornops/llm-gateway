@@ -12,6 +12,7 @@ def read(relative_path: str) -> str:
 README = read("README.md")
 DOC = read("docs/contracts/README.md")
 MANIFEST = json.loads(read("docs/contracts/manifest.json"))
+MANIFEST_TEXT = json.dumps(MANIFEST, sort_keys=True)
 MAIN_SOURCE = read("app/main.py")
 ROUTER_SOURCE = read("app/api/router.py")
 LLM_SERVICE_SOURCE = read("app/llm/service.py")
@@ -50,11 +51,14 @@ expect(MANIFEST["repo"] == "llm-gateway", "Manifest repo")
 
 for heading in (
     "# LLM-Gateway Contracts",
+    "## Source Of Truth",
     "## Full Platform Matrix",
     "## Platform Dependency Summary",
-    "## Execution-Engine Contract",
-    "## Control-Plane Contract",
-    "## Generic MCP Server Contract",
+    "## Shared Invariants",
+    "## Execution-Engine Boundary Notes",
+    "## Control-Plane Boundary Notes",
+    "## Generic MCP Boundary Notes",
+    "## Change Checklist",
 ):
     expect_in(DOC, heading, "Contract doc heading")
 
@@ -101,7 +105,7 @@ for field in (
     expect_in(CLAIMS_SOURCE, field, "Token claim model")
 
 for field in CONTROL_PLANE_CONTRACT["runJwtPermissionFields"]:
-    expect_in(DOC, field.replace("?", ""), "Documented run JWT permission field")
+    expect_in(MANIFEST_TEXT, field, "Manifest run JWT permission field")
 
 for needle in (
     "class NativeToolPermission",
@@ -174,11 +178,15 @@ for documented in (
     EXECUTION_ENGINE_CONTRACT["streamPath"],
     EXECUTION_ENGINE_CONTRACT["toolCallPath"],
     *CONTROL_PLANE_CONTRACT["adminPaths"],
-    "Authorization: Bearer <run-scoped-jwt>",
-    "Authorization: Bearer <ADMIN_API_TOKEN>",
     CONTROL_PLANE_CONTRACT["jwksPath"],
 ):
-    expect_in(DOC, documented, "Documented route/auth")
+    expect_in(MANIFEST_TEXT, documented, "Manifest route")
+
+for documented in (
+    "Authorization: Bearer <run-scoped-jwt>",
+    "Authorization: Bearer <ADMIN_API_TOKEN>",
+):
+    expect_in(DOC, documented, "Documented auth boundary")
 
 for needle in (
     'media_type="application/x-ndjson"',
@@ -210,7 +218,7 @@ for needle in (
     *CONTROL_PLANE_CONTRACT["toolFields"],
 ):
     expect_in(MCP_ADMIN_SOURCE, needle, "MCP admin field")
-    expect_in(DOC, needle, "Documented MCP admin field")
+    expect_in(MANIFEST_TEXT, needle, "Manifest MCP admin field")
 
 for needle in (
     'f"{target.connection_url}/tools/list"',
@@ -243,10 +251,10 @@ expect_in(
 )
 
 for field in EXECUTION_ENGINE_CONTRACT["streamResponseTypes"]:
-    expect_in(DOC, f'`{{"type":"{field}"', "Documented stream response type")
+    expect_in(MANIFEST_TEXT, field, "Manifest stream response type")
 
 for field in EXECUTION_ENGINE_CONTRACT["toolCallResponseFields"]:
-    expect_in(DOC, f"`{field}`", "Documented tool-call response field")
+    expect_in(MANIFEST_TEXT, field, "Manifest tool-call response field")
 
 for token in (
     CONTROL_PLANE_CONTRACT["builtinBridge"]["serverName"],
