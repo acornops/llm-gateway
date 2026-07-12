@@ -1254,6 +1254,7 @@ async def test_delete_server_removes_tools_before_deleting_server() -> None:
         id="srv-delete",
         target_type="kubernetes",
         server_url="http://github-mcp",
+        auth_secret_name=None,
     )
     server_tools = [
         _make_tool(name="github.search", server_url="http://github-mcp"),

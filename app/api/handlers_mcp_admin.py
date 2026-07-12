@@ -615,7 +615,7 @@ async def delete_mcp_server(
                     "target_type": server.target_type,
                 },
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "mcp_server_secret_delete_failed",
                 workspace_id=workspace_id,
@@ -625,7 +625,7 @@ async def delete_mcp_server(
             raise HTTPException(
                 status_code=503,
                 detail="MCP credential backend unavailable",
-            )
+            ) from exc
 
     deleted = await mcp_server_registry.delete_server(
         workspace_id,

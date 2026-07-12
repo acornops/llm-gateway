@@ -254,7 +254,9 @@ async def execute_tool_call(
                         },
                     )
                 except SecretNotFoundError as exc:
-                    raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED) from exc
+                    raise HTTPException(
+                        status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED
+                    ) from exc
                 except Exception as exc:
                     logger.warning(
                         "workspace_tool_call_secret_lookup_failed",
@@ -262,13 +264,18 @@ async def execute_tool_call(
                         workflow_run_id=req.workflow_run_id,
                         tool=req.tool,
                     )
-                    raise HTTPException(status_code=503, detail=MCP_SERVER_AUTH_BACKEND_UNAVAILABLE) from exc
+                    raise HTTPException(
+                        status_code=503,
+                        detail=MCP_SERVER_AUTH_BACKEND_UNAVAILABLE,
+                    ) from exc
                 header_name = server.auth_header_name or "Authorization"
                 header_value = f"{server.auth_header_prefix or ''}{secret_value}"
                 try:
                     validate_auth_header_value(header_value)
                 except ValueError as exc:
-                    raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED) from exc
+                    raise HTTPException(
+                        status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED
+                    ) from exc
                 request_headers[header_name] = header_value
 
         try:
