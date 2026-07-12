@@ -40,13 +40,18 @@ async def post_builtin_mcp_tool(
     arguments: dict[str, Any],
     timeout_ms: int,
     headers: dict[str, str],
+    tool_call_id: str | None = None,
 ) -> dict[str, Any]:
     import httpx
 
     async with httpx.AsyncClient(**httpx_tls_kwargs()) as client:
         response = await client.post(
             f"{url.rstrip('/')}/tools/call",
-            json={"name": name, "arguments": arguments},
+            json={
+                "name": name,
+                "arguments": arguments,
+                **({"toolCallId": tool_call_id} if tool_call_id else {}),
+            },
             timeout=timeout_ms / 1000.0,
             headers=headers,
             follow_redirects=False,
@@ -58,7 +63,11 @@ async def post_builtin_mcp_tool(
                     "jsonrpc": "2.0",
                     "id": "acornops-tools-call",
                     "method": "tools/call",
-                    "params": {"name": name, "arguments": arguments},
+                    "params": {
+                        "name": name,
+                        "arguments": arguments,
+                        **({"toolCallId": tool_call_id} if tool_call_id else {}),
+                    },
                 },
                 timeout=timeout_ms / 1000.0,
                 headers=headers,

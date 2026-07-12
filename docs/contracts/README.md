@@ -49,6 +49,9 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - The built-in MCP bridge is `acornops-cluster-agent` at `http://control-plane:8081/internal/v1/mcp`.
 - Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
+- Optional `tool_call_id` values are forwarded as `toolCallId` only on this
+  trusted built-in bridge, preserving AgentK idempotency while keeping generic
+  MCP request bodies unchanged.
 
 ## Generic MCP Boundary Notes
 

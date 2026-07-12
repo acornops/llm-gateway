@@ -579,7 +579,7 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
             ) as ac:
                 response = await ac.post(
                     "/api/v1/mcp/tool-call",
-                    json=build_tool_call_payload(),
+                    json=build_tool_call_payload(tool_call_id="call-1"),
                     headers={"Authorization": "Bearer run-scoped-jwt"},
                 )
 
@@ -589,6 +589,7 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer run-scoped-jwt",
             }
+            assert mock_builtin_call.await_args.args[5] == "call-1"
         finally:
             app.dependency_overrides.clear()
 

@@ -1,6 +1,8 @@
 import base64
+import json
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -165,6 +167,34 @@ def test_internal_transport_httpx_kwargs_include_client_cert_when_required(
         "verify": "/tls/ca.crt",
         "cert": ("/tls/client.crt", "/tls/client.key"),
     }
+
+
+@pytest.mark.anyio
+async def test_builtin_transport_forwards_tool_call_id(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "name": "restart_workload",
+            "arguments": {"namespace": "default"},
+            "toolCallId": "call-1",
+        }
+        return httpx.Response(200, json={"content": [], "isError": False}, request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    result = await internal_transport_module.post_builtin_mcp_tool(
+        "http://control-plane/internal/v1/mcp",
+        "restart_workload",
+        {"namespace": "default"},
+        1000,
+        {"Authorization": "Bearer token"},
+        "call-1",
+    )
+    assert result == {"content": [], "isError": False}
 
 
 def test_production_settings_reject_placeholders_and_unsafe_jwks():

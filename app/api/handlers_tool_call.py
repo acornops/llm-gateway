@@ -60,6 +60,7 @@ class ToolCallRequest(BaseModel):
     agent_id: str | None = None
     agent_version: int | None = None
     trigger_id: str | None = None
+    tool_call_id: str | None = Field(default=None, min_length=1, max_length=256)
     tool: str = Field(examples=["get_resource_logs"])
     arguments: dict[str, Any]
 
@@ -195,6 +196,7 @@ async def execute_tool_call(
                 req.arguments,
                 WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS,
                 {"Authorization": f"Bearer {token_context.token}"},
+                req.tool_call_id,
             )
             is_error = mcp_response.get("isError", False)
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=is_error).inc()
@@ -386,6 +388,7 @@ async def execute_tool_call(
                 req.arguments,
                 tool.timeout_ms,
                 request_headers,
+                req.tool_call_id,
             )
         else:
             mcp_response = await mcp_transport.call_tool(

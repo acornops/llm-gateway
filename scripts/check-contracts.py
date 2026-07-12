@@ -23,6 +23,7 @@ INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = read("app/api/handlers_mcp_admin.py") + read("app/api/mcp_admin_schemas.py")
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
 TRANSPORT_SOURCE = read("app/mcp/transports/http_transport.py")
+INTERNAL_TRANSPORT_SOURCE = read("app/internal_transport.py")
 SETTINGS_SOURCE = read("app/config/settings.py")
 SEED_SOURCE = read("scripts/seed_db.py")
 EXECUTION_ENGINE_CONTRACT = MANIFEST["counterparts"]["execution-engine"]
@@ -204,6 +205,7 @@ for needle in (
     '"Authorization": f"Bearer {token_context.token}"',
     'if not is_builtin_tool and server and server.auth_type in ("bearer_token", "custom_header"):',
     "detail=f\"Tool {req.tool} is not permitted for this run\"",
+    "tool_call_id: str | None = Field(default=None, min_length=1, max_length=256)",
 ):
     expect_in(TOOL_HANDLER_SOURCE, needle, "Tool handler")
 
@@ -255,6 +257,15 @@ for field in EXECUTION_ENGINE_CONTRACT["streamResponseTypes"]:
 
 for field in EXECUTION_ENGINE_CONTRACT["toolCallResponseFields"]:
     expect_in(MANIFEST_TEXT, field, "Manifest tool-call response field")
+
+for field in EXECUTION_ENGINE_CONTRACT["toolCallRequestFields"]:
+    expect_in(MANIFEST_TEXT, field, "Manifest tool-call request field")
+
+expect_in(
+    INTERNAL_TRANSPORT_SOURCE,
+    '"toolCallId": tool_call_id',
+    "Built-in tool call id forwarding",
+)
 
 for token in (
     CONTROL_PLANE_CONTRACT["builtinBridge"]["serverName"],
