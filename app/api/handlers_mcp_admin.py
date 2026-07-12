@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -46,10 +46,21 @@ from app.examples import EXAMPLE_MCP_SERVER_ID, EXAMPLE_WORKSPACE_ID
 from app.mcp.egress_policy import McpEgressPolicyError, validate_mcp_server_url
 from app.mcp.header_policy import validate_auth_header_value
 from app.mcp.registry.store import mcp_server_registry, tool_registry
-from app.target_types import TARGET_TYPE_EXAMPLES, TargetType
+from app.target_types import TARGET_TYPE_EXAMPLES
 
 router = APIRouter()
 logger = structlog.get_logger()
+
+
+def _validate_registry_scope(scope_type: str, target_id: str, target_type: str) -> None:
+    if scope_type == "workspace":
+        if target_id != "__workspace__" or target_type != "workspace":
+            raise HTTPException(
+                status_code=422,
+                detail="workspace scope requires target_id=__workspace__ and target_type=workspace",
+            )
+    elif target_type == "workspace":
+        raise HTTPException(status_code=422, detail="target scope requires a concrete target_type")
 
 
 def _is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
@@ -71,9 +82,11 @@ def _is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
 async def list_mcp_servers(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> list[McpServerResponse]:
+    _validate_registry_scope(scope_type, target_id, target_type)
     servers = await mcp_server_registry.list_servers(
         workspace_id, target_id, target_type=target_type
     )
@@ -93,11 +106,13 @@ async def list_mcp_servers(
 async def list_mcp_tools(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     include_server_disabled: bool = Query(default=False),
     include_disabled: bool = Query(default=False),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> list[ToolConfigResponse]:
+    _validate_registry_scope(scope_type, target_id, target_type)
     tools = await tool_registry.list_target_tools(
         workspace_id,
         target_id,
@@ -125,9 +140,11 @@ async def update_mcp_tool(
     tool_name: str = Path(..., min_length=1),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> ToolConfigResponse:
+    _validate_registry_scope(scope_type, target_id, target_type)
     existing = await tool_registry.get_tool(
         workspace_id,
         target_id,
@@ -290,9 +307,11 @@ async def update_mcp_server(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerResponse:
+    _validate_registry_scope(scope_type, target_id, target_type)
     server = await mcp_server_registry.get_server(
         workspace_id, target_id, server_id, target_type=target_type
     )
@@ -502,9 +521,11 @@ async def test_mcp_server_connection(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerConnectionTestResponse:
+    _validate_registry_scope(scope_type, target_id, target_type)
     server = await mcp_server_registry.get_server(
         workspace_id, target_id, server_id, target_type=target_type
     )
@@ -559,9 +580,11 @@ async def delete_mcp_server(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str = Query(..., min_length=1),
-    target_type: TargetType = Query(..., examples=TARGET_TYPE_EXAMPLES),
+    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    scope_type: Literal["workspace", "target"] = Query(default="target"),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> None:
+    _validate_registry_scope(scope_type, target_id, target_type)
     server = await mcp_server_registry.get_server(
         workspace_id, target_id, server_id, target_type=target_type
     )
@@ -581,6 +604,28 @@ async def delete_mcp_server(
             target_id,
             target_type=server.target_type,
         )
+
+    if server.auth_secret_name:
+        try:
+            await secret_store.delete_secret(
+                server.auth_secret_name,
+                {
+                    "workspace_id": workspace_id,
+                    "target_id": target_id,
+                    "target_type": server.target_type,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "mcp_server_secret_delete_failed",
+                workspace_id=workspace_id,
+                scope_type=scope_type,
+                server_name=server.server_name,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="MCP credential backend unavailable",
+            )
 
     deleted = await mcp_server_registry.delete_server(
         workspace_id,

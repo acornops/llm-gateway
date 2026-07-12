@@ -41,6 +41,10 @@ class ToolRegistry:
     ) -> ToolCacheKey:
         return (workspace_id, target_id, target_type, tool_name, include_disabled)
 
+    @staticmethod
+    def _scope_type(target_type: str) -> str:
+        return "workspace" if target_type == "workspace" else "target"
+
     async def get_tool(
         self,
         workspace_id: str,
@@ -64,6 +68,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
+                Tool.scope_type == self._scope_type(target_type),
                 Tool.target_id == target_id,
                 Tool.target_type == target_type,
                 Tool.tool_name == tool_name,
@@ -89,6 +94,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
+                Tool.scope_type == self._scope_type(target_type),
                 Tool.target_id == target_id,
                 Tool.target_type == target_type,
             )
@@ -124,6 +130,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
+                Tool.scope_type == self._scope_type(target_type),
                 Tool.target_id == target_id,
                 Tool.tool_name == tool_name,
             )
@@ -161,6 +168,7 @@ class ToolRegistry:
 
             tool = Tool(
                 workspace_id=workspace_id,
+                scope_type=self._scope_type(target_type),
                 target_id=target_id,
                 target_type=target_type,
                 tool_name=tool_name,
@@ -193,6 +201,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
+                Tool.scope_type == self._scope_type(target_type),
                 Tool.target_id == target_id,
                 Tool.target_type == target_type,
                 Tool.tool_name == tool_name,
@@ -218,6 +227,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
+                Tool.scope_type == self._scope_type(target_type),
                 Tool.target_id == target_id,
                 Tool.target_type == target_type,
                 Tool.source == source,
@@ -357,6 +367,10 @@ class McpServerRegistry:
         self.engine = create_async_engine(database_url)
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
 
+    @staticmethod
+    def _scope_type(target_type: str) -> str:
+        return "workspace" if target_type == "workspace" else "target"
+
     async def list_servers(
         self,
         workspace_id: str,
@@ -368,6 +382,7 @@ class McpServerRegistry:
                 select(McpServer)
                 .where(
                     McpServer.workspace_id == workspace_id,
+                    McpServer.scope_type == self._scope_type(target_type),
                     McpServer.target_id == target_id,
                     McpServer.target_type == target_type,
                 )
@@ -390,6 +405,7 @@ class McpServerRegistry:
             stmt = select(McpServer).where(
                 McpServer.id == normalized_server_id,
                 McpServer.workspace_id == workspace_id,
+                McpServer.scope_type == self._scope_type(target_type),
                 McpServer.target_id == target_id,
                 McpServer.target_type == target_type,
             )
@@ -408,6 +424,7 @@ class McpServerRegistry:
         async with self.async_session() as session:
             stmt = select(McpServer).where(
                 McpServer.workspace_id == workspace_id,
+                McpServer.scope_type == self._scope_type(target_type),
                 McpServer.target_id == target_id,
                 McpServer.target_type == target_type,
                 McpServer.server_url == server_url,
@@ -434,6 +451,7 @@ class McpServerRegistry:
         async with self.async_session() as session:
             server = McpServer(
                 workspace_id=workspace_id,
+                scope_type=self._scope_type(target_type),
                 target_id=target_id,
                 target_type=target_type,
                 server_name=server_name,
@@ -468,6 +486,7 @@ class McpServerRegistry:
             stmt = select(McpServer).where(
                 McpServer.id == normalized_server_id,
                 McpServer.workspace_id == workspace_id,
+                McpServer.scope_type == self._scope_type(target_type),
                 McpServer.target_id == target_id,
                 McpServer.target_type == target_type,
             )
@@ -497,6 +516,7 @@ class McpServerRegistry:
             stmt = delete(McpServer).where(
                 McpServer.id == normalized_server_id,
                 McpServer.workspace_id == workspace_id,
+                McpServer.scope_type == self._scope_type(target_type),
                 McpServer.target_id == target_id,
                 McpServer.target_type == target_type,
             )

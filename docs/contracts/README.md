@@ -45,7 +45,7 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 
 - Config must keep `AUTH_ISSUER` and `AUTH_AUDIENCE` aligned with the control-plane run-token issuer and audience.
 - `ADMIN_API_TOKEN` gates internal MCP and provider-credential administration.
-- Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge.
+- Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after an enabled workspace registry entry identifies the tool as built-in.
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - The built-in MCP bridge is `acornops-cluster-agent` at `http://control-plane:8081/internal/v1/mcp`.
 - Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
@@ -54,6 +54,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   MCP request bodies unchanged.
 
 ## Generic MCP Boundary Notes
+
+- Registry records have an explicit `scope_type` of `workspace` or `target`. Scope-omitting internal requests remain target-scoped for compatibility.
+- Admin responses expose only whether a credential is configured. Secret values and secret identifiers are not returned.
+- Workspace workflow calls resolve enabled workspace-scoped registry tools. The built-in bridge is used only when the resolved tool is explicitly registered with source `builtin`.
 
 - Missing, malformed, or newly
 discovered remote MCP tool capabilities default to `write` until an admin reviews and enables a narrower read classification.

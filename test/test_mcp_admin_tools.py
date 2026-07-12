@@ -98,6 +98,28 @@ def test_mcp_server_schema_accepts_public_headers_and_rejects_static_headers():
         )
 
 
+def test_mcp_server_schema_accepts_explicit_workspace_scope_and_rejects_mixed_scope():
+    request = McpServerCreateRequest(
+        workspace_id="ws-1",
+        scope_type="workspace",
+        target_id="__workspace__",
+        target_type="workspace",
+        server_name="operations-catalog",
+        server_url="https://mcp.example.com",
+    )
+    assert request.scope_type == "workspace"
+
+    with pytest.raises(ValidationError):
+        McpServerCreateRequest(
+            workspace_id="ws-1",
+            scope_type="workspace",
+            target_id="cluster-a",
+            target_type="kubernetes",
+            server_name="operations-catalog",
+            server_url="https://mcp.example.com",
+        )
+
+
 def test_mcp_tool_schema_rejects_reserved_internal_tool_names():
     with pytest.raises(ValidationError):
         ToolConfigRequest(name="_acornops_load_skill")

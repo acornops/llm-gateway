@@ -595,7 +595,7 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
 
 
 @pytest.mark.anyio
-async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without_target_registry():
+async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwards_run_token():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
         target_id=None,
@@ -610,6 +610,27 @@ async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without
             "context_grants": ["workspace_metadata"],
         },
     )
+    mock_tool = Tool(
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="workspace",
+        target_id="__workspace__",
+        target_type="workspace",
+        tool_name="mcp.tools.list",
+        mcp_server_url="http://control-plane:8081/internal/v1/mcp",
+        enabled=True,
+        timeout_ms=10000,
+        source="builtin",
+    )
+    mock_server = McpServer(
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="workspace",
+        target_id="__workspace__",
+        target_type="workspace",
+        server_name="acornops-cluster-agent",
+        server_url="http://control-plane:8081/internal/v1/mcp",
+        enabled=True,
+        auth_type="none",
+    )
 
     with (
         patch(
@@ -618,6 +639,7 @@ async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without
         patch(
             "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
             new_callable=AsyncMock,
+            return_value=mock_server,
         ) as mock_get_server,
         patch(
             "app.api.handlers_tool_call.post_builtin_mcp_tool",
@@ -632,6 +654,7 @@ async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without
             new_callable=AsyncMock,
         ) as mock_call_tool,
     ):
+        mock_get_tool.return_value = mock_tool
         from app.auth.claims import TokenClaims
         from app.auth.jwt_validator import validator
 
@@ -655,14 +678,101 @@ async def test_workspace_workflow_tool_call_forwards_run_token_to_bridge_without
                 "result": [{"type": "text", "text": '{"tools":["mcp.tools.list"]}'}],
                 "is_error": False,
             }
-            mock_get_tool.assert_not_awaited()
-            mock_get_server.assert_not_awaited()
+            mock_get_tool.assert_awaited_once_with(
+                EXAMPLE_WORKSPACE_ID,
+                "__workspace__",
+                "mcp.tools.list",
+                target_type="workspace",
+            )
+            mock_get_server.assert_awaited_once()
             mock_call_tool.assert_not_awaited()
             assert mock_builtin_call.await_args.args[0] == "http://control-plane:8081/internal/v1/mcp"
             assert mock_builtin_call.await_args.args[1] == "mcp.tools.list"
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer workflow-run-jwt",
             }
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_tool():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        target_id=None,
+        target_type=None,
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+        permissions={"allowed_tools": ["records.list"]},
+    )
+    mock_tool = Tool(
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="workspace",
+        target_id="__workspace__",
+        target_type="workspace",
+        tool_name="records.list",
+        mcp_server_url="https://mcp.example.com/v1",
+        enabled=True,
+        timeout_ms=10000,
+        source="mcp",
+    )
+    mock_server = McpServer(
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="workspace",
+        target_id="__workspace__",
+        target_type="workspace",
+        server_name="operations-catalog",
+        server_url="https://mcp.example.com/v1",
+        enabled=True,
+        auth_type="none",
+        public_headers={"x-client-version": "test"},
+    )
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new_callable=AsyncMock,
+            return_value=mock_tool,
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
+            new_callable=AsyncMock,
+            return_value=mock_server,
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+            return_value={"content": [{"type": "text", "text": "ok"}], "isError": False},
+        ) as mock_call_tool,
+        patch(
+            "app.api.handlers_tool_call.post_builtin_mcp_tool",
+            new_callable=AsyncMock,
+        ) as mock_builtin_call,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(tool="records.list"),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+            assert response.status_code == 200
+            assert response.json()["is_error"] is False
+            mock_builtin_call.assert_not_awaited()
+            headers = mock_call_tool.await_args.args[4]
+            assert headers["x-workspace-id"] == EXAMPLE_WORKSPACE_ID
+            assert headers["x-workflow-run-id"] == "workflow-run-1"
         finally:
             app.dependency_overrides.clear()
 

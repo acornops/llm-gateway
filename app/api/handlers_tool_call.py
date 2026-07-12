@@ -189,22 +189,113 @@ async def execute_tool_call(
         )
 
     if claims.scope.type == "workspace":
-        try:
-            mcp_response = await post_builtin_mcp_tool(
-                BUILTIN_MCP_SERVER_URL,
-                req.tool,
-                req.arguments,
-                WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS,
-                {"Authorization": f"Bearer {token_context.token}"},
-                req.tool_call_id,
+        tool = await tool_registry.get_tool(
+            req.workspace_id,
+            "__workspace__",
+            req.tool,
+            target_type="workspace",
+        )
+        if not tool:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Workspace tool {req.tool} not found or disabled",
             )
+        if tool.input_schema:
+            try:
+                jsonschema_validate(instance=req.arguments, schema=tool.input_schema)
+            except JsonSchemaValidationError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "TOOL_ARGS_INVALID",
+                        "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
+                    },
+                ) from exc
+        server = await mcp_server_registry.get_server_by_url(
+            req.workspace_id,
+            "__workspace__",
+            tool.mcp_server_url,
+            enabled_only=False,
+            target_type="workspace",
+        )
+        if server is None:
+            raise HTTPException(status_code=404, detail="Workspace MCP server not found")
+        if not server.enabled:
+            raise HTTPException(status_code=403, detail="MCP server is disabled for this workspace")
+
+        is_builtin_tool = (
+            tool.source == "builtin"
+            and server.server_name == BUILTIN_MCP_SERVER_NAME
+            and server.server_url == BUILTIN_MCP_SERVER_URL
+        )
+        if tool.source == "builtin" and not is_builtin_tool:
+            raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
+
+        request_headers: dict[str, str]
+        if is_builtin_tool:
+            request_headers = {"Authorization": f"Bearer {token_context.token}"}
+        else:
+            request_headers = dict(server.public_headers or {})
+            request_headers.update({
+                "x-workspace-id": req.workspace_id,
+                "x-run-id": req.run_id,
+                "x-workflow-run-id": req.workflow_run_id or "",
+            })
+            if server.auth_type in ("bearer_token", "custom_header"):
+                if not server.auth_secret_name:
+                    raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED)
+                try:
+                    secret_value = await secret_store.get_secret(
+                        server.auth_secret_name,
+                        {
+                            "workspace_id": req.workspace_id,
+                            "target_id": "__workspace__",
+                            "target_type": "workspace",
+                        },
+                    )
+                except SecretNotFoundError as exc:
+                    raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED) from exc
+                except Exception as exc:
+                    logger.warning(
+                        "workspace_tool_call_secret_lookup_failed",
+                        workspace_id=req.workspace_id,
+                        workflow_run_id=req.workflow_run_id,
+                        tool=req.tool,
+                    )
+                    raise HTTPException(status_code=503, detail=MCP_SERVER_AUTH_BACKEND_UNAVAILABLE) from exc
+                header_name = server.auth_header_name or "Authorization"
+                header_value = f"{server.auth_header_prefix or ''}{secret_value}"
+                try:
+                    validate_auth_header_value(header_value)
+                except ValueError as exc:
+                    raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED) from exc
+                request_headers[header_name] = header_value
+
+        try:
+            if is_builtin_tool:
+                mcp_response = await post_builtin_mcp_tool(
+                    tool.mcp_server_url,
+                    req.tool,
+                    req.arguments,
+                    tool.timeout_ms,
+                    request_headers,
+                    req.tool_call_id,
+                )
+            else:
+                mcp_response = await mcp_transport.call_tool(
+                    tool.mcp_server_url,
+                    req.tool,
+                    req.arguments,
+                    tool.timeout_ms,
+                    request_headers,
+                )
             is_error = mcp_response.get("isError", False)
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=is_error).inc()
             GATEWAY_TOOL_CALL_LATENCY_MS.labels(tool=req.tool).observe(
                 (time.time() - start_time) * 1000
             )
             return ToolCallResponse(result=mcp_response.get("content", []), is_error=is_error)
-        except Exception as e:
+        except Exception:
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=True).inc()
             logger.warning(
                 "workflow_tool_call_execution_failed",
@@ -212,8 +303,7 @@ async def execute_tool_call(
                 workflow_id=req.workflow_id,
                 workflow_run_id=req.workflow_run_id,
                 tool=req.tool,
-                error=str(e),
-                exc_info=True,
+                server_name=server.server_name,
             )
             return ToolCallResponse(
                 result={

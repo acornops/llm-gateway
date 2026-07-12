@@ -21,7 +21,7 @@ class Tool(Base):
     __tablename__ = "gateway_tools"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "target_id", "tool_name",
+            "workspace_id", "scope_type", "target_id", "tool_name",
             name="uq_gateway_tools_ws_target_name",
         ),
         Index("ix_gateway_tools_workspace_target", "workspace_id", "target_id"),
@@ -29,6 +29,7 @@ class Tool(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(String, nullable=False)
+    scope_type = Column(String, nullable=False, default="target")
     target_id = Column(String, nullable=False)
     target_type = Column(String, nullable=False)
     tool_name = Column(String, nullable=False)
@@ -48,11 +49,11 @@ class McpServer(Base):
     __tablename__ = "gateway_mcp_servers"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "target_id", "server_name",
+            "workspace_id", "scope_type", "target_id", "server_name",
             name="uq_gateway_mcp_servers_ws_target_name",
         ),
         UniqueConstraint(
-            "workspace_id", "target_id", "server_url",
+            "workspace_id", "scope_type", "target_id", "server_url",
             name="uq_gateway_mcp_servers_ws_target_url",
         ),
         Index("ix_gateway_mcp_servers_workspace_target", "workspace_id", "target_id"),
@@ -60,6 +61,7 @@ class McpServer(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(String, nullable=False)
+    scope_type = Column(String, nullable=False, default="target")
     target_id = Column(String, nullable=False)
     target_type = Column(String, nullable=False)
     server_name = Column(String, nullable=False)
