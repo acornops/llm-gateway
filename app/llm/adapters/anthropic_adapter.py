@@ -64,7 +64,10 @@ class AnthropicAdapter(LLMAdapter):
         """
         Streams a message from Anthropic and translates events to the gateway format.
         """
-        client = AsyncAnthropic(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        if settings.LLM_PROVIDER_ANTHROPIC_BASE_URL:
+            client_kwargs["base_url"] = settings.LLM_PROVIDER_ANTHROPIC_BASE_URL
+        client = AsyncAnthropic(**client_kwargs)
         tool_calls_map = {}
         anthropic_tools = build_anthropic_tools(req.tools, req.native_tools)
         max_tokens = req.max_output_tokens or self.DEFAULT_MAX_TOKENS

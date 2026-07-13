@@ -43,7 +43,10 @@ class OpenAIAdapter(LLMAdapter):
         """
         Streams a generation from OpenAI and translates events to the gateway format.
         """
-        client = AsyncOpenAI(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        if settings.LLM_PROVIDER_OPENAI_BASE_URL:
+            client_kwargs["base_url"] = settings.LLM_PROVIDER_OPENAI_BASE_URL
+        client = AsyncOpenAI(**client_kwargs)
 
         openai_tools = build_openai_response_tools(req.tools, req.native_tools)
         include_temperature = supports_openai_custom_temperature(req.model)

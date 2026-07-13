@@ -24,6 +24,22 @@ Vault-backed deployments additionally require:
 - `VAULT_TOKEN`
 - `VAULT_VERIFY_TLS=true`
 
+## Provider Endpoint Overrides
+
+Provider SDKs use their public hosted endpoints by default. A platform operator
+can redirect all workspaces to API-compatible endpoints with these optional
+environment variables:
+
+- `LLM_PROVIDER_OPENAI_BASE_URL`
+- `LLM_PROVIDER_ANTHROPIC_BASE_URL`
+- `LLM_PROVIDER_GEMINI_BASE_URL`
+
+Set each value to the fully qualified API base URL expected by that provider's
+SDK. The endpoint must implement the native API used by the gateway: OpenAI
+Responses, Anthropic Messages, or Google GenAI GenerateContent. An endpoint that
+only implements OpenAI Chat Completions is not sufficient. API keys remain
+workspace-scoped; endpoint overrides apply to the entire gateway deployment.
+
 ## Migration Operations
 
 Run migrations before starting upgraded application code:

@@ -200,6 +200,37 @@ async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
 
 
 @pytest.mark.anyio
+async def test_gemini_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch):
+    client_kwargs: dict[str, object] = {}
+
+    class FakeModels:
+        async def generate_content_stream(self, **_kwargs):
+            return _chunk_stream()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.update(kwargs)
+            self.aio = SimpleNamespace(models=FakeModels())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
+    monkeypatch.setattr(
+        gemini_adapter.settings,
+        "LLM_PROVIDER_GEMINI_BASE_URL",
+        "https://gemini.internal",
+    )
+
+    _ = [event async for event in GeminiAdapter().stream(_request(), "key")]
+
+    assert client_kwargs["api_key"] == "key"
+    assert client_kwargs["http_options"].base_url == "https://gemini.internal"
+
+
+@pytest.mark.anyio
 async def test_gemini_adapter_maps_native_web_search_without_domain_filters(
     monkeypatch: pytest.MonkeyPatch,
 ):

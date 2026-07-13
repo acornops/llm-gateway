@@ -98,7 +98,12 @@ class GeminiAdapter(LLMAdapter):
         """
         Streams a response from Gemini and translates events to the gateway format.
         """
-        client = genai.Client(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if settings.LLM_PROVIDER_GEMINI_BASE_URL:
+            client_kwargs["http_options"] = types.HttpOptions(
+                base_url=settings.LLM_PROVIDER_GEMINI_BASE_URL
+            )
+        client = genai.Client(**client_kwargs)
         tool_calls_count = 0
         tool_call_seq = 0
         summary_requested = reasoning_summaries_enabled(req)

@@ -170,6 +170,30 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
 
 
 @pytest.mark.anyio
+async def test_anthropic_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch):
+    client_kwargs: dict[str, object] = {}
+    messages = FakeMessages([FakeStreamContext(events=[])])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.update(kwargs)
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
+    monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
+    monkeypatch.setattr(
+        anthropic_adapter.settings,
+        "LLM_PROVIDER_ANTHROPIC_BASE_URL",
+        "https://anthropic.internal",
+    )
+
+    _ = [event async for event in AnthropicAdapter().stream(_request(), "key")]
+
+    assert client_kwargs == {"api_key": "key", "base_url": "https://anthropic.internal"}
+
+
+@pytest.mark.anyio
 async def test_anthropic_adapter_maps_native_web_search_domain_filters(
     monkeypatch: pytest.MonkeyPatch,
 ):

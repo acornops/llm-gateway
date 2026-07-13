@@ -135,6 +135,33 @@ async def test_openai_adapter_uses_responses_max_output_tokens(
 
 
 @pytest.mark.anyio
+async def test_openai_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    client_kwargs: dict[str, object] = {}
+
+    async def stream_response():
+        yield SimpleNamespace(type="response.completed")
+
+    class FakeResponses:
+        async def create(self, **_kwargs):
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.update(kwargs)
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_adapter.settings.LLM_PROVIDER_OPENAI_BASE_URL",
+        "https://openai.internal/v1",
+    )
+
+    _ = [event async for event in OpenAIAdapter().stream(_build_request("gpt-4o"), "key")]
+
+    assert client_kwargs == {"api_key": "key", "base_url": "https://openai.internal/v1"}
+
+
+@pytest.mark.anyio
 async def test_openai_adapter_maps_native_web_search_domain_filters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
