@@ -1,3 +1,4 @@
+import hashlib
 import time
 from typing import Any, Literal
 
@@ -71,6 +72,12 @@ class ToolCallRequest(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
+        if self.agent_id and not self.workflow_id:
+            if (self.target_id and not self.target_type) or (
+                self.target_type and not self.target_id
+            ):
+                raise ValueError("agent target binding requires both target_id and target_type")
+            return self
         missing = [
             name
             for name, value in (
@@ -211,6 +218,16 @@ async def execute_tool_call(
                         "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
                     },
                 ) from exc
+        tool_arguments = dict(req.arguments)
+        if claims.permissions.allowed_tool_operations.get(req.tool) == "write":
+            if not req.tool_call_id:
+                raise HTTPException(status_code=400, detail={
+                    "code": "WRITE_IDEMPOTENCY_KEY_REQUIRED",
+                    "message": "Write tool calls require a stable tool_call_id",
+                })
+            tool_arguments["idempotencyKey"] = hashlib.sha256(
+                f"{req.run_id}:{req.tool_call_id}:{req.tool}".encode()
+            ).hexdigest()
         server = await mcp_server_registry.get_server_by_url(
             req.workspace_id,
             "__workspace__",
@@ -283,7 +300,7 @@ async def execute_tool_call(
                 mcp_response = await post_builtin_mcp_tool(
                     tool.mcp_server_url,
                     req.tool,
-                    req.arguments,
+                    tool_arguments,
                     tool.timeout_ms,
                     request_headers,
                     req.tool_call_id,
@@ -292,7 +309,7 @@ async def execute_tool_call(
                 mcp_response = await mcp_transport.call_tool(
                     tool.mcp_server_url,
                     req.tool,
-                    req.arguments,
+                    tool_arguments,
                     tool.timeout_ms,
                     request_headers,
                 )

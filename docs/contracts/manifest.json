@@ -118,14 +118,16 @@
       ],
       "runJwtWorkspaceScopeFields": [
         "scope.type",
-        "workflow_id",
-        "workflow_run_id",
-        "workflow_session_id",
+        "workflow_id? (required for workflow scope)",
+        "workflow_run_id? (required for workflow scope)",
+        "workflow_session_id? (required for workflow scope)",
         "workflow_step_id?",
         "agent_id?",
         "agent_version?",
         "trigger_id?",
-        "permissions.context_grants"
+        "permissions.context_grants",
+        "standalone Agent scope requires agent_id and agent_version",
+        "write tool calls receive a gateway-injected idempotencyKey derived from run_id and tool_call_id"
       ],
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",
       "builtinBridge": {

@@ -52,6 +52,12 @@ class TokenClaims(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
+        if self.agent_id and not self.workflow_id:
+            if (self.target_id and not self.target_type) or (
+                self.target_type and not self.target_id
+            ):
+                raise ValueError("agent target binding requires both target_id and target_type")
+            return self
         missing = [
             name
             for name, value in (
