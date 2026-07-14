@@ -98,7 +98,11 @@ async def test_full_tool_call_flow_integrated():
                 # 5. Verify
                 assert response.status_code == 200
                 data = response.json()
-                assert data["result"] == [{"type": "text", "text": "Integrated Success"}]
+                expected_result = [{"type": "text", "text": "Integrated Success"}]
+                assert data["full_result"] == expected_result
+                assert data["model_context"] == expected_result
+                assert data["context_meta"]["strategy"] == "mcp_content"
+                assert data["artifact_eligible"] is False
                 assert data["is_error"] is False
                 assert mcp_route.called
 
