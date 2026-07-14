@@ -121,6 +121,8 @@ class ToolRegistry:
         target_type: str,
         timeout_ms: int = 10000,
         input_schema: dict | None = None,
+        output_schema: dict | None = None,
+        artifact_policy: str = "never",
         enabled: bool = True,
         description: str | None = None,
         capability: str = "write",
@@ -152,6 +154,8 @@ class ToolRegistry:
                 existing.timeout_ms = timeout_ms
                 existing.target_type = target_type
                 existing.input_schema = input_schema
+                existing.output_schema = output_schema
+                existing.artifact_policy = artifact_policy
                 existing.enabled = enabled
                 existing.description = description
                 existing.capability = capability
@@ -175,6 +179,8 @@ class ToolRegistry:
                 mcp_server_url=mcp_server_url,
                 enabled=enabled,
                 input_schema=input_schema,
+                output_schema=output_schema,
+                artifact_policy=artifact_policy,
                 timeout_ms=timeout_ms,
                 description=description,
                 capability=capability,

@@ -3,13 +3,14 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.config.settings import settings
 from app.mcp.egress_policy import ValidatedMcpRequestTarget
-from app.mcp.transports.http_transport import McpHttpTransport
+from app.mcp.transports.http_transport import McpHttpTransport, McpToolTransportError
 from app.resilience.outbound import dependency_circuit_breaker
 
 
 @pytest.mark.anyio
-async def test_call_tool_falls_back_to_jsonrpc_and_wraps_scalar_result() -> None:
+async def test_call_tool_falls_back_to_jsonrpc_and_rejects_scalar_result() -> None:
     requests: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -34,10 +35,11 @@ async def test_call_tool_falls_back_to_jsonrpc_and_wraps_scalar_result() -> None
     finally:
         await transport.close()
 
-    assert payload == {
-        "isError": False,
-        "content": [{"type": "text", "text": "Sunny"}],
-    }
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.code == "MCP_RESULT_INVALID"
+    assert payload.dispatch_outcome == "unknown"
+    assert payload.retryable is False
+    assert payload["isError"] is True
     assert requests == [
         ("POST", "http://mcp.example/tools/call"),
         ("POST", "http://mcp.example"),
@@ -71,6 +73,27 @@ async def test_call_tool_returns_error_for_invalid_non_dict_payload() -> None:
             }
         ],
     }
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.dispatch_outcome == "unknown"
+
+
+@pytest.mark.anyio
+async def test_call_tool_rejects_results_above_the_uncompressed_ceiling() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            content=b'{"content":"' + b'x' * settings.MCP_MAX_TOOL_RESULT_BYTES + b'"}',
+        )
+
+    transport = McpHttpTransport()
+    transport._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        payload = await transport.call_tool("http://mcp.example", "large.result", {}, 1000)
+    finally:
+        await transport.close()
+
+    assert payload["isError"] is True
+    assert payload["content"][0]["text"] == "Upstream tool error"
 
 
 @pytest.mark.anyio
@@ -103,6 +126,8 @@ async def test_call_tool_returns_error_for_jsonrpc_payload_missing_result() -> N
             }
         ],
     }
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.dispatch_outcome == "unknown"
 
 
 @pytest.mark.anyio
@@ -137,6 +162,9 @@ async def test_call_tool_returns_sanitized_error_for_jsonrpc_error_envelope() ->
         "isError": True,
         "content": [{"type": "text", "text": "Upstream tool error"}],
     }
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.code == "MCP_JSONRPC_ERROR"
+    assert payload.dispatch_outcome == "unknown"
 
 
 @pytest.mark.anyio

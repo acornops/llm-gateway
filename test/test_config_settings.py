@@ -62,6 +62,24 @@ def test_internal_transport_tls_defaults_disabled():
     assert settings.BUILTIN_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
 
 
+def test_builtin_transport_timeout_leaves_headroom_for_producer_error():
+    assert internal_transport_module.builtin_tool_transport_timeout_seconds(20_000) == 25.0
+    assert internal_transport_module.builtin_tool_transport_timeout_seconds(1) > 5.0
+
+
+def test_mcp_result_ceiling_cannot_exceed_two_mibibytes():
+    with pytest.raises(ValidationError):
+        Settings(MCP_MAX_TOOL_RESULT_BYTES=2 * 1024 * 1024 + 1)
+
+
+def test_builtin_transport_envelope_has_bounded_headroom():
+    settings = Settings()
+
+    assert settings.BUILTIN_MCP_MAX_RESPONSE_BYTES == 3 * 1024 * 1024
+    with pytest.raises(ValidationError):
+        Settings(BUILTIN_MCP_MAX_RESPONSE_BYTES=2 * 1024 * 1024)
+
+
 def test_internal_transport_tls_requires_files_and_https_urls(tmp_path: Path):
     with pytest.raises(ValidationError) as exc_info:
         Settings(
@@ -195,6 +213,61 @@ async def test_builtin_transport_forwards_tool_call_id(monkeypatch: pytest.Monke
         "call-1",
     )
     assert result == {"content": [], "isError": False}
+
+
+@pytest.mark.anyio
+async def test_builtin_transport_rejects_oversized_results(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"content":"' + b'x' * (3 * 1024 * 1024) + b'"}',
+            request=request,
+        )
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(ValueError, match="3 MiB"):
+        await internal_transport_module.post_builtin_mcp_tool(
+            "http://control-plane/internal/v1/mcp", "get_resource", {}, 1000, {}
+        )
+
+
+@pytest.mark.anyio
+async def test_builtin_transport_preserves_structured_agent_unavailable_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={
+                "error": {
+                    "code": "TARGET_AGENT_UNAVAILABLE",
+                    "message": "Target agent is temporarily unavailable",
+                    "outcome": "not_started",
+                    "retryable": True,
+                }
+            },
+            request=request,
+        )
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    result = await internal_transport_module.post_builtin_mcp_tool(
+        "http://control-plane/internal/v1/mcp", "get_resource", {}, 1000, {}
+    )
+    assert result.code == "TARGET_AGENT_UNAVAILABLE"
+    assert result.dispatch_outcome == "not_started"
+    assert result.retryable is True
+    assert result["content"][0]["text"] == "Target agent is temporarily unavailable"
 
 
 def test_production_settings_reject_placeholders_and_unsafe_jwks():

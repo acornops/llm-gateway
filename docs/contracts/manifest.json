@@ -58,7 +58,8 @@
         "tool",
         "arguments"
       ],
-      "toolCallResponseFields": ["result", "is_error"]
+      "toolCallResponseFields": ["full_result", "model_context", "context_meta", "artifact_eligible", "is_error"],
+      "toolCallResponseMaxBytes": 5242880
     },
     "control-plane": {
       "adminPaths": [
@@ -105,6 +106,8 @@
         "version",
         "source",
         "input_schema",
+        "output_schema",
+        "artifact_policy",
         "enabled"
       ],
       "jwksPath": "GET /api/v1/auth/jwks.json",

@@ -2,12 +2,14 @@ import hashlib
 import time
 from typing import Any, Literal
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as jsonschema_validate
 from pydantic import BaseModel, Field, model_validator
 
+from app.api.tool_result_normalization import ToolCallResponse, _json_size, _normalize_tool_response
 from app.auth.claims import TokenClaims
 from app.auth.jwt_validator import TokenContext, get_current_token_context
 from app.auth.tool_permissions import is_tool_permitted
@@ -18,7 +20,7 @@ from app.internal_model_tools import is_reserved_internal_tool_name
 from app.internal_transport import post_builtin_mcp_tool
 from app.mcp.header_policy import validate_auth_header_value
 from app.mcp.registry.store import mcp_server_registry, tool_registry
-from app.mcp.transports.http_transport import mcp_transport
+from app.mcp.transports.http_transport import McpToolTransportError, mcp_transport
 from app.observability.metrics import (
     GATEWAY_TOOL_CALL_LATENCY_MS,
     GATEWAY_TOOL_CALLS_TOTAL,
@@ -43,6 +45,87 @@ WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS = 10000
 
 def _is_missing_secret_error(exc: Exception) -> bool:
     return isinstance(exc, SecretNotFoundError)
+
+
+def _tool_execution_error_response(exc: Exception, capability: str) -> ToolCallResponse:
+    """Return a bounded error and conservatively mark ambiguous write outcomes."""
+    is_timeout = isinstance(exc, httpx.TimeoutException)
+    write_capable = capability != "read"
+    error: dict[str, Any] = {
+        "code": ErrorCode.TOOL_TIMEOUT if is_timeout else ErrorCode.TOOL_EXECUTION_FAILED,
+        "message": "Tool execution timed out" if is_timeout else TOOL_EXECUTION_FAILED_MESSAGE,
+        "retryable": is_timeout and not write_capable,
+    }
+    if write_capable:
+        error["outcome"] = "unknown"
+    size = _json_size(error)
+    return ToolCallResponse(
+        full_result=error,
+        model_context=error,
+        context_meta={
+            "schema_version": "v1",
+            "strategy": "error",
+            "original_bytes": size,
+            "context_bytes": size,
+            "truncated": False,
+            "omissions": [],
+        },
+        artifact_eligible=False,
+        is_error=True,
+    )
+
+
+def _tool_transport_error_response(
+    error: McpToolTransportError, capability: str
+) -> ToolCallResponse:
+    """Preserve trusted local MCP dispatch state for safe write retry behavior."""
+    write_capable = capability != "read"
+    result: dict[str, Any] = {
+        "code": error.code,
+        "message": str(error.get("content", [{}])[0].get("text") or "MCP tool call failed."),
+        "retryable": error.retryable
+        and (not write_capable or error.dispatch_outcome == "not_started"),
+    }
+    if write_capable:
+        result["outcome"] = error.dispatch_outcome
+    size = _json_size(result)
+    return ToolCallResponse(
+        full_result=result,
+        model_context=result,
+        context_meta={
+            "schema_version": "v1",
+            "strategy": "transport_error",
+            "original_bytes": size,
+            "context_bytes": size,
+            "truncated": False,
+            "omissions": [],
+        },
+        artifact_eligible=False,
+        is_error=True,
+    )
+
+
+def _mark_unknown_write_contract(response: ToolCallResponse, capability: str) -> ToolCallResponse:
+    """A malformed response cannot prove that a dispatched write did not happen."""
+    if (
+        capability != "read"
+        and response.is_error
+        and isinstance(response.full_result, dict)
+        and response.full_result.get("code") in {
+            "TOOL_RESULT_SCHEMA_INVALID",
+            "TOOL_RESULT_CONTRACT_INVALID",
+        }
+    ):
+        error = {**response.full_result, "outcome": "unknown", "retryable": False}
+        size = _json_size(error)
+        response.full_result = error
+        response.model_context = error
+        response.context_meta = {
+            **response.context_meta,
+            "original_bytes": size,
+            "context_bytes": size,
+        }
+    return response
 
 
 class ToolCallRequest(BaseModel):
@@ -111,11 +194,6 @@ class ToolCallRequest(BaseModel):
             }
         }
     }
-
-
-class ToolCallResponse(BaseModel):
-    result: Any
-    is_error: bool
 
 
 def _request_matches_claim_scope(req: ToolCallRequest, claims: TokenClaims) -> bool:
@@ -313,13 +391,24 @@ async def execute_tool_call(
                     tool.timeout_ms,
                     request_headers,
                 )
-            is_error = mcp_response.get("isError", False)
+            is_error = mcp_response.get("isError") is True
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=is_error).inc()
             GATEWAY_TOOL_CALL_LATENCY_MS.labels(tool=req.tool).observe(
                 (time.time() - start_time) * 1000
             )
-            return ToolCallResponse(result=mcp_response.get("content", []), is_error=is_error)
-        except Exception:
+            if isinstance(mcp_response, McpToolTransportError):
+                return _tool_transport_error_response(mcp_response, str(tool.capability))
+            return _mark_unknown_write_contract(
+                _normalize_tool_response(
+                    mcp_response,
+                    trusted_builtin=is_builtin_tool and req.target_type == KUBERNETES_TARGET_TYPE,
+                    output_schema=tool.output_schema,
+                    artifact_policy=getattr(tool, "artifact_policy", "never"),
+                    expected_tool=req.tool,
+                ),
+                str(tool.capability),
+            )
+        except Exception as exc:
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=True).inc()
             logger.warning(
                 "workflow_tool_call_execution_failed",
@@ -329,13 +418,7 @@ async def execute_tool_call(
                 tool=req.tool,
                 server_name=server.server_name,
             )
-            return ToolCallResponse(
-                result={
-                    "code": ErrorCode.TOOL_EXECUTION_FAILED,
-                    "message": TOOL_EXECUTION_FAILED_MESSAGE,
-                },
-                is_error=True,
-            )
+            return _tool_execution_error_response(exc, str(tool.capability))
 
     # Resolve tool from registry
     tool = await tool_registry.get_tool(
@@ -513,12 +596,23 @@ async def execute_tool_call(
                 request_headers,
             )
 
-        is_error = mcp_response.get("isError", False)
+        is_error = mcp_response.get("isError") is True
         GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=is_error).inc()
         GATEWAY_TOOL_CALL_LATENCY_MS.labels(tool=req.tool).observe(
             (time.time() - start_time) * 1000
         )
-        return ToolCallResponse(result=mcp_response.get("content", []), is_error=is_error)
+        if isinstance(mcp_response, McpToolTransportError):
+            return _tool_transport_error_response(mcp_response, str(tool.capability))
+        return _mark_unknown_write_contract(
+            _normalize_tool_response(
+                mcp_response,
+                trusted_builtin=is_builtin_tool and req.target_type == KUBERNETES_TARGET_TYPE,
+                output_schema=tool.output_schema,
+                artifact_policy=getattr(tool, "artifact_policy", "never"),
+                expected_tool=req.tool,
+            ),
+            str(tool.capability),
+        )
     except Exception as e:
         GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=True).inc()
         logger.warning(
@@ -529,10 +623,4 @@ async def execute_tool_call(
             error=str(e),
             exc_info=True,
         )
-        return ToolCallResponse(
-            result={
-                "code": ErrorCode.TOOL_EXECUTION_FAILED,
-                "message": TOOL_EXECUTION_FAILED_MESSAGE,
-            },
-            is_error=True,
-        )
+        return _tool_execution_error_response(e, str(tool.capability))

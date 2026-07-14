@@ -1,13 +1,18 @@
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.handlers_tool_call import (
     BUILTIN_MCP_BRIDGE_NOT_CONFIGURED,
     MCP_SERVER_AUTH_NOT_CONFIGURED,
+    _mark_unknown_write_contract,
+    _tool_execution_error_response,
+    _tool_transport_error_response,
 )
+from app.api.tool_result_normalization import ToolCallResponse
 from app.examples import (
     EXAMPLE_RUN_ID,
     EXAMPLE_SESSION_ID,
@@ -16,6 +21,7 @@ from app.examples import (
 )
 from app.main import app
 from app.mcp.registry.models import McpServer, Tool
+from app.mcp.transports.http_transport import McpToolTransportError
 
 BASE_CLAIMS = {
     "iss": "llm-gateway",
@@ -34,6 +40,55 @@ BASE_CLAIMS = {
         "max_output_tokens": 4096,
     },
 }
+
+
+def test_post_dispatch_write_timeout_is_not_retryable():
+    write_result = _tool_execution_error_response(httpx.ReadTimeout("timed out"), "write")
+    read_result = _tool_execution_error_response(httpx.ReadTimeout("timed out"), "read")
+    assert write_result.full_result == {
+        "code": "TOOL_TIMEOUT", "message": "Tool execution timed out",
+        "retryable": False, "outcome": "unknown",
+    }
+    assert read_result.full_result == {
+        "code": "TOOL_TIMEOUT", "message": "Tool execution timed out", "retryable": True,
+    }
+
+
+def test_invalid_post_dispatch_jsonrpc_write_result_is_unknown_and_not_retryable():
+    transport_error = McpToolTransportError(
+        {"isError": True, "content": [{"type": "text", "text": "Upstream tool error"}]},
+        code="MCP_RESULT_INVALID",
+        dispatch_outcome="unknown",
+        retryable=False,
+    )
+
+    response = _tool_transport_error_response(transport_error, "write")
+
+    assert response.full_result == {
+        "code": "MCP_RESULT_INVALID",
+        "message": "Upstream tool error",
+        "retryable": False,
+        "outcome": "unknown",
+    }
+
+
+@pytest.mark.parametrize(
+    "code", ["TOOL_RESULT_SCHEMA_INVALID", "TOOL_RESULT_CONTRACT_INVALID"]
+)
+def test_invalid_write_result_contract_has_unknown_outcome(code: str):
+    error = {"code": code, "message": "Invalid result"}
+    response = _mark_unknown_write_contract(
+        ToolCallResponse(
+            full_result=error,
+            model_context=error,
+            context_meta={"strategy": "schema_error", "original_bytes": 1, "context_bytes": 1},
+            artifact_eligible=False,
+            is_error=True,
+        ),
+        "write",
+    )
+    assert response.full_result["outcome"] == "unknown"
+    assert response.full_result["retryable"] is False
 
 
 def build_token_claims(**overrides):
@@ -132,7 +187,10 @@ async def test_tool_call_contract():
 
                 assert response.status_code == 200
                 data = response.json()
-                assert data["result"] == [{"type": "text", "text": "Sunny"}]
+                assert data["full_result"] == [{"type": "text", "text": "Sunny"}]
+                assert data["model_context"] == [{"type": "text", "text": "Sunny"}]
+                assert data["context_meta"]["strategy"] == "mcp_content"
+                assert data["artifact_eligible"] is False
                 assert data["is_error"] is False
                 mock_get_tool.assert_awaited_once_with(
                     EXAMPLE_WORKSPACE_ID,
@@ -357,9 +415,12 @@ async def test_tool_call_sanitizes_execution_failures():
             assert response.status_code == 200
             data = response.json()
             assert data["is_error"] is True
-            assert data["result"]["code"] == "TOOL_EXECUTION_FAILED"
-            assert data["result"]["message"] == "Tool execution failed"
-            assert "internal-mcp" not in data["result"]["message"]
+            assert data["full_result"]["code"] == "TOOL_EXECUTION_FAILED"
+            assert data["full_result"]["message"] == "Tool execution failed"
+            assert data["full_result"]["outcome"] == "unknown"
+            assert data["full_result"]["retryable"] is False
+            assert data["model_context"] == data["full_result"]
+            assert "internal-mcp" not in data["full_result"]["message"]
             mock_call_tool.assert_awaited()
         finally:
             app.dependency_overrides.clear()
@@ -674,10 +735,13 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
                 )
 
             assert response.status_code == 200
-            assert response.json() == {
-                "result": [{"type": "text", "text": '{"tools":["mcp.tools.list"]}'}],
-                "is_error": False,
-            }
+            payload = response.json()
+            assert payload["full_result"] == [
+                {"type": "text", "text": '{"tools":["mcp.tools.list"]}'}
+            ]
+            assert payload["model_context"] == {"tools": ["mcp.tools.list"]}
+            assert payload["artifact_eligible"] is False
+            assert payload["is_error"] is False
             mock_get_tool.assert_awaited_once_with(
                 EXAMPLE_WORKSPACE_ID,
                 "__workspace__",

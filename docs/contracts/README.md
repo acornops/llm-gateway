@@ -32,6 +32,12 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, target, workflow, and context scope.
 - Requested body scope must match token scope; the gateway must not infer missing scope from UI state or registry state.
 - Provider credentials, admin tokens, run JWTs, MCP secret headers, raw reasoning state, and chain-of-thought must not be emitted in responses.
+- MCP results normalize to `full_result`, `model_context`, `context_meta`,
+  `artifact_eligible`, and `is_error`. Trusted AgentK envelopes must validate as
+  `acornops.model-context.v1` plus `acornops.full-tool-result.v1`; untrusted MCP
+  metadata can never enable artifact persistence.
+  See [Tool Result Normalization](/docs/design-docs/tool-result-normalization.md)
+  for trusted-producer and generic-result behavior.
 
 ## Execution-Engine Boundary Notes
 

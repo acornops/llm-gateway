@@ -21,6 +21,23 @@ from app.resilience.outbound import (
 logger = structlog.get_logger()
 
 
+class McpToolTransportError(dict[str, Any]):
+    """Sanitized MCP error carrying trusted local dispatch semantics."""
+
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        code: str,
+        dispatch_outcome: str,
+        retryable: bool,
+    ) -> None:
+        super().__init__(payload)
+        self.code = code
+        self.dispatch_outcome = dispatch_outcome
+        self.retryable = retryable
+
+
 class McpHttpTransport:
     """
     Handles tool execution over HTTP/SSE Model Context Protocol.
@@ -37,6 +54,47 @@ class McpHttpTransport:
             "isError": True,
             "content": [{"type": "text", "text": message}],
         }
+
+    @classmethod
+    def _transport_error_payload(
+        cls,
+        prefix: str,
+        *,
+        code: str,
+        dispatch_outcome: str,
+        retryable: bool,
+        detail: str | None = None,
+    ) -> McpToolTransportError:
+        return McpToolTransportError(
+            cls._error_payload(prefix, detail),
+            code=code,
+            dispatch_outcome=dispatch_outcome,
+            retryable=retryable,
+        )
+
+    async def _request_bounded(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        """Read at most the decoded MCP result ceiling, closing oversized streams early."""
+        async with self._client.stream(method, url, **kwargs) as response:
+            if response.status_code >= 400:
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=b"",
+                    request=response.request,
+                )
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in response.aiter_bytes():
+                received += len(chunk)
+                if received > settings.MCP_MAX_TOOL_RESULT_BYTES:
+                    raise ValueError("MCP response exceeds the 2 MiB result limit")
+                chunks.append(chunk)
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=b"".join(chunks),
+                request=response.request,
+            )
 
     async def close(self):
         """Closes the underlying HTTP client."""
@@ -77,7 +135,12 @@ class McpHttpTransport:
             return payload
         except CircuitOpenError as exc:
             logger.warning("mcp_tool_call_circuit_open", server_url=url, tool=name, error=str(exc))
-            return self._error_payload("MCP server unavailable")
+            return self._transport_error_payload(
+                "MCP server unavailable",
+                code="MCP_CIRCUIT_OPEN",
+                dispatch_outcome="not_started",
+                retryable=True,
+            )
         except McpEgressPolicyError as exc:
             logger.warning(
                 "mcp_tool_call_egress_policy_failed",
@@ -85,7 +148,12 @@ class McpHttpTransport:
                 tool=name,
                 error=str(exc),
             )
-            return self._error_payload("MCP server blocked by egress policy")
+            return self._transport_error_payload(
+                "MCP server blocked by egress policy",
+                code="MCP_EGRESS_BLOCKED",
+                dispatch_outcome="not_started",
+                retryable=False,
+            )
         except Exception as exc:
             logger.warning("mcp_tool_call_failed", server_url=url, tool=name, error=str(exc))
             note_dependency_event("mcp", "failure")
@@ -97,7 +165,18 @@ class McpHttpTransport:
                 )
                 if opened:
                     note_dependency_event("mcp", "circuit_open")
-            return self._error_payload(self._tool_error_prefix(exc))
+            if isinstance(exc, httpx.TimeoutException):
+                code = "MCP_TOOL_TIMEOUT"
+            elif isinstance(exc, httpx.RequestError):
+                code = "MCP_TOOL_REQUEST_FAILED"
+            else:
+                code = "MCP_TOOL_TRANSPORT_FAILED"
+            return self._transport_error_payload(
+                self._tool_error_prefix(exc),
+                code=code,
+                dispatch_outcome="unknown",
+                retryable=isinstance(exc, (httpx.TimeoutException, httpx.RequestError)),
+            )
 
     async def list_tools(
         self,
@@ -185,7 +264,8 @@ class McpHttpTransport:
         timeout_ms: int,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        response = await self._client.post(
+        response = await self._request_bounded(
+            "POST",
             f"{target.connection_url}/tools/call",
             json={"name": name, "arguments": arguments},
             timeout=timeout_ms / 1000.0,
@@ -195,7 +275,8 @@ class McpHttpTransport:
         )
         if response.status_code in (404, 405):
             # Fallback for JSON-RPC style MCP servers exposed on root.
-            response = await self._client.post(
+            response = await self._request_bounded(
+                "POST",
                 target.connection_url,
                 json={
                     "jsonrpc": "2.0",
@@ -213,23 +294,37 @@ class McpHttpTransport:
         if isinstance(payload, dict) and payload.get("jsonrpc") == "2.0":
             if "error" in payload:
                 logger.warning("mcp_jsonrpc_tool_error", server_url=target.original_url, tool=name)
-                return self._error_payload("Upstream tool error")
-            if "result" not in payload or payload["result"] is None:
-                return self._error_payload(
+                return self._transport_error_payload(
                     "Upstream tool error",
-                    "Invalid JSON-RPC tool result payload.",
+                    code="MCP_JSONRPC_ERROR",
+                    dispatch_outcome="unknown",
+                    retryable=False,
+                )
+            if "result" not in payload or payload["result"] is None:
+                return self._transport_error_payload(
+                    "Upstream tool error",
+                    code="MCP_RESULT_INVALID",
+                    dispatch_outcome="unknown",
+                    retryable=False,
+                    detail="Invalid JSON-RPC tool result payload.",
                 )
             result = payload["result"]
             if isinstance(result, dict):
                 return result
-            return {
-                "isError": False,
-                "content": [{"type": "text", "text": str(result)}],
-            }
-        if not isinstance(payload, dict):
-            return self._error_payload(
+            return self._transport_error_payload(
                 "Upstream tool error",
-                "Invalid response payload from MCP server.",
+                code="MCP_RESULT_INVALID",
+                dispatch_outcome="unknown",
+                retryable=False,
+                detail="JSON-RPC tool result must be an object.",
+            )
+        if not isinstance(payload, dict):
+            return self._transport_error_payload(
+                "Upstream tool error",
+                code="MCP_RESULT_INVALID",
+                dispatch_outcome="unknown",
+                retryable=False,
+                detail="Invalid response payload from MCP server.",
             )
         return payload
 
@@ -240,7 +335,8 @@ class McpHttpTransport:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         timeout_sec = timeout_ms / 1000.0
-        response = await self._client.post(
+        response = await self._request_bounded(
+            "POST",
             f"{target.connection_url}/tools/list",
             json={},
             timeout=timeout_sec,
@@ -250,7 +346,8 @@ class McpHttpTransport:
         )
         if response.status_code in (404, 405):
             # Some servers expose discovery on GET /tools/list.
-            response = await self._client.get(
+            response = await self._request_bounded(
+                "GET",
                 f"{target.connection_url}/tools/list",
                 timeout=timeout_sec,
                 headers=headers,
@@ -259,7 +356,8 @@ class McpHttpTransport:
             )
         if response.status_code in (404, 405):
             # Fallback for JSON-RPC style MCP servers exposed on root.
-            response = await self._client.post(
+            response = await self._request_bounded(
+                "POST",
                 target.connection_url,
                 json={
                     "jsonrpc": "2.0",

@@ -36,6 +36,8 @@ class Tool(Base):
     mcp_server_url = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
     input_schema = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    output_schema = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    artifact_policy = Column(String, nullable=False, default="never")
     description = Column(String, nullable=True)
     capability = Column(String, nullable=False, default="write")
     version = Column(String, nullable=False, default="v1")

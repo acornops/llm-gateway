@@ -30,6 +30,8 @@ class ToolConfigRequest(BaseModel):
     version: str = "v1"
     source: Literal["mcp", "builtin"] = "mcp"
     input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool = True
 
     @field_validator("name")
@@ -52,6 +54,8 @@ class ToolConfigResponse(BaseModel):
     version: str = "v1"
     source: Literal["mcp", "builtin"] = "mcp"
     input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool
 
 
@@ -62,6 +66,8 @@ class ToolUpdateRequest(BaseModel):
     capability: Literal["read", "write"] | None = None
     version: str | None = None
     input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    artifact_policy: Literal["never", "if_detailed", "always"] | None = None
 
 
 class McpServerCreateRequest(BaseModel):

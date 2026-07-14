@@ -178,6 +178,16 @@ async def update_mcp_tool(
             if request.input_schema is not None
             else existing.input_schema
         ),
+        output_schema=(
+            request.output_schema
+            if request.output_schema is not None
+            else existing.output_schema
+        ),
+        artifact_policy=(
+            request.artifact_policy
+            if request.artifact_policy is not None
+            else getattr(existing, "artifact_policy", "never")
+        ),
         enabled=existing.enabled if request.enabled is None else request.enabled,
         description=(
             request.description

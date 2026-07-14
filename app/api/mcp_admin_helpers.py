@@ -39,6 +39,8 @@ def _build_tool_response(tool: Tool) -> ToolConfigResponse:
         version=tool.version or "v1",
         source=source,
         input_schema=tool.input_schema,
+        output_schema=getattr(tool, "output_schema", None),
+        artifact_policy=getattr(tool, "artifact_policy", "never"),
         enabled=bool(tool.enabled),
     )
 
@@ -202,6 +204,17 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
                 input_schema = sanitize_discovered_schema(candidate)
                 break
 
+        output_schema = None
+        for key in ("output_schema", "outputSchema"):
+            candidate = raw_tool.get(key)
+            if isinstance(candidate, dict):
+                output_schema = sanitize_discovered_schema(candidate)
+                break
+
+        artifact_policy = raw_tool.get("artifactPolicy", "never")
+        if artifact_policy not in ("never", "if_detailed", "always"):
+            artifact_policy = "never"
+
         version = raw_tool.get("version")
         if not isinstance(version, str) or not version.strip():
             version = "v1"
@@ -215,6 +228,8 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
                 version=version,
                 source="mcp",
                 input_schema=input_schema,
+                output_schema=output_schema,
+                artifact_policy=artifact_policy,
                 enabled=False,
             )
         )
@@ -340,6 +355,8 @@ async def _apply_tools_for_server(
                 target_type=target_type,
                 timeout_ms=tool.timeout_ms,
                 input_schema=tool.input_schema,
+                output_schema=getattr(tool, "output_schema", None),
+                artifact_policy=getattr(tool, "artifact_policy", "never"),
                 enabled=bool(tool.enabled),
                 description=tool.description,
                 capability=capability,

@@ -2,7 +2,7 @@ import base64
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_VALUES = {
@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     BUILTIN_MCP_SERVER_NAME: str = "acornops-cluster-agent"
     BUILTIN_MCP_SERVER_URL: str = "http://control-plane:8081/internal/v1/mcp"
     MCP_CALL_DEFAULT_TIMEOUT_MS: int = 10000
+    MCP_MAX_TOOL_RESULT_BYTES: int = Field(default=2 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024)
+    BUILTIN_MCP_MAX_RESPONSE_BYTES: int = Field(
+        default=3 * 1024 * 1024,
+        ge=2 * 1024 * 1024 + 64 * 1024,
+        le=5 * 1024 * 1024,
+    )
     MCP_DISCOVERY_RETRY_ATTEMPTS: int = 3
     MCP_DISCOVERY_RETRY_BACKOFF_MS: int = 200
     MCP_EGRESS_REQUIRE_HTTPS: bool = True

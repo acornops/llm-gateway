@@ -64,6 +64,19 @@ GATEWAY_TOOL_CALL_LATENCY_MS = Histogram(
     "gateway_tool_call_latency_ms_bucket", "Tool call latency in milliseconds", ["tool"]
 )
 
+GATEWAY_TOOL_RESULT_BYTES = Histogram(
+    "gateway_tool_result_bytes",
+    "Serialized tool result bytes by result view",
+    ["view"],
+    buckets=(256, 1024, 4096, 12288, 65536, 262144, 1048576, 2097152),
+)
+
+GATEWAY_TOOL_RESULT_NORMALIZATIONS_TOTAL = Counter(
+    "gateway_tool_result_normalizations_total",
+    "Tool result normalization outcomes",
+    ["strategy"],
+)
+
 # Outbound dependency resilience metrics
 GATEWAY_UPSTREAM_DEPENDENCY_EVENTS_TOTAL = Counter(
     "gateway_upstream_dependency_events_total",
