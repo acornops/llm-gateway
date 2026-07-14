@@ -138,8 +138,12 @@ async def _resolve_host(
 
 
 async def prepare_mcp_egress_request(url: str) -> ValidatedMcpRequestTarget:
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or "").lower()
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port or _default_port(parsed.scheme)
+    except ValueError as exc:
+        raise McpEgressPolicyError("MCP server URL has an invalid host or port") from exc
     if parsed.scheme not in {"http", "https"} or not hostname:
         raise McpEgressPolicyError("MCP server URL must be an absolute HTTP(S) URL")
     if parsed.username or parsed.password:
@@ -152,7 +156,6 @@ async def prepare_mcp_egress_request(url: str) -> ValidatedMcpRequestTarget:
         settings.MCP_EGRESS_REQUIRE_HTTPS
         and parsed.scheme != "https"
         and _runtime_env() == "production"
-        and not host_is_allowed
         and not local_development_host
     ):
         raise McpEgressPolicyError("Remote MCP server URLs must use HTTPS")
@@ -168,7 +171,7 @@ async def prepare_mcp_egress_request(url: str) -> ValidatedMcpRequestTarget:
                 connection_url=url,
                 host_header=_host_header(
                     hostname,
-                    parsed.port or _default_port(parsed.scheme),
+                    port,
                     parsed.scheme,
                 ),
                 extensions={},
@@ -187,7 +190,6 @@ async def prepare_mcp_egress_request(url: str) -> ValidatedMcpRequestTarget:
                     "MCP server URL resolves to a blocked private, local, or reserved address"
                 )
 
-    port = parsed.port or _default_port(parsed.scheme)
     host_header = _host_header(hostname, port, parsed.scheme)
     if hostname_is_literal or _runtime_env() != "production":
         return ValidatedMcpRequestTarget(

@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     MCP_EGRESS_ALLOW_LOCAL_ADDRESSES: bool = False
     MCP_EGRESS_ALLOWED_HOSTS: str = ""
     MCP_EGRESS_DNS_CACHE_TTL_SEC: int = 300
+    MCP_EGRESS_CA_BUNDLE_FILE: str = ""
     TOOL_REGISTRY_CACHE_TTL_SEC: int = 300
 
     # Rate limits

@@ -135,15 +135,17 @@ All of the above require `Authorization: Bearer <ADMIN_API_TOKEN>` and explicit 
 
 For remote MCP servers managed by the management console's MCP Servers tab:
 
-- tool discovery is expected via MCP `tools/list`.
-- tool execution is expected via MCP `tools/call`.
-- this gateway supports the following discovery transports in order:
-  - `POST {server_url}/tools/list`
-  - `GET {server_url}/tools/list`
-  - JSON-RPC fallback: `POST {server_url}` with method `tools/list`
-- and supports tool calls via:
-  - `POST {server_url}/tools/call`
-  - JSON-RPC fallback: `POST {server_url}` with method `tools/call`
+- `server_url` is the single MCP Streamable HTTP endpoint (for example,
+  `https://mcp.example.com/mcp`). The gateway does not append REST-style
+  `/tools/list` or `/tools/call` paths.
+- each discovery or tool-call operation performs the standard MCP lifecycle:
+  `initialize`, `notifications/initialized`, then `tools/list` or `tools/call`.
+- the client negotiates the protocol version, returns an issued
+  `MCP-Session-Id`, sends `MCP-Protocol-Version`, and accepts both JSON and SSE
+  responses.
+- each operation uses an isolated session and asks the server to terminate it
+  on close. Idempotent discovery reinitializes once after explicit session
+  termination; tool calls are never automatically replayed.
 
 On server create (when no explicit tool list is supplied), llm-gateway discovers
 tools, stores them disabled, and sanitizes remote descriptions/schemas before
@@ -154,7 +156,7 @@ Each MCP server also tracks `connection_status`, `last_discovery_at`, and `last_
 If discovery fails or returns empty, server creation still succeeds but no tools are mapped until discovery succeeds.
 MCP server `public_headers` are visible non-secret metadata. Credential-bearing headers must use secret-backed auth fields.
 
-MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an explicit `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`. The configured AcornOps builtin bridge URL is the only internal HTTP exception, and only when control plane registers tools with `source: builtin`.
+MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an exact `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`; neither setting bypasses HTTPS or certificate verification. Mount an organization private CA and set `MCP_EGRESS_CA_BUNDLE_FILE` to its PEM bundle; this extends normal trust only for generic remote MCP traffic. The configured AcornOps builtin bridge URL uses a separate trusted internal transport and is selected only when control plane registers tools with `source: builtin`.
 
 LLM and tool-call limits are configured by `LLM_RATE_LIMIT_PER_WINDOW`, `TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. In production, `REQUIRE_REDIS_RATE_LIMITS_IN_PRODUCTION=true` makes missing Redis configuration a startup error.
 
@@ -183,7 +185,7 @@ This starts:
 - postgres (`localhost:5432`)
 - redis (`localhost:6379`)
 - mock-auth (`http://localhost:8003`)
-- mock-mcp (`http://localhost:8002`)
+- mock-mcp (`http://localhost:8002/mcp`)
 
 The gateway and mock auth/MCP services run with Uvicorn `--reload`, so code changes are reflected immediately.
 

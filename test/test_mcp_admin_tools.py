@@ -184,6 +184,9 @@ def test_mcp_server_schema_rejects_sensitive_and_reserved_public_headers():
         {"Authorization": "Bearer leaked"},
         {"x-workspace-id": "spoofed"},
         {"x-client-token": "leaked"},
+        {"MCP-Session-Id": "spoofed"},
+        {"MCP-Protocol-Version": "spoofed"},
+        {"Accept": "text/plain"},
     ):
         with pytest.raises(ValidationError):
             McpServerUpdateRequest(public_headers=public_headers)
@@ -192,6 +195,9 @@ def test_mcp_server_schema_rejects_sensitive_and_reserved_public_headers():
 def test_mcp_server_schema_rejects_unsafe_auth_header_names_and_values():
     with pytest.raises(ValidationError):
         McpServerUpdateRequest(auth_header_name="x-run-id")
+
+    with pytest.raises(ValidationError):
+        McpServerUpdateRequest(auth_header_name="mcp-session-id")
 
     with pytest.raises(ValidationError):
         McpServerUpdateRequest(auth_header_prefix="Bearer \r\nx-injected: true")

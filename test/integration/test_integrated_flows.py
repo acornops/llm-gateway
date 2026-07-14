@@ -40,7 +40,7 @@ async def test_full_tool_call_flow_integrated():
         target_id="cl_999",
         target_type="kubernetes",
         tool_name="integrated_test_tool",
-        mcp_server_url="http://mock-mcp-service:8002",
+        mcp_server_url="http://mock-mcp-service:8002/mcp",
         enabled=True,
         timeout_ms=5000,
     )
@@ -60,14 +60,37 @@ async def test_full_tool_call_flow_integrated():
 
         # 2. Mock external MCP server
         with respx.mock:
-            mcp_route = respx.post("http://mock-mcp-service:8002/tools/call").mock(
-                return_value=Response(
-                    200,
-                    json={
-                        "content": [{"type": "text", "text": "Integrated Success"}],
+            def handle_mcp(request):
+                request_payload = json.loads(request.content)
+                method = request_payload.get("method")
+                request_id = request_payload.get("id")
+                if method == "initialize":
+                    result = {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "integration", "version": "1.0.0"},
+                    }
+                elif method == "notifications/initialized":
+                    return Response(202)
+                elif method == "tools/call":
+                    result = {
+                        "content": [
+                            {"type": "text", "text": "Integrated Success"}
+                        ],
                         "isError": False,
-                    },
+                    }
+                else:
+                    raise AssertionError(f"Unexpected MCP method: {method}")
+                return Response(
+                    200,
+                    json={"jsonrpc": "2.0", "id": request_id, "result": result},
                 )
+
+            mcp_route = respx.post("http://mock-mcp-service:8002/mcp").mock(
+                side_effect=handle_mcp
+            )
+            respx.get("http://mock-mcp-service:8002/mcp").mock(
+                return_value=Response(405)
             )
 
             # 3. Override Auth

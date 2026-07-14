@@ -54,7 +54,7 @@ async def seed():
         existing_server = await mcp_server_registry.get_server_by_url(
             EXAMPLE_WORKSPACE_ID,
             EXAMPLE_TARGET_ID,
-            "http://mock-mcp:8002",
+            "http://mock-mcp:8002/mcp",
             target_type=KUBERNETES_TARGET_TYPE,
             enabled_only=False,
         )
@@ -64,7 +64,7 @@ async def seed():
                 EXAMPLE_TARGET_ID,
                 KUBERNETES_TARGET_TYPE,
                 "remote-mcp-server",
-                "http://mock-mcp:8002",
+                "http://mock-mcp:8002/mcp",
                 True,
                 "none",
             )
@@ -83,7 +83,7 @@ async def seed():
         if existing_tool is None:
             await tool_registry.upsert_tool(
                 tool_name="get_weather",
-                mcp_server_url="http://mock-mcp:8002",
+                mcp_server_url="http://mock-mcp:8002/mcp",
                 workspace_id=EXAMPLE_WORKSPACE_ID,
                 target_id=EXAMPLE_TARGET_ID,
                 target_type=KUBERNETES_TARGET_TYPE,

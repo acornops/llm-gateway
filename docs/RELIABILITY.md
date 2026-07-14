@@ -29,6 +29,10 @@
 - Provider streaming retries are allowed only before the gateway has emitted any NDJSON event for a request.
 - MCP tool discovery and Vault secret reads use bounded exponential backoff for retryable timeout, connection, rate-limit, and 5xx failure modes.
 - MCP tool execution does not automatically retry because tool side effects may be non-idempotent; repeated retryable failures instead trip a short-lived circuit breaker.
+- Remote MCP discovery and tool execution each use a fresh initialized
+  Streamable HTTP session. Discovery is retried once only when the peer
+  explicitly reports that the attached session was terminated. Tool calls,
+  ordinary failures, and ambiguous network failures are never replayed.
 - Provider, MCP, and secret-backend circuit breakers open after repeated retryable failures and short-circuit subsequent calls until the cooldown expires.
 - Dependency retry, failure, and circuit-open events must be visible through structured logs or Prometheus metrics.
 - Tool registry entries and secrets are cached in-process. In production, keep Redis

@@ -24,6 +24,17 @@ _PUBLIC_HEADER_DENY_PATTERNS = (
     "apikey",
 )
 
+MCP_TRANSPORT_HEADER_NAMES = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "content-type",
+        "last-event-id",
+        "mcp-protocol-version",
+        "mcp-session-id",
+    }
+)
+
 _RESERVED_HEADER_NAMES = {
     "host",
     "content-length",
@@ -38,6 +49,7 @@ _RESERVED_HEADER_NAMES = {
     "x-target-type",
     "x-run-id",
     "x-tool-name",
+    *MCP_TRANSPORT_HEADER_NAMES,
 }
 
 

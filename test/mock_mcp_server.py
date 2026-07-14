@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
@@ -27,37 +27,25 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/tools/list")
-async def list_tools_post():
-    return {"tools": TOOLS}
-
-
-@app.get("/tools/list")
-async def list_tools_get():
-    return {"tools": TOOLS}
-
-
-@app.post("/tools/call")
-async def call_tool(request: Request):
-    data = await request.json()
-    name = data.get("name")
-    arguments = data.get("arguments", {})
-
-    if name == "get_weather":
-        location = arguments.get("location", "unknown")
-        return {
-            "content": [{"type": "text", "text": f"The weather in {location} is sunny and 25°C."}],
-            "isError": False,
-        }
-
-    return {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True}
-
-
-@app.post("/")
-async def jsonrpc_root(request: Request):
+@app.post("/mcp")
+async def streamable_http(request: Request):
     payload = await request.json()
     method = payload.get("method")
     req_id = payload.get("id")
+    if method == "initialize":
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "acornops-mock-mcp", "version": "1.0.0"},
+                },
+            }
+        )
+    if method == "notifications/initialized":
+        return Response(status_code=202)
     if method == "tools/list":
         return JSONResponse(
             {
@@ -103,8 +91,18 @@ async def jsonrpc_root(request: Request):
             "id": req_id,
             "error": {"code": -32601, "message": f"Method not found: {method}"},
         },
-        status_code=404,
+        status_code=200,
     )
+
+
+@app.get("/mcp")
+async def streamable_http_sse_not_supported():
+    return Response(status_code=405)
+
+
+@app.delete("/mcp")
+async def streamable_http_sessions_not_supported():
+    return Response(status_code=405)
 
 
 if __name__ == "__main__":

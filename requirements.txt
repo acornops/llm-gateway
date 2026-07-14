@@ -6,6 +6,7 @@ asyncpg
 alembic
 redis
 httpx
+mcp==1.28.1
 pyjwt[crypto]
 cryptography
 google-genai

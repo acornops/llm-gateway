@@ -55,7 +55,8 @@ flowchart TD
     subgraph MCPPath[MCP Broker Path]
         ToolRegistry[mcp.registry.store]
         ServerRegistry[mcp server registry]
-        Transport[mcp.transports.http_transport]
+        RemoteTransport[Streamable HTTP transport]
+        BuiltinTransport[Trusted builtin transport]
     end
 
     subgraph Storage[State and Secrets]
@@ -88,7 +89,8 @@ flowchart TD
     ToolHandler --> Claims
     ToolHandler --> ToolRegistry
     ToolHandler --> ServerRegistry
-    ToolHandler --> Transport
+    ToolHandler --> RemoteTransport
+    ToolHandler --> BuiltinTransport
 
     MCPAdmin --> ServiceToken
     MCPAdmin --> ToolRegistry
@@ -104,7 +106,8 @@ flowchart TD
     OpenAI --> Providers
     Anthropic --> Providers
     Gemini --> Providers
-    Transport --> RemoteMCP
+    RemoteTransport --> RemoteMCP
+    BuiltinTransport --> CP
     EE --> Router
     CP --> MCPAdmin
 ```
@@ -116,3 +119,19 @@ flowchart TD
 3. stream provider output as normalized NDJSON events
 4. broker MCP tool calls with registry lookups, schema validation, and secret-backed auth
 5. expose internal admin APIs for cluster MCP server and tool management
+
+## MCP Transport Boundaries
+
+Generic remote servers use the configured URL as one standards-compliant MCP
+Streamable HTTP endpoint. The gateway opens an isolated session for each
+discovery or tool-call operation, performs initialization, negotiates the
+protocol version, follows server-issued session state, handles JSON or SSE, and
+terminates the session on close. The official stable MCP Python SDK owns the
+wire lifecycle; gateway wrappers enforce egress pinning, timeouts, response
+ceilings, header ownership, and sanitized telemetry.
+
+The built-in Kubernetes MCP server does not use this transport. Tools explicitly
+registered with `source: builtin` use the trusted control-plane bridge in
+`app/internal_transport.py`, preserving the run-scoped JWT and AgentK tool-call
+contract without exposing that internal HTTP path to configurable remote MCP
+servers.

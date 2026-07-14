@@ -49,6 +49,19 @@ async def test_rejects_remote_http_url_by_default(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://mcp.example.com:not-a-port/mcp",
+        "https://mcp.example.com:70000/mcp",
+    ),
+)
+async def test_rejects_invalid_ports_as_egress_policy_errors(url: str):
+    with pytest.raises(McpEgressPolicyError, match="invalid host or port"):
+        await validate_mcp_server_url(url)
+
+
+@pytest.mark.anyio
 async def test_rejects_private_resolved_addresses(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "app.mcp.egress_policy.socket.getaddrinfo",
@@ -95,7 +108,7 @@ async def test_allows_local_development_hosts_without_dns():
 
 
 @pytest.mark.anyio
-async def test_explicit_allowed_host_bypasses_private_address_block(
+async def test_explicit_https_allowed_host_bypasses_private_address_block(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr("app.mcp.egress_policy.settings.MCP_EGRESS_ALLOWED_HOSTS", "mcp.internal")
@@ -104,4 +117,16 @@ async def test_explicit_allowed_host_bypasses_private_address_block(
         _fake_getaddrinfo("10.1.2.3"),
     )
 
-    await validate_mcp_server_url("http://mcp.internal")
+    await validate_mcp_server_url("https://mcp.internal")
+
+
+@pytest.mark.anyio
+async def test_explicit_allowed_host_does_not_bypass_https_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "app.mcp.egress_policy.settings.MCP_EGRESS_ALLOWED_HOSTS", "mcp.internal"
+    )
+
+    with pytest.raises(McpEgressPolicyError, match="HTTPS"):
+        await validate_mcp_server_url("http://mcp.internal")

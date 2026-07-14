@@ -64,12 +64,20 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Registry records have an explicit `scope_type` of `workspace` or `target`. Scope-omitting internal requests remain target-scoped for compatibility.
 - Admin responses expose only whether a credential is configured. Secret values and secret identifiers are not returned.
 - Workspace workflow calls resolve enabled workspace-scoped registry tools. The built-in bridge is used only when the resolved tool is explicitly registered with source `builtin`.
+- Generic remote servers use the configured URL as a single MCP Streamable HTTP
+  endpoint. Each operation performs `initialize`,
+  `notifications/initialized`, and the requested `tools/list` or `tools/call`,
+  including negotiated protocol and server-issued session headers.
+- Generic remote operations accept standard JSON or SSE responses and use an
+  isolated, terminated-on-close session. REST-style appended `/tools/list` and
+  `/tools/call` endpoints are not part of this contract.
 
 - Missing, malformed, or newly
 discovered remote MCP tool capabilities default to `write` until an admin reviews and enables a narrower read classification.
 - Remote MCP metadata is untrusted. Store discovered tools disabled, sanitize descriptions and schemas, and require capability review before enabling.
 - Built-in control-plane bridge calls do not forward configurable public headers or secret-store auth headers.
 - Public headers cannot override platform scope headers or credential headers.
+- Public and auth headers cannot override MCP transport lifecycle headers.
 
 ## Change Checklist
 

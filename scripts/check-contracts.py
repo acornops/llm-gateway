@@ -223,12 +223,14 @@ for needle in (
     expect_in(MANIFEST_TEXT, needle, "Manifest MCP admin field")
 
 for needle in (
-    'f"{target.connection_url}/tools/list"',
-    'f"{target.connection_url}/tools/call"',
-    '"method": "tools/list"',
-    '"method": "tools/call"',
+    "streamable_http_client(",
+    "target.connection_url,",
+    "terminate_on_close=True",
+    "await session.initialize()",
+    "await session.list_tools(cursor=cursor)",
+    "types.CallToolRequest(",
 ):
-    expect_in(TRANSPORT_SOURCE, needle, "MCP transport fallback")
+    expect_in(TRANSPORT_SOURCE, needle, "MCP Streamable HTTP transport")
 
 for needle in (
     "AUTH_ISSUER",
