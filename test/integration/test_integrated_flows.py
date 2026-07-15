@@ -177,8 +177,9 @@ async def test_llm_stream_integrated_openai(monkeypatch: pytest.MonkeyPatch):
                 return stream_response()
 
         class FakeClient:
-            def __init__(self, api_key: str):
-                del api_key
+            def __init__(self, api_key: str, base_url: str):
+                assert api_key == "sk-fake-openai-key"
+                assert base_url == "https://api.openai.com/v1/"
                 self.responses = FakeResponses()
 
         monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
