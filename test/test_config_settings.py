@@ -1,6 +1,7 @@
 import base64
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -60,6 +61,17 @@ def test_internal_transport_tls_defaults_disabled():
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is False
     assert settings.BUILTIN_MCP_SERVER_NAME == "acornops-cluster-agent"
     assert settings.BUILTIN_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
+    assert settings.ADDITIONAL_CA_BUNDLE_FILE == ""
+
+
+def test_additional_ca_bundle_must_be_readable(tmp_path: Path):
+    with pytest.raises(ValidationError, match="ADDITIONAL_CA_BUNDLE_FILE"):
+        Settings(ADDITIONAL_CA_BUNDLE_FILE=str(tmp_path / "missing.pem"))
+
+    ca_file = tmp_path / "additional-ca.pem"
+    ca_file.write_text("test", encoding="utf-8")
+    settings = Settings(ADDITIONAL_CA_BUNDLE_FILE=str(ca_file))
+    assert str(ca_file) == settings.ADDITIONAL_CA_BUNDLE_FILE
 
 
 def test_builtin_transport_timeout_leaves_headroom_for_producer_error():
@@ -131,6 +143,13 @@ def test_internal_transport_tls_requires_ca_even_when_client_cert_not_required(t
 def test_internal_transport_httpx_kwargs_omit_client_cert_when_not_required(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    context = object()
+    build_context = Mock(return_value=context)
+    monkeypatch.setattr(
+        internal_transport_module.outbound_tls,
+        "internal_httpx_ssl_context",
+        build_context,
+    )
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_ENABLED", True)
     monkeypatch.setattr(
         internal_transport_module.settings,
@@ -152,13 +171,26 @@ def test_internal_transport_httpx_kwargs_omit_client_cert_when_not_required(
         "INTERNAL_TRANSPORT_TLS_KEY_FILE",
         "/tls/client.key",
     )
+    monkeypatch.setattr(
+        internal_transport_module.settings,
+        "ADDITIONAL_CA_BUNDLE_FILE",
+        "",
+    )
 
-    assert internal_transport_module.httpx_tls_kwargs() == {"verify": "/tls/ca.crt"}
+    assert internal_transport_module.httpx_tls_kwargs() == {"verify": context}
+    build_context.assert_called_once_with("/tls/ca.crt", "")
 
 
 def test_internal_transport_httpx_kwargs_include_client_cert_when_required(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    context = object()
+    build_context = Mock(return_value=context)
+    monkeypatch.setattr(
+        internal_transport_module.outbound_tls,
+        "internal_httpx_ssl_context",
+        build_context,
+    )
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_ENABLED", True)
     monkeypatch.setattr(
         internal_transport_module.settings,
@@ -180,11 +212,17 @@ def test_internal_transport_httpx_kwargs_include_client_cert_when_required(
         "INTERNAL_TRANSPORT_TLS_KEY_FILE",
         "/tls/client.key",
     )
+    monkeypatch.setattr(
+        internal_transport_module.settings,
+        "ADDITIONAL_CA_BUNDLE_FILE",
+        "/trust/additional-ca.pem",
+    )
 
     assert internal_transport_module.httpx_tls_kwargs() == {
-        "verify": "/tls/ca.crt",
+        "verify": context,
         "cert": ("/tls/client.crt", "/tls/client.key"),
     }
+    build_context.assert_called_once_with("/tls/ca.crt", "/trust/additional-ca.pem")
 
 
 @pytest.mark.anyio

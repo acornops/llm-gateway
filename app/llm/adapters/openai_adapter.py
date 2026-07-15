@@ -12,6 +12,7 @@ from app.llm.adapters.common import (
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
 )
+from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -19,6 +20,7 @@ from app.llm.service import (
     model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
+from app.outbound_tls import provider_http_client
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -43,9 +45,13 @@ class OpenAIAdapter(LLMAdapter):
         """
         Streams a generation from OpenAI and translates events to the gateway format.
         """
-        client_kwargs = {"api_key": api_key}
-        if settings.LLM_PROVIDER_OPENAI_BASE_URL:
-            client_kwargs["base_url"] = settings.LLM_PROVIDER_OPENAI_BASE_URL
+        client_kwargs = {
+            "api_key": api_key,
+            "base_url": provider_base_url("openai"),
+        }
+        http_client = provider_http_client("openai")
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         client = AsyncOpenAI(**client_kwargs)
 
         openai_tools = build_openai_response_tools(req.tools, req.native_tools)
@@ -285,14 +291,17 @@ class OpenAIAdapter(LLMAdapter):
             except Exception as exc:
                 note_dependency_event("provider", "failure")
                 retryable = is_retryable_dependency_error(exc)
-                logger.warning(
-                    "provider_stream_failed",
+                log_provider_stream_failure(
+                    logger,
                     provider="openai",
+                    model=req.model,
+                    run_id=req.run_id,
+                    workspace_id=req.workspace_id,
                     attempt=attempt,
                     max_attempts=attempts,
                     emitted_event=emitted_event,
                     retryable=retryable,
-                    error=str(exc),
+                    exc=exc,
                 )
                 if retryable:
                     opened = await dependency_circuit_breaker.record_failure(

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import settings
 from app.mcp.registry.models import McpServer, Tool
+from app.outbound_tls import redis_tls_kwargs, sqlalchemy_connection_config
 
 logger = structlog.get_logger()
 TOOL_CACHE_INVALIDATION_CHANNEL = "gateway:tool-cache-invalidation"
@@ -23,11 +24,19 @@ class ToolRegistry:
     """
 
     def __init__(self, database_url: str):
-        self.engine = create_async_engine(database_url)
+        database_url, connect_args = sqlalchemy_connection_config(database_url)
+        self.engine = create_async_engine(
+            database_url,
+            connect_args=connect_args,
+        )
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
         self._cache: dict[ToolCacheKey, tuple[Tool, float]] = {}
         self._cache_ttl = settings.TOOL_REGISTRY_CACHE_TTL_SEC
-        self._redis = Redis.from_url(settings.REDIS_URL) if settings.REDIS_URL else None
+        self._redis = (
+            Redis.from_url(settings.REDIS_URL, **redis_tls_kwargs(settings.REDIS_URL))
+            if settings.REDIS_URL
+            else None
+        )
         self._pubsub = None
         self._listener_task: asyncio.Task | None = None
 
@@ -370,7 +379,11 @@ class McpServerRegistry:
             return None
 
     def __init__(self, database_url: str):
-        self.engine = create_async_engine(database_url)
+        database_url, connect_args = sqlalchemy_connection_config(database_url)
+        self.engine = create_async_engine(
+            database_url,
+            connect_args=connect_args,
+        )
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
 
     @staticmethod

@@ -7,6 +7,7 @@ from anthropic import AsyncAnthropic
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_anthropic_tools
+from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -14,6 +15,7 @@ from app.llm.service import (
     model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
+from app.outbound_tls import provider_http_client
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -64,9 +66,13 @@ class AnthropicAdapter(LLMAdapter):
         """
         Streams a message from Anthropic and translates events to the gateway format.
         """
-        client_kwargs = {"api_key": api_key}
-        if settings.LLM_PROVIDER_ANTHROPIC_BASE_URL:
-            client_kwargs["base_url"] = settings.LLM_PROVIDER_ANTHROPIC_BASE_URL
+        client_kwargs = {
+            "api_key": api_key,
+            "base_url": provider_base_url("anthropic"),
+        }
+        http_client = provider_http_client("anthropic")
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         client = AsyncAnthropic(**client_kwargs)
         tool_calls_map = {}
         anthropic_tools = build_anthropic_tools(req.tools, req.native_tools)
@@ -229,14 +235,17 @@ class AnthropicAdapter(LLMAdapter):
             except Exception as exc:
                 note_dependency_event("provider", "failure")
                 retryable = is_retryable_dependency_error(exc)
-                logger.warning(
-                    "provider_stream_failed",
+                log_provider_stream_failure(
+                    logger,
                     provider="anthropic",
+                    model=req.model,
+                    run_id=req.run_id,
+                    workspace_id=req.workspace_id,
                     attempt=attempt,
                     max_attempts=attempts,
                     emitted_event=emitted_event,
                     retryable=retryable,
-                    error=str(exc),
+                    exc=exc,
                 )
                 if retryable:
                     opened = await dependency_circuit_breaker.record_failure(

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -119,7 +119,7 @@ async def test_openai_adapter_uses_responses_max_output_tokens(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -137,6 +137,7 @@ async def test_openai_adapter_uses_responses_max_output_tokens(
 @pytest.mark.anyio
 async def test_openai_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     client_kwargs: dict[str, object] = {}
+    http_client = object()
 
     async def stream_response():
         yield SimpleNamespace(type="response.completed")
@@ -152,13 +153,22 @@ async def test_openai_adapter_uses_configured_base_url(monkeypatch: pytest.Monke
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
     monkeypatch.setattr(
+        "app.llm.adapters.openai_adapter.provider_http_client",
+        lambda _provider: http_client,
+    )
+    monkeypatch.setattr(
         "app.llm.adapters.openai_adapter.settings.LLM_PROVIDER_OPENAI_BASE_URL",
         "https://openai.internal/v1",
     )
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient-ignored.internal/v1")
 
     _ = [event async for event in OpenAIAdapter().stream(_build_request("gpt-4o"), "key")]
 
-    assert client_kwargs == {"api_key": "key", "base_url": "https://openai.internal/v1"}
+    assert client_kwargs == {
+        "api_key": "key",
+        "base_url": "https://openai.internal/v1",
+        "http_client": http_client,
+    }
 
 
 @pytest.mark.anyio
@@ -181,7 +191,7 @@ async def test_openai_adapter_maps_native_web_search_domain_filters(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -252,7 +262,7 @@ async def test_openai_adapter_maps_reasoning_summaries(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -317,7 +327,7 @@ async def test_openai_adapter_sends_reasoning_effort_without_streaming_summaries
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -384,7 +394,7 @@ async def test_openai_adapter_maps_reasoning_summary_part_done_without_duplicate
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -447,7 +457,7 @@ async def test_openai_adapter_retries_without_reasoning_when_unsupported(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -499,7 +509,7 @@ async def test_openai_adapter_does_not_degrade_unrelated_bad_request(
             raise FakeBadRequestError("Invalid request: malformed tool schema.")
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -550,18 +560,28 @@ async def test_openai_adapter_retries_transient_connection_error_before_stream_s
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
+    log_failure = Mock()
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_adapter.log_provider_stream_failure",
+        log_failure,
+    )
     monkeypatch.setattr("app.llm.adapters.openai_adapter.settings.PROVIDER_RETRY_BACKOFF_MS", 1)
 
     adapter = OpenAIAdapter()
-    events = [event async for event in adapter.stream(_build_request("gpt-4o-mini"), "fake-key")]
+    adapter_request = _build_request("gpt-4o-mini")
+    events = [event async for event in adapter.stream(adapter_request, "fake-key")]
 
     assert any(event.type == "final" for event in events)
     assert len(calls) == 2
+    assert log_failure.call_args.kwargs["provider"] == "openai"
+    assert log_failure.call_args.kwargs["model"] == "gpt-4o-mini"
+    assert log_failure.call_args.kwargs["run_id"] == adapter_request.run_id
+    assert log_failure.call_args.kwargs["workspace_id"] == adapter_request.workspace_id
 
 
 @pytest.mark.anyio
@@ -569,7 +589,7 @@ async def test_openai_adapter_returns_sanitized_error_when_circuit_is_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = SimpleNamespace()
 
@@ -614,7 +634,7 @@ async def test_openai_adapter_omits_temperature_for_gpt5_models(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 
@@ -656,7 +676,7 @@ async def test_openai_adapter_retries_without_temperature_when_rejected(
             return stream_response()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             del api_key
             self.responses = FakeResponses()
 

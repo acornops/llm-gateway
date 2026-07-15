@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.mcp.registry.models import Tool  # noqa: F401
+from app.outbound_tls import sqlalchemy_connection_config
 from app.secrets.db_models import Base
 
 # this is the Alembic Config object, which provides
@@ -67,11 +68,15 @@ async def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section, {})
     if os.getenv("DATABASE_URL"):
         section["sqlalchemy.url"] = os.getenv("DATABASE_URL")
+    section["sqlalchemy.url"], connect_args = sqlalchemy_connection_config(
+        section["sqlalchemy.url"]
+    )
 
     connectable = async_engine_from_config(
         section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

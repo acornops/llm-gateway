@@ -9,6 +9,7 @@ from google.genai import types
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_gemini_tools
+from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -16,6 +17,7 @@ from app.llm.service import (
     model_reasoning_enabled,
     reasoning_summaries_enabled,
 )
+from app.outbound_tls import provider_http_client
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -99,10 +101,14 @@ class GeminiAdapter(LLMAdapter):
         Streams a response from Gemini and translates events to the gateway format.
         """
         client_kwargs: dict[str, Any] = {"api_key": api_key}
-        if settings.LLM_PROVIDER_GEMINI_BASE_URL:
-            client_kwargs["http_options"] = types.HttpOptions(
-                base_url=settings.LLM_PROVIDER_GEMINI_BASE_URL
-            )
+        http_options_kwargs: dict[str, Any] = {
+            "base_url": provider_base_url("gemini"),
+        }
+        http_client = provider_http_client("gemini")
+        if http_client is not None:
+            http_options_kwargs["httpx_async_client"] = http_client
+        if http_options_kwargs:
+            client_kwargs["http_options"] = types.HttpOptions(**http_options_kwargs)
         client = genai.Client(**client_kwargs)
         tool_calls_count = 0
         tool_call_seq = 0
@@ -258,14 +264,17 @@ class GeminiAdapter(LLMAdapter):
                 except Exception as exc:
                     note_dependency_event("provider", "failure")
                     retryable = is_retryable_dependency_error(exc)
-                    logger.warning(
-                        "provider_stream_failed",
+                    log_provider_stream_failure(
+                        logger,
                         provider="gemini",
+                        model=req.model,
+                        run_id=req.run_id,
+                        workspace_id=req.workspace_id,
                         attempt=attempt,
                         max_attempts=attempts,
                         emitted_event=emitted_event,
                         retryable=retryable,
-                        error=str(exc),
+                        exc=exc,
                     )
                     if retryable:
                         opened = await dependency_circuit_breaker.record_failure(

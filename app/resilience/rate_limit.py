@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from redis.asyncio import Redis
 
 from app.config.settings import settings
+from app.outbound_tls import redis_tls_kwargs
 
 
 class RateLimiter:
@@ -13,7 +14,7 @@ class RateLimiter:
     """
 
     def __init__(self, redis_url: str):
-        self.redis = Redis.from_url(redis_url)
+        self.redis = Redis.from_url(redis_url, **redis_tls_kwargs(redis_url))
 
     async def check_rate_limit(self, key: str, limit: int, window: int):
         """

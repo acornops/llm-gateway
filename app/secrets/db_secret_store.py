@@ -9,6 +9,7 @@ from sqlalchemy import delete, desc, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import settings
+from app.outbound_tls import redis_tls_kwargs, sqlalchemy_connection_config
 from app.secrets.crypto import crypto
 from app.secrets.db_models import Secret
 from app.secrets.errors import SecretNotFoundError
@@ -24,11 +25,19 @@ class DbSecretStore(SecretStore):
     """
 
     def __init__(self, database_url: str):
-        self.engine = create_async_engine(database_url)
+        database_url, connect_args = sqlalchemy_connection_config(database_url)
+        self.engine = create_async_engine(
+            database_url,
+            connect_args=connect_args,
+        )
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
         self._cache = {}  # (secret_name, tenant_scope_str) -> (plaintext, expires_at)
         self._cache_ttl = settings.SECRETS_CACHE_TTL_SEC
-        self._redis = Redis.from_url(settings.REDIS_URL) if settings.REDIS_URL else None
+        self._redis = (
+            Redis.from_url(settings.REDIS_URL, **redis_tls_kwargs(settings.REDIS_URL))
+            if settings.REDIS_URL
+            else None
+        )
         self._pubsub = None
         self._listener_task: asyncio.Task | None = None
 

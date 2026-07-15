@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -79,7 +79,7 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
             return _chunk_stream()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=FakeModels())
             self.closed = False
@@ -89,7 +89,7 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
 
     fake_client: FakeClient | None = None
 
-    def build_client(api_key: str) -> FakeClient:
+    def build_client(api_key: str, **_kwargs) -> FakeClient:
         nonlocal fake_client
         fake_client = FakeClient(api_key)
         return fake_client
@@ -161,7 +161,7 @@ async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
             return thought_stream()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=FakeModels())
 
@@ -202,6 +202,7 @@ async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
 @pytest.mark.anyio
 async def test_gemini_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch):
     client_kwargs: dict[str, object] = {}
+    http_client = httpx.AsyncClient()
 
     class FakeModels:
         async def generate_content_stream(self, **_kwargs):
@@ -216,6 +217,7 @@ async def test_gemini_adapter_uses_configured_base_url(monkeypatch: pytest.Monke
             return None
 
     monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_adapter, "provider_http_client", lambda _provider: http_client)
     monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
     monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
     monkeypatch.setattr(
@@ -223,11 +225,14 @@ async def test_gemini_adapter_uses_configured_base_url(monkeypatch: pytest.Monke
         "LLM_PROVIDER_GEMINI_BASE_URL",
         "https://gemini.internal",
     )
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://ambient-ignored.internal")
 
     _ = [event async for event in GeminiAdapter().stream(_request(), "key")]
 
     assert client_kwargs["api_key"] == "key"
     assert client_kwargs["http_options"].base_url == "https://gemini.internal"
+    assert client_kwargs["http_options"].httpx_async_client is http_client
+    await http_client.aclose()
 
 
 @pytest.mark.anyio
@@ -242,7 +247,7 @@ async def test_gemini_adapter_maps_native_web_search_without_domain_filters(
             return _chunk_stream()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=FakeModels())
 
@@ -288,7 +293,7 @@ async def test_gemini_adapter_passes_system_messages_as_system_instruction(
             return _chunk_stream()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=FakeModels())
 
@@ -377,7 +382,7 @@ async def test_gemini_adapter_retries_retryable_failures_before_stream_starts(
             return final_stream()
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=FakeModels())
 
@@ -385,6 +390,8 @@ async def test_gemini_adapter_retries_retryable_failures_before_stream_starts(
             return None
 
     monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    log_failure = Mock()
+    monkeypatch.setattr(gemini_adapter, "log_provider_stream_failure", log_failure)
     monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
     monkeypatch.setattr(
         gemini_adapter.dependency_circuit_breaker,
@@ -414,6 +421,10 @@ async def test_gemini_adapter_retries_retryable_failures_before_stream_starts(
         }
     ]
     sleep.assert_awaited_once()
+    assert log_failure.call_args.kwargs["provider"] == "gemini"
+    assert log_failure.call_args.kwargs["model"] == "gemini-2.0-flash"
+    assert log_failure.call_args.kwargs["run_id"] == EXAMPLE_RUN_ID
+    assert log_failure.call_args.kwargs["workspace_id"] == EXAMPLE_WORKSPACE_ID
 
 
 @pytest.mark.anyio
@@ -421,7 +432,7 @@ async def test_gemini_adapter_returns_retryable_error_when_circuit_is_open(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.aio = SimpleNamespace(models=SimpleNamespace())
 

@@ -9,6 +9,7 @@ import structlog
 from redis.asyncio import Redis
 
 from app.config.settings import settings
+from app.outbound_tls import httpx_verify, redis_tls_kwargs
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -45,11 +46,15 @@ class VaultSecretStore(SecretStore):
         self._client = httpx.AsyncClient(
             base_url=vault_addr.rstrip("/"),
             timeout=timeout_ms / 1000.0,
-            verify=verify_tls,
+            verify=httpx_verify(verify_tls=verify_tls),
         )
         self._cache: dict[tuple[str, str], tuple[str, float]] = {}
         self._cache_ttl = settings.SECRETS_CACHE_TTL_SEC
-        self._redis = Redis.from_url(settings.REDIS_URL) if settings.REDIS_URL else None
+        self._redis = (
+            Redis.from_url(settings.REDIS_URL, **redis_tls_kwargs(settings.REDIS_URL))
+            if settings.REDIS_URL
+            else None
+        )
         self._pubsub = None
         self._listener_task: asyncio.Task | None = None
 

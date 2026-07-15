@@ -39,6 +39,32 @@ SDK. The endpoint must implement the native API used by the gateway: OpenAI
 Responses, Anthropic Messages, or Google GenAI GenerateContent. An endpoint that
 only implements OpenAI Chat Completions is not sufficient. API keys remain
 workspace-scoped; endpoint overrides apply to the entire gateway deployment.
+These `LLM_PROVIDER_*_BASE_URL` names are the only supported AcornOps endpoint
+configuration. The gateway passes an explicit URL to each SDK, so ambient SDK
+variables such as `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and
+`GOOGLE_GEMINI_BASE_URL` do not silently alter provider routing.
+
+Provider attempts that fail emit `provider_stream_failed` with the provider,
+model, run and workspace identifiers, sanitized base URL, attempt counters,
+base URL source, additional-CA state, outer exception type, root-cause type,
+HTTP status when available, and one of these bounded `error_category` values.
+Logged URLs exclude user information, query strings, and fragments. The
+`base_url_source` field distinguishes an AcornOps setting from the provider
+default. Error categories are:
+
+- `tls_certificate_verification`
+- `tls`
+- `dns`
+- `connect`
+- `timeout`
+- `http_4xx`
+- `http_5xx`
+- `http_other`
+- `other`
+
+Production logs contain bounded, credential-redacted error summaries. Endpoint
+URLs and raw errors are not placed in metric labels, and client-facing stream
+errors remain deliberately generic.
 
 ## Remote MCP Connectivity
 
@@ -58,15 +84,18 @@ Allowlisting a hostname does not disable HTTPS verification. Install the
 organization CA in the gateway image or mount a PEM bundle and set:
 
 ```env
-MCP_EGRESS_CA_BUNDLE_FILE=/etc/acornops/trust/mcp-egress-ca.pem
+ADDITIONAL_CA_BUNDLE_FILE=/etc/acornops/trust/additional-ca.pem
 ```
 
 Do not use `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true` unless all private-network
 destinations are within the deployment's trust boundary. Host allowlisting is
 exact; wildcard suffixes are not supported.
 
-This bundle extends the normal public trust roots only for generic remote MCP
-traffic; it does not alter provider, JWKS, Vault, or built-in bridge TLS trust.
+This bundle extends normal public trust for all gateway outbound TLS clients,
+including providers, JWKS, Vault, remote MCP, `rediss://`, and explicitly
+TLS-enabled PostgreSQL. It does not enable TLS for plaintext dependency URLs.
+For PostgreSQL through asyncpg, use `ssl=verify-full` or
+`sslmode=verify-full`; the gateway normalizes either form before connecting.
 
 The remote client accepts standard JSON and SSE responses, caps each response
 at `MCP_MAX_TOOL_RESULT_BYTES`, and rejects compressed responses so the limit is
@@ -89,6 +118,9 @@ Kubernetes deployments run this through the Helm migration Job.
 - Readiness fails on Redis: verify `REDIS_URL`; production rate limits fail closed when Redis is required.
 - Readiness fails on JWKS: verify the control-plane JWKS URL and signing key availability.
 - Secret backend failures: verify `SECRETS_BACKEND`, KEK material, or Vault connectivity depending on the configured backend.
+- Provider failures: inspect `provider_stream_failed`. Certificate-chain or
+  hostname failures use `error_category=tls_certificate_verification` and expose
+  the wrapped SDK root cause without logging provider credentials.
 - Remote MCP registration fails with an egress error: verify the exact hostname
   allowlist, DNS result, HTTPS URL, and private CA trust configuration.
 - Remote MCP registration reports a protocol error: verify that the URL is the

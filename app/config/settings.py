@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     INTERNAL_TRANSPORT_TLS_CERT_FILE: str | None = None
     INTERNAL_TRANSPORT_TLS_KEY_FILE: str | None = None
     INTERNAL_TRANSPORT_HEALTH_PORT: int | None = None
+    ADDITIONAL_CA_BUNDLE_FILE: str = ""
 
     # Auth
     AUTH_JWKS_URL: str = "http://mock-auth:8003/jwks.json"
@@ -140,7 +141,6 @@ class Settings(BaseSettings):
     MCP_EGRESS_ALLOW_LOCAL_ADDRESSES: bool = False
     MCP_EGRESS_ALLOWED_HOSTS: str = ""
     MCP_EGRESS_DNS_CACHE_TTL_SEC: int = 300
-    MCP_EGRESS_CA_BUNDLE_FILE: str = ""
     TOOL_REGISTRY_CACHE_TTL_SEC: int = 300
 
     # Rate limits
@@ -164,6 +164,14 @@ class Settings(BaseSettings):
             self.REQUIRE_JWKS_READINESS = runtime_env == "production"
         if self.INTERNAL_TRANSPORT_TLS_ENABLED:
             self._validate_internal_transport_tls()
+        if self.ADDITIONAL_CA_BUNDLE_FILE:
+            try:
+                with Path(self.ADDITIONAL_CA_BUNDLE_FILE).open("rb"):
+                    pass
+            except OSError as error:
+                raise ValueError(
+                    "ADDITIONAL_CA_BUNDLE_FILE must point to a readable file"
+                ) from error
         if runtime_env != "production":
             return self
 

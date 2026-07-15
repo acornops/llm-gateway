@@ -25,6 +25,7 @@ from app.observability.metrics import (
     GATEWAY_HTTP_REQUESTS_TOTAL,
     GATEWAY_READINESS_CHECK,
 )
+from app.outbound_tls import close_provider_http_clients
 from app.resilience.rate_limit import rate_limiter
 from app.secrets.store import secret_store
 
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
     await tool_registry.close()
     await mcp_server_registry.close()
     await jwks_manager.close()
+    await close_provider_http_clients()
     logger.info("Shutting down llm-gateway")
 
 

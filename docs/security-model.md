@@ -30,8 +30,8 @@
 - Local development may use short Docker service names such as `mock-mcp`; production private/internal MCP servers require an explicit `MCP_EGRESS_ALLOWED_HOSTS` entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`.
 - A private-network allowlist never bypasses production HTTPS or certificate
   verification. Organization private CAs must be installed in the gateway
-  trust store or supplied with `MCP_EGRESS_CA_BUNDLE_FILE`; the latter extends
-  normal trust only for generic remote MCP traffic.
+  trust store or supplied with `ADDITIONAL_CA_BUNDLE_FILE`; the latter extends
+  normal trust for every gateway outbound TLS dependency.
 - Generic remote connections pin the validated DNS address while preserving the
   original Host header and TLS server name. Redirects and compressed responses
   are rejected.

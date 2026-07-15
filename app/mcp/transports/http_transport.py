@@ -23,6 +23,7 @@ from app.mcp.egress_policy import (
     prepare_mcp_egress_request,
 )
 from app.mcp.header_policy import MCP_TRANSPORT_HEADER_NAMES
+from app.outbound_tls import httpx_additional_ca_ssl_context
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -56,12 +57,9 @@ SessionOperation = Callable[[ClientSession], Awaitable[T]]
 def _default_transport_factory() -> httpx.AsyncBaseTransport:
     """Extend normal HTTPX trust only for generic remote MCP traffic."""
     try:
-        ssl_context = httpx.create_ssl_context()
-        ca_bundle_file = settings.MCP_EGRESS_CA_BUNDLE_FILE.strip()
-        if ca_bundle_file:
-            ssl_context.load_verify_locations(cafile=ca_bundle_file)
+        ssl_context = httpx_additional_ca_ssl_context()
     except OSError as error:
-        raise McpEgressPolicyError("MCP egress CA bundle could not be loaded") from error
+        raise McpEgressPolicyError("Additional CA bundle could not be loaded") from error
     return httpx.AsyncHTTPTransport(verify=ssl_context)
 
 

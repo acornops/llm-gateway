@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -119,7 +119,7 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
@@ -172,6 +172,7 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
 @pytest.mark.anyio
 async def test_anthropic_adapter_uses_configured_base_url(monkeypatch: pytest.MonkeyPatch):
     client_kwargs: dict[str, object] = {}
+    http_client = object()
     messages = FakeMessages([FakeStreamContext(events=[])])
 
     class FakeClient:
@@ -180,6 +181,11 @@ async def test_anthropic_adapter_uses_configured_base_url(monkeypatch: pytest.Mo
             self.messages = messages
 
     monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "provider_http_client",
+        lambda _provider: http_client,
+    )
     monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
     monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
     monkeypatch.setattr(
@@ -187,10 +193,15 @@ async def test_anthropic_adapter_uses_configured_base_url(monkeypatch: pytest.Mo
         "LLM_PROVIDER_ANTHROPIC_BASE_URL",
         "https://anthropic.internal",
     )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ambient-ignored.internal")
 
     _ = [event async for event in AnthropicAdapter().stream(_request(), "key")]
 
-    assert client_kwargs == {"api_key": "key", "base_url": "https://anthropic.internal"}
+    assert client_kwargs == {
+        "api_key": "key",
+        "base_url": "https://anthropic.internal",
+        "http_client": http_client,
+    }
 
 
 @pytest.mark.anyio
@@ -211,7 +222,7 @@ async def test_anthropic_adapter_maps_native_web_search_domain_filters(
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
@@ -268,7 +279,7 @@ async def test_anthropic_adapter_uses_adaptive_thinking_for_current_adaptive_mod
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
@@ -332,7 +343,7 @@ async def test_anthropic_adapter_sends_thinking_effort_without_streaming_summari
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
@@ -382,7 +393,7 @@ async def test_anthropic_adapter_omits_thinking_when_token_budget_cannot_support
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
@@ -438,11 +449,13 @@ async def test_anthropic_adapter_retries_retryable_failures_before_stream_starts
     )
 
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = messages
 
     monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    log_failure = Mock()
+    monkeypatch.setattr(anthropic_adapter, "log_provider_stream_failure", log_failure)
     monkeypatch.setattr(anthropic_adapter.dependency_circuit_breaker, "before_call", AsyncMock())
     record_failure = AsyncMock(return_value=False)
     record_success = AsyncMock()
@@ -480,6 +493,10 @@ async def test_anthropic_adapter_retries_retryable_failures_before_stream_starts
     )
     sleep.assert_awaited_once()
     record_success.assert_awaited_once_with("provider:anthropic")
+    assert log_failure.call_args.kwargs["provider"] == "anthropic"
+    assert log_failure.call_args.kwargs["model"] == "claude-3-7-sonnet"
+    assert log_failure.call_args.kwargs["run_id"] == EXAMPLE_RUN_ID
+    assert log_failure.call_args.kwargs["workspace_id"] == EXAMPLE_WORKSPACE_ID
 
 
 @pytest.mark.anyio
@@ -487,7 +504,7 @@ async def test_anthropic_adapter_returns_retryable_error_when_circuit_is_open(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class FakeClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **_kwargs):
             self.api_key = api_key
             self.messages = FakeMessages([])
 

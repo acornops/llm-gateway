@@ -3,6 +3,7 @@ from __future__ import annotations
 import ssl
 from typing import Any
 
+from app import outbound_tls
 from app.config.settings import settings
 from app.mcp.transports.http_transport import McpToolTransportError
 
@@ -16,9 +17,12 @@ def builtin_tool_transport_timeout_seconds(timeout_ms: int) -> float:
 
 def httpx_tls_kwargs() -> dict[str, Any]:
     if not settings.INTERNAL_TRANSPORT_TLS_ENABLED:
-        return {}
+        return outbound_tls.httpx_tls_kwargs()
     kwargs: dict[str, Any] = {
-        "verify": settings.INTERNAL_TRANSPORT_TLS_CA_FILE,
+        "verify": outbound_tls.internal_httpx_ssl_context(
+            settings.INTERNAL_TRANSPORT_TLS_CA_FILE,
+            settings.ADDITIONAL_CA_BUNDLE_FILE,
+        ),
     }
     if settings.INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT:
         kwargs["cert"] = (

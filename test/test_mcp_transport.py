@@ -216,12 +216,12 @@ async def test_transport_owned_headers_cannot_be_overridden() -> None:
 
 
 @pytest.mark.anyio
-async def test_rejects_an_unreadable_mcp_specific_ca_bundle(
+async def test_rejects_an_unreadable_additional_ca_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.mcp.transports.http_transport.settings.MCP_EGRESS_CA_BUNDLE_FILE",
-        "/missing/acornops-mcp-ca.pem",
+        "app.mcp.transports.http_transport.settings.ADDITIONAL_CA_BUNDLE_FILE",
+        "/missing/acornops-additional-ca.pem",
     )
 
     payload = await McpHttpTransport().call_tool(
