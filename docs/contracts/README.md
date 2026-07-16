@@ -42,6 +42,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 ## Execution-Engine Boundary Notes
 
 - The gateway accepts requested built-in native tool policy only through `allowed_native_tools`.
+- Provider failure events may use `MODEL_UNAVAILABLE`, `PROVIDER_AUTH_INVALID`,
+  `PROVIDER_RATE_LIMITED`, or `PROVIDER_UNAVAILABLE`. `MODEL_UNAVAILABLE`
+  requires an explicit structured provider code; ambiguous provider responses
+  remain generic and raw provider messages stay in sanitized logs.
 - For Gemini, `web_search` accepts the supported native-tool surface and rejects unsupported domain-filter requests.
 - The internal model-only skill tool is `_acornops_load_skill`; the manifest entry is `"internalModelOnlyTools": ["_acornops_load_skill"]`.
 - `INTERNAL_MODEL_ONLY_TOOLS`, `is_reserved_internal_tool_name`, and `_validate_stream_tool_names` protect the reserved `_acornops_` namespace.

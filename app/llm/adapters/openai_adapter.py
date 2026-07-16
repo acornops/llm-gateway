@@ -12,6 +12,7 @@ from app.llm.adapters.common import (
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
 )
+from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
@@ -32,7 +33,6 @@ from app.resilience.outbound import (
 logger = structlog.get_logger()
 
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
-PROVIDER_REQUEST_FAILED = "Provider request failed"
 
 
 class OpenAIAdapter(LLMAdapter):
@@ -318,10 +318,9 @@ class OpenAIAdapter(LLMAdapter):
                         )
                         attempt += 1
                         continue
-                yield StreamEvent(
-                    type="error",
-                    code="OPENAI_ERROR",
-                    message=PROVIDER_REQUEST_FAILED,
+                yield provider_failure_event(
+                    exc,
+                    fallback_code="OPENAI_ERROR",
                     retryable=retryable,
                 )
                 return

@@ -9,6 +9,7 @@ from google.genai import types
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_gemini_tools
+from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
@@ -29,7 +30,6 @@ from app.resilience.outbound import (
 logger = structlog.get_logger()
 
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
-PROVIDER_REQUEST_FAILED = "Provider request failed"
 
 
 async def _close_client(client: genai.Client) -> None:
@@ -291,10 +291,9 @@ class GeminiAdapter(LLMAdapter):
                             )
                             attempt += 1
                             continue
-                    yield StreamEvent(
-                        type="error",
-                        code="GEMINI_ERROR",
-                        message=PROVIDER_REQUEST_FAILED,
+                    yield provider_failure_event(
+                        exc,
+                        fallback_code="GEMINI_ERROR",
                         retryable=retryable,
                     )
                     return

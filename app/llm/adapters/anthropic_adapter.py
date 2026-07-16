@@ -7,6 +7,7 @@ from anthropic import AsyncAnthropic
 
 from app.config.settings import settings
 from app.llm.adapters.common import build_anthropic_tools
+from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.service import (
     LLMAdapter,
@@ -27,7 +28,6 @@ from app.resilience.outbound import (
 logger = structlog.get_logger()
 
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
-PROVIDER_REQUEST_FAILED = "Provider request failed"
 
 
 def _thinking_budget(max_tokens: int, effort: str) -> int:
@@ -262,10 +262,9 @@ class AnthropicAdapter(LLMAdapter):
                         )
                         attempt += 1
                         continue
-                yield StreamEvent(
-                    type="error",
-                    code="ANTHROPIC_ERROR",
-                    message=PROVIDER_REQUEST_FAILED,
+                yield provider_failure_event(
+                    exc,
+                    fallback_code="ANTHROPIC_ERROR",
                     retryable=retryable,
                 )
                 return
