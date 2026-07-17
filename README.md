@@ -21,7 +21,10 @@ This repository owns the gateway service code, production image, health/readines
 
 ## Agent-Assisted Development
 
-This repository supports human and agent-assisted development. Start coding agents from this repository root for llm-gateway-only work, and from the `acornops-workspace` root for changes that touch multiple AcornOps repositories.
+This repository supports human and agent-assisted development. Start coding
+agents from this repository root for llm-gateway-only work, and from the
+AcornOps workspace cloned from the [`acornops`](https://github.com/acornops/acornops)
+repository for changes that touch multiple AcornOps repositories.
 
 ## Contracts
 
