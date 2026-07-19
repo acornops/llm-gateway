@@ -2,10 +2,16 @@ FROM python:3.12.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir fastapi uvicorn
 
 COPY test/mock_mcp_server.py /app/mock_mcp_server.py
+COPY deployments/start-mock-mcp.sh /usr/local/bin/start-mock-mcp
+
+RUN chmod 0755 /usr/local/bin/start-mock-mcp
 
 EXPOSE 8002
 
-CMD ["uvicorn", "mock_mcp_server:app", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["start-mock-mcp"]

@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from app.api.handlers_catalog_admin import router as catalog_admin_router
+from app.api.handlers_catalog_sources import router as catalog_sources_router
 from app.api.handlers_health import router as health_router
 from app.api.handlers_llm_provider_admin import router as llm_provider_admin_router
 from app.api.handlers_llm_stream import router as llm_router
@@ -13,3 +15,9 @@ api_router.include_router(llm_router, prefix="/llm", tags=["llm"])
 api_router.include_router(tool_router, prefix="/mcp", tags=["mcp"])
 api_router.include_router(llm_provider_admin_router, prefix="/internal/llm", tags=["internal-llm"])
 api_router.include_router(mcp_admin_router, prefix="/internal/mcp", tags=["internal-mcp"])
+api_router.include_router(
+    catalog_admin_router, prefix="/internal/catalog", tags=["internal-catalog"]
+)
+api_router.include_router(
+    catalog_sources_router, prefix="/internal/catalog", tags=["internal-catalog"]
+)

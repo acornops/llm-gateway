@@ -90,7 +90,6 @@ def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims)
             req.workflow_id == claims.workflow_id
             and req.workflow_run_id == claims.workflow_run_id
             and req.workflow_session_id == claims.workflow_session_id
-            and req.workflow_step_id == claims.workflow_step_id
             and req.agent_id == claims.agent_id
             and req.agent_version == claims.agent_version
             and req.trigger_id == claims.trigger_id
@@ -279,7 +278,6 @@ async def stream_generation(
             workflow_id=req.workflow_id,
             workflow_run_id=req.workflow_run_id,
             workflow_session_id=req.workflow_session_id,
-            workflow_step_id=req.workflow_step_id,
             agent_id=req.agent_id,
             agent_version=req.agent_version,
             trigger_id=req.trigger_id,
@@ -292,7 +290,6 @@ async def stream_generation(
             claims_workflow_id=claims.workflow_id,
             claims_workflow_run_id=claims.workflow_run_id,
             claims_workflow_session_id=claims.workflow_session_id,
-            claims_workflow_step_id=claims.workflow_step_id,
             claims_agent_id=claims.agent_id,
             claims_agent_version=claims.agent_version,
             claims_trigger_id=claims.trigger_id,
@@ -357,7 +354,6 @@ async def stream_generation(
             scope_type=req.scope.type,
             workflow_id=req.workflow_id,
             workflow_run_id=req.workflow_run_id,
-            workflow_step_id=req.workflow_step_id,
             agent_id=req.agent_id,
             agent_version=req.agent_version,
             trigger_id=req.trigger_id,

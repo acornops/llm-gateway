@@ -18,7 +18,7 @@ preserving the separate trusted built-in Kubernetes bridge.
   sanitized errors.
 - Do not share remote MCP sessions across workspace, target, credential, or run
   boundaries.
-- Do not route the built-in `acornops-cluster-agent` bridge through the generic
+- Do not route the built-in `acornops-target-agent` bridge through the generic
   remote MCP client.
 - Remove the unreleased proprietary remote `/tools/list` and `/tools/call`
   compatibility behavior instead of carrying a legacy mode.

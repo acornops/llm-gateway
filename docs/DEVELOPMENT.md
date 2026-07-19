@@ -69,10 +69,13 @@ Important variables:
 - `ADMIN_API_TOKEN`
 - `SECRETS_BACKEND`
 - `SECRETS_KEK_BASE64`
-- `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES` for local smoke runs that should not
-  call external providers
-- dev seed provider API keys or workspace AI settings when testing
-  provider-backed flows
+- workspace AI Settings for real provider-backed flows; no provider credential
+  is created by migrations or local startup
+- `docker-compose.integration-test.yml` for explicit mock-MCP integration tests;
+  install and discover the server through normal admin APIs. The mock endpoint
+  serves HTTPS with an ephemeral certificate generated under
+  `.integration-certs/`; integration runners trust that certificate explicitly
+  through `MCP_EGRESS_CA_BUNDLE_FILE`.
 
 ## Migrations
 

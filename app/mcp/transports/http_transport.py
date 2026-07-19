@@ -8,7 +8,6 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -23,7 +22,7 @@ from app.mcp.egress_policy import (
     prepare_mcp_egress_request,
 )
 from app.mcp.header_policy import MCP_TRANSPORT_HEADER_NAMES
-from app.outbound_tls import httpx_additional_ca_ssl_context
+from app.mcp.logging import loggable_mcp_server_origin
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -57,9 +56,15 @@ SessionOperation = Callable[[ClientSession], Awaitable[T]]
 def _default_transport_factory() -> httpx.AsyncBaseTransport:
     """Extend normal HTTPX trust only for generic remote MCP traffic."""
     try:
-        ssl_context = httpx_additional_ca_ssl_context()
+        ssl_context = httpx.create_ssl_context()
+        for ca_bundle_file in (
+            settings.ADDITIONAL_CA_BUNDLE_FILE.strip(),
+            settings.MCP_EGRESS_CA_BUNDLE_FILE.strip(),
+        ):
+            if ca_bundle_file:
+                ssl_context.load_verify_locations(cafile=ca_bundle_file)
     except OSError as error:
-        raise McpEgressPolicyError("Additional CA bundle could not be loaded") from error
+        raise McpEgressPolicyError("MCP egress CA bundle could not be loaded") from error
     return httpx.AsyncHTTPTransport(verify=ssl_context)
 
 
@@ -90,6 +95,14 @@ class McpResponseEncodingError(ValueError):
 
 class McpProtocolError(ValueError):
     """Raised for an invalid or unsupported MCP protocol response."""
+
+
+class McpAuthenticationError(ValueError):
+    """Raised when an MCP peer rejects the installation credential."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__("MCP server rejected the configured credential")
+        self.status_code = status_code
 
 
 class _BoundedResponseStream(httpx.AsyncByteStream):
@@ -147,6 +160,7 @@ def _primary_exception(error: BaseException) -> BaseException:
     priorities = (
         McpResponseTooLargeError,
         McpResponseEncodingError,
+        McpAuthenticationError,
         httpx.TimeoutException,
         httpx.HTTPStatusError,
         httpx.RequestError,
@@ -209,21 +223,6 @@ def _json_size(payload: Any) -> int:
 def _ensure_payload_size(payload: Any) -> None:
     if _json_size(payload) > settings.MCP_MAX_TOOL_RESULT_BYTES:
         raise McpResponseTooLargeError("MCP response exceeds the 2 MiB result limit")
-
-
-def _loggable_server_origin(url: str) -> str:
-    """Return a credential-, path-, query-, and fragment-free server origin."""
-    try:
-        parsed = urlsplit(url)
-        hostname = parsed.hostname
-        port = parsed.port
-    except ValueError:
-        return "[invalid MCP server URL]"
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        return "[invalid MCP server URL]"
-    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
-    rendered_port = f":{port}" if port is not None else ""
-    return f"{parsed.scheme}://{rendered_host}{rendered_port}"
 
 
 class McpHttpTransport:
@@ -293,6 +292,8 @@ class McpHttpTransport:
             upstream_error=_extract_upstream_error(bytes(body), response.request),
             upstream_error_truncated=truncated,
         )
+        if response.status_code in (401, 403):
+            raise McpAuthenticationError(response.status_code)
 
     def _http_client(
         self,
@@ -381,7 +382,7 @@ class McpHttpTransport:
                 raise
         logger.info(
             "mcp_session_reinitializing",
-            server_url=_loggable_server_origin(target.original_url),
+            server_url=loggable_mcp_server_origin(target.original_url),
         )
         return await self._run_session_once(target, timeout_ms, headers, operation)
 
@@ -435,7 +436,7 @@ class McpHttpTransport:
         except McpEgressPolicyError as error:
             logger.warning(
                 "mcp_tool_call_egress_policy_failed",
-                server_url=_loggable_server_origin(url),
+                server_url=loggable_mcp_server_origin(url),
                 tool=name,
                 exception_type=error.__class__.__name__,
             )
@@ -450,7 +451,7 @@ class McpHttpTransport:
             retryable = is_retryable_dependency_error(primary)
             logger.warning(
                 "mcp_tool_call_failed",
-                server_url=_loggable_server_origin(url),
+                server_url=loggable_mcp_server_origin(url),
                 tool=name,
                 exception_type=primary.__class__.__name__,
                 status_code=getattr(getattr(primary, "response", None), "status_code", None),
@@ -483,7 +484,7 @@ class McpHttpTransport:
         except McpEgressPolicyError as error:
             logger.warning(
                 "mcp_tool_discovery_egress_policy_failed",
-                server_url=_loggable_server_origin(url),
+                server_url=loggable_mcp_server_origin(url),
                 exception_type=error.__class__.__name__,
             )
             return self._error_payload("MCP server blocked by egress policy")
@@ -536,7 +537,7 @@ class McpHttpTransport:
                 retryable = is_retryable_dependency_error(primary)
                 logger.warning(
                     "mcp_tool_discovery_attempt_failed",
-                    server_url=_loggable_server_origin(url),
+                    server_url=loggable_mcp_server_origin(url),
                     attempt=attempt,
                     max_attempts=attempts,
                     exception_type=primary.__class__.__name__,
@@ -566,6 +567,8 @@ class McpHttpTransport:
 
     @staticmethod
     def _tool_error_prefix(error: BaseException) -> str:
+        if isinstance(error, McpAuthenticationError):
+            return "MCP server rejected the configured credential"
         if isinstance(error, httpx.TimeoutException):
             return "MCP server timeout"
         if isinstance(error, McpResponseTooLargeError):
@@ -578,6 +581,8 @@ class McpHttpTransport:
 
     @staticmethod
     def _tool_error_code(error: BaseException) -> str:
+        if isinstance(error, McpAuthenticationError):
+            return "MCP_AUTHENTICATION_FAILED"
         if isinstance(error, httpx.TimeoutException):
             return "MCP_TOOL_TIMEOUT"
         if isinstance(error, McpResponseTooLargeError):
@@ -590,6 +595,8 @@ class McpHttpTransport:
 
     @staticmethod
     def _discovery_error_prefix(error: BaseException) -> str:
+        if isinstance(error, McpAuthenticationError):
+            return "MCP server rejected the configured credential"
         if isinstance(error, McpEgressPolicyError):
             return "MCP server blocked by egress policy"
         if isinstance(error, httpx.TimeoutException):

@@ -12,7 +12,8 @@ from app.examples import (
 )
 from app.llm.adapters import anthropic_adapter
 from app.llm.adapters.anthropic_adapter import AnthropicAdapter
-from app.llm.service import NormalizedLLMRequest, ReasoningConfig
+from app.llm.adapters.common import build_anthropic_tools
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
 
@@ -46,6 +47,13 @@ def _request(*, include_tools: bool = True) -> NormalizedLLMRequest:
         temperature=0.2,
         max_output_tokens=128,
     )
+
+
+def test_anthropic_preserves_platform_function_alias() -> None:
+    tools = build_anthropic_tools([
+        ToolSpec(name="acornops_generate_pdf_report", description="Generate report.")
+    ])
+    assert tools[0]["name"] == "acornops_generate_pdf_report"
 
 
 class FakeStreamContext:

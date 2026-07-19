@@ -28,18 +28,29 @@ def _make_tool(
     enabled: bool = True,
     source: str = "mcp",
     capability: str = "read",
+    server_id: str = "11111111-1111-1111-1111-111111111111",
+    target_type: str = "kubernetes",
+    review_state: str = "pending",
+    risk_level: str = "high_risk",
+    auto_allowed: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        server_id=server_id,
         tool_name=name,
         mcp_server_url=server_url,
-        target_type="kubernetes",
+        target_type=target_type,
         timeout_ms=10000,
         description=f"{name} description",
         capability=capability,
         version="v1",
         source=source,
         input_schema={"type": "object"},
+        output_schema=None,
+        artifact_policy="never",
         enabled=enabled,
+        review_state=review_state,
+        risk_level=risk_level,
+        auto_allowed=auto_allowed,
     )
 
 
@@ -98,23 +109,36 @@ def test_mcp_server_schema_accepts_public_headers_and_rejects_static_headers():
         )
 
 
-def test_mcp_server_schema_accepts_explicit_workspace_scope_and_rejects_mixed_scope():
-    request = McpServerCreateRequest(
+def test_mcp_server_schema_keeps_target_and_agent_ownership_distinct():
+    target_request = McpServerCreateRequest(
         workspace_id="ws-1",
-        scope_type="workspace",
-        target_id="__workspace__",
-        target_type="workspace",
+        scope_type="target",
+        target_id="cluster-a",
+        target_type="kubernetes",
         server_name="operations-catalog",
         server_url="https://mcp.example.com",
     )
-    assert request.scope_type == "workspace"
+    assert target_request.scope_type == "target"
+    assert target_request.target_id == "cluster-a"
+
+    agent_request = McpServerCreateRequest(
+        workspace_id="ws-1",
+        scope_type="agent",
+        agent_id="agent-a",
+        server_name="operations-catalog",
+        server_url="https://mcp.example.com",
+    )
+    assert agent_request.scope_type == "agent"
+    assert agent_request.agent_id == "agent-a"
+    assert agent_request.target_id == "agent-a"
+    assert agent_request.target_type == "agent"
 
     with pytest.raises(ValidationError):
         McpServerCreateRequest(
             workspace_id="ws-1",
             scope_type="workspace",
-            target_id="cluster-a",
-            target_type="kubernetes",
+            target_id="__workspace__",
+            target_type="workspace",
             server_name="operations-catalog",
             server_url="https://mcp.example.com",
         )
@@ -145,16 +169,18 @@ def test_mcp_tool_discovery_skips_reserved_internal_tool_names():
     assert [tool.name for tool in discovered] == ["example.lookup"]
 
 
-def test_mcp_server_schema_rejects_incomplete_secret_backed_auth():
-    with pytest.raises(ValidationError):
-        McpServerCreateRequest(
-            workspace_id="ws-1",
-            target_id="cluster-a",
-            target_type="kubernetes",
-            server_name="github",
-            server_url="https://mcp.example.com",
-            auth_type="bearer_token",
-        )
+def test_mcp_server_schema_derives_personal_auth_without_shared_secrets():
+    request = McpServerCreateRequest(
+        workspace_id="ws-1",
+        target_id="cluster-a",
+        target_type="kubernetes",
+        server_name="github",
+        server_url="https://mcp.example.com",
+        auth_type="bearer_token",
+    )
+    assert request.auth_scope == "personal"
+    assert request.auth_secret_name is None
+    assert request.auth_secret_value is None
 
     with pytest.raises(ValidationError):
         McpServerCreateRequest(
@@ -165,6 +191,7 @@ def test_mcp_server_schema_rejects_incomplete_secret_backed_auth():
             server_url="https://mcp.example.com",
             auth_type="custom_header",
             auth_secret_name="mcp_server::github",
+            auth_header_name="X-Mcp-Pat",
         )
 
     with pytest.raises(ValidationError):
@@ -378,10 +405,15 @@ async def test_apply_tools_for_server_removes_disabled_and_maps_conflicts():
             capability="read",
             version="v1",
             source="mcp",
+            review_state="approved",
         ),
     ]
 
     with (
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.get_server_by_url",
+            new=AsyncMock(return_value=SimpleNamespace(id="server-1")),
+        ),
         patch(
             "app.api.handlers_mcp_admin.tool_registry.remove_tool_for_target",
             new=AsyncMock(),
@@ -406,6 +438,7 @@ async def test_apply_tools_for_server_removes_disabled_and_maps_conflicts():
         "ws-1",
         "cluster-a",
         target_type="kubernetes",
+        server_id="server-1",
     )
 
 
@@ -448,6 +481,7 @@ async def test_create_builtin_server_allows_configured_internal_http_bridge() ->
         server_url=server_url,
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -455,12 +489,14 @@ async def test_create_builtin_server_allows_configured_internal_http_bridge() ->
         connection_status="unknown",
         last_discovery_at=None,
         last_discovery_error=None,
+        provenance_type="builtin",
     )
     registered_tool = _make_tool(
         name="list_resources",
         server_url=server_url,
         source="builtin",
         capability="read",
+        server_id="srv-builtin",
     )
 
     with (
@@ -534,7 +570,13 @@ async def test_create_builtin_server_does_not_bypass_egress_for_mcp_tools(
                     "server_name": "acornops-target-agent",
                     "server_url": "http://control-plane:8081/internal/v1/mcp",
                     "enabled": True,
-                    "tools": [{"name": "external.lookup", "source": "mcp"}],
+                    "tools": [
+                        {
+                            "name": "external.lookup",
+                            "source": "mcp",
+                            "review_state": "approved",
+                        }
+                    ],
                 },
             )
 
@@ -711,7 +753,7 @@ async def test_list_mcp_tools_can_include_server_disabled_and_disabled_tools() -
 async def test_create_server_stores_auto_discovered_tools_disabled_for_review() -> None:
     workspace_id = "ws-auto"
     target_id = "cl-auto"
-    server_url = "http://example-mcp"
+    server_url = "https://example-mcp"
     discovered_tool_name = "example.lookup"
 
     created_server = SimpleNamespace(
@@ -723,6 +765,7 @@ async def test_create_server_stores_auto_discovered_tools_disabled_for_review() 
         server_url=server_url,
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -737,6 +780,7 @@ async def test_create_server_stores_auto_discovered_tools_disabled_for_review() 
         server_url=server_url,
         enabled=False,
         capability="write",
+        server_id="srv-1",
     )
 
     with (
@@ -823,6 +867,80 @@ async def test_enabling_discovered_mcp_tool_requires_capability_review() -> None
 
 
 @pytest.mark.anyio
+async def test_target_admin_can_classify_and_enable_discovered_mcp_tool() -> None:
+    tool = _make_tool(
+        name="pending.lookup",
+        server_url="http://pending-mcp",
+        enabled=False,
+    )
+    updated_tool = _make_tool(
+        name="pending.lookup",
+        server_url="http://pending-mcp",
+        enabled=True,
+        capability="read",
+        review_state="approved",
+        risk_level="read_only",
+    )
+
+    with (
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.get_tool",
+            new=AsyncMock(return_value=tool),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.upsert_tool",
+            new=AsyncMock(return_value=updated_tool),
+        ) as upsert_mock,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.patch(
+                "/api/v1/internal/mcp/tools/pending.lookup"
+                "?workspace_id=ws-review&target_id=cl-review&target_type=kubernetes",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+                json={"enabled": True, "capability": "read"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["review_state"] == "approved"
+    assert response.json()["risk_level"] == "read_only"
+    assert upsert_mock.await_args.kwargs["review_state"] == "approved"
+    assert upsert_mock.await_args.kwargs["risk_level"] == "read_only"
+
+
+@pytest.mark.anyio
+async def test_agent_mcp_tool_still_requires_explicit_review_approval() -> None:
+    tool = _make_tool(
+        name="pending.lookup",
+        server_url="http://pending-mcp",
+        enabled=False,
+        target_type="agent",
+    )
+
+    with (
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.get_tool",
+            new=AsyncMock(return_value=tool),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.tool_registry.upsert_tool",
+            new=AsyncMock(),
+        ) as upsert_mock,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.patch(
+                "/api/v1/internal/mcp/tools/pending.lookup"
+                "?workspace_id=ws-review&target_id=agent-a&target_type=agent"
+                "&scope_type=agent&agent_id=agent-a",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+                json={"enabled": True, "capability": "read"},
+            )
+
+    assert response.status_code == 400
+    assert "must be approved" in response.json()["detail"]
+    upsert_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_test_connection_endpoint_records_status_and_returns_discovered_tools() -> None:
     workspace_id = "ws-test"
     target_id = "cl-test"
@@ -835,6 +953,7 @@ async def test_test_connection_endpoint_records_status_and_returns_discovered_to
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -901,6 +1020,7 @@ async def test_update_server_auto_discovers_tools_when_none_are_mapped() -> None
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -910,7 +1030,11 @@ async def test_update_server_auto_discovers_tools_when_none_are_mapped() -> None
         last_discovery_error=None,
     )
     updated_server = SimpleNamespace(**{**server.__dict__, "connection_status": "ok"})
-    discovered_tool = _make_tool(name="github.search", server_url=server.server_url)
+    discovered_tool = _make_tool(
+        name="github.search",
+        server_url=server.server_url,
+        server_id="srv-recover",
+    )
 
     with (
         patch(
@@ -957,6 +1081,7 @@ async def test_update_server_tool_list_requires_capability_review_for_discovered
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -1010,6 +1135,7 @@ async def test_update_server_tool_list_preserves_existing_capability_when_omitte
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -1024,6 +1150,7 @@ async def test_update_server_tool_list_preserves_existing_capability_when_omitte
         enabled=True,
         source="mcp",
         capability="read",
+        review_state="approved",
     )
 
     with (
@@ -1067,6 +1194,7 @@ async def test_update_server_rejects_custom_header_auth_without_header_name() ->
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -1092,12 +1220,57 @@ async def test_update_server_rejects_custom_header_auth_without_header_name() ->
                 headers={"Authorization": "Bearer dev_orchestrator_token"},
                 json={
                     "auth_type": "custom_header",
-                    "auth_secret_name": "mcp_server::github",
                 },
             )
 
     assert response.status_code == 400
     assert response.json()["detail"] == "auth_header_name is required for custom_header auth"
+    update_server_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_update_server_rejects_shared_external_secret_fields() -> None:
+    server = SimpleNamespace(
+        id="srv-auth",
+        workspace_id="ws-auth",
+        target_id="cl-auth",
+        target_type="kubernetes",
+        server_name="github",
+        server_url="http://github-mcp",
+        enabled=True,
+        auth_type="none",
+        auth_scope="none",
+        auth_secret_name=None,
+        auth_header_name=None,
+        auth_header_prefix=None,
+        public_headers=None,
+        connection_status="unknown",
+        last_discovery_at=None,
+        last_discovery_error=None,
+    )
+
+    with (
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.get_server",
+            new=AsyncMock(return_value=server),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.update_server",
+            new=AsyncMock(),
+        ) as update_server_mock,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.patch(
+                "/api/v1/internal/mcp/servers/srv-auth?workspace_id=ws-auth&target_id=cl-auth&target_type=kubernetes",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+                json={
+                    "auth_type": "bearer_token",
+                    "auth_secret_name": "mcp_server::github",
+                },
+            )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "shared external MCP credentials are not supported"
     update_server_mock.assert_not_awaited()
 
 
@@ -1112,7 +1285,8 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="custom_header",
-        auth_secret_name="mcp_server::github",
+        auth_scope="personal",
+        auth_secret_name=None,
         auth_header_name="X-Api-Key",
         auth_header_prefix=None,
         public_headers=None,
@@ -1128,7 +1302,11 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
             "auth_header_prefix": "Bearer ",
         }
     )
-    existing_tool = _make_tool(name="github.search", server_url=server.server_url)
+    existing_tool = _make_tool(
+        name="github.search",
+        server_url=server.server_url,
+        server_id="srv-auth",
+    )
 
     with (
         patch(
@@ -1143,6 +1321,10 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
             "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
             new=AsyncMock(return_value=[existing_tool]),
         ),
+        patch(
+            "app.api.handlers_mcp_admin.cleanup_server_connections",
+            new=AsyncMock(return_value=1),
+        ) as cleanup_connections_mock,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.patch(
@@ -1150,7 +1332,6 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
                 headers={"Authorization": "Bearer dev_orchestrator_token"},
                 json={
                     "auth_type": "bearer_token",
-                    "auth_secret_name": "mcp_server::github",
                     "auth_header_prefix": "",
                 },
             )
@@ -1161,6 +1342,7 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
     assert patch_payload["auth_type"] == "bearer_token"
     assert patch_payload["auth_header_name"] == "Authorization"
     assert patch_payload["auth_header_prefix"] == "Bearer "
+    cleanup_connections_mock.assert_awaited_once_with("ws-auth", "srv-auth")
 
 
 @pytest.mark.anyio
@@ -1174,7 +1356,8 @@ async def test_update_existing_bearer_server_keeps_bearer_auth_shape() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="bearer_token",
-        auth_secret_name="mcp_server::github",
+        auth_scope="personal",
+        auth_secret_name=None,
         auth_header_name="Authorization",
         auth_header_prefix="Bearer ",
         public_headers=None,
@@ -1183,7 +1366,11 @@ async def test_update_existing_bearer_server_keeps_bearer_auth_shape() -> None:
         last_discovery_error=None,
     )
     updated_server = SimpleNamespace(**server.__dict__)
-    existing_tool = _make_tool(name="github.search", server_url=server.server_url)
+    existing_tool = _make_tool(
+        name="github.search",
+        server_url=server.server_url,
+        server_id="srv-bearer",
+    )
 
     with (
         patch(
@@ -1223,6 +1410,7 @@ async def test_update_none_auth_server_rejects_orphan_auth_fields() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
+        auth_scope="none",
         auth_secret_name=None,
         auth_header_name=None,
         auth_header_prefix=None,
@@ -1263,8 +1451,16 @@ async def test_delete_server_removes_tools_before_deleting_server() -> None:
         auth_secret_name=None,
     )
     server_tools = [
-        _make_tool(name="github.search", server_url="http://github-mcp"),
-        _make_tool(name="github.readme", server_url="http://github-mcp"),
+        _make_tool(
+            name="github.search",
+            server_url="http://github-mcp",
+            server_id="srv-delete",
+        ),
+        _make_tool(
+            name="github.readme",
+            server_url="http://github-mcp",
+            server_id="srv-delete",
+        ),
     ]
 
     with (

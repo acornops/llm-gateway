@@ -1,7 +1,7 @@
 import asyncio
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import structlog
 from fastapi import FastAPI, Request, status
@@ -15,9 +15,12 @@ from sqlalchemy import text
 
 from app.api.router import api_router
 from app.auth.jwks import jwks_manager
+from app.catalog.store import catalog_store
 from app.config.settings import settings
 from app.errors.codes import ErrorCode
 from app.errors.envelope import ErrorEnvelope
+from app.mcp.approval_receipts import approval_receipt_cleanup_loop, approval_receipt_store
+from app.mcp.connections import mcp_connection_store
 from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.mcp.transports.http_transport import mcp_transport
 from app.observability.metrics import (
@@ -120,14 +123,21 @@ async def lifespan(app: FastAPI):
     FastAPIInstrumentor.instrument_app(app)
     await tool_registry.start_cache_invalidation_listener()
     await secret_store.start_cache_invalidation_listener()
+    approval_receipt_cleanup_task = asyncio.create_task(approval_receipt_cleanup_loop())
 
     yield
 
     # Shutdown logic
+    approval_receipt_cleanup_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await approval_receipt_cleanup_task
     await mcp_transport.close()
     await secret_store.close()
     await tool_registry.close()
     await mcp_server_registry.close()
+    await mcp_connection_store.close()
+    await approval_receipt_store.close()
+    await catalog_store.close()
     await jwks_manager.close()
     await close_provider_http_clients()
     logger.info("Shutting down llm-gateway")

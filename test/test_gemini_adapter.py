@@ -17,7 +17,8 @@ from app.llm.adapters.gemini_adapter import (
     _extract_function_calls,
     _function_call_args,
 )
-from app.llm.service import NormalizedLLMRequest, ReasoningConfig
+from app.llm.adapters.common import build_gemini_tools
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
 
@@ -44,6 +45,13 @@ def _request() -> NormalizedLLMRequest:
         temperature=0.2,
         max_output_tokens=128,
     )
+
+
+def test_gemini_preserves_platform_function_alias() -> None:
+    tools = build_gemini_tools([
+        ToolSpec(name="acornops_generate_pdf_report", description="Generate report.")
+    ])
+    assert tools[0]["function_declarations"][0]["name"] == "acornops_generate_pdf_report"
 
 
 def _request_with_system_messages() -> NormalizedLLMRequest:

@@ -1,0 +1,11 @@
+services:
+  mock-mcp:
+    profiles: ["integration-test"]
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.mock-mcp
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./test:/app:ro
+      - ./.integration-certs:/certs

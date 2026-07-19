@@ -116,12 +116,12 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_tool_registry_rejects_rebinding_existing_tool_name(tmp_path):
+async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'rebind.db'}"
     await _create_schema(database_url)
     registry = ToolRegistry(database_url)
     try:
-        await registry.upsert_tool(
+        first = await registry.upsert_tool(
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
@@ -129,14 +129,22 @@ async def test_tool_registry_rejects_rebinding_existing_tool_name(tmp_path):
             target_type="kubernetes",
         )
 
-        with pytest.raises(ValueError, match="already bound"):
-            await registry.upsert_tool(
-                tool_name="github.search",
-                mcp_server_url="http://server-b",
-                workspace_id="ws-1",
-                target_id="cluster-a",
-                target_type="kubernetes",
-            )
+        second = await registry.upsert_tool(
+            tool_name="github.search",
+            mcp_server_url="http://server-b",
+            workspace_id="ws-1",
+            target_id="cluster-a",
+            target_type="kubernetes",
+        )
+
+        tools = await registry.list_target_tools(
+            "ws-1", "cluster-a", target_type="kubernetes"
+        )
+        assert len(tools) == 2
+        assert {tool.server_id for tool in tools} == {first.server_id, second.server_id}
+        assert await registry.get_tool(
+            "ws-1", "cluster-a", "github.search", target_type="kubernetes"
+        ) is None
     finally:
         await registry.close()
 
@@ -261,5 +269,53 @@ async def test_mcp_server_registry_crud_and_invalid_id_handling(tmp_path):
         assert await registry.delete_server(
             "ws-1", "cluster-a", "not-a-uuid", target_type="kubernetes"
         ) is False
+    finally:
+        await registry.close()
+
+
+@pytest.mark.anyio
+async def test_mcp_server_registry_isolates_agent_and_target_destinations(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'server-scope-isolation.db'}"
+    await _create_schema(database_url)
+    registry = McpServerRegistry(database_url)
+    try:
+        target = await registry.create_server(
+            workspace_id="ws-1",
+            target_id="destination-a",
+            target_type="kubernetes",
+            server_name="operations",
+            server_url="https://operations.example/mcp",
+            enabled=True,
+            auth_type="none",
+        )
+        agent = await registry.create_server(
+            workspace_id="ws-1",
+            target_id="destination-a",
+            target_type="agent",
+            server_name="operations",
+            server_url="https://operations.example/mcp",
+            enabled=True,
+            auth_type="none",
+        )
+
+        assert target.scope_type == "target"
+        assert target.agent_id is None
+        assert agent.scope_type == "agent"
+        assert agent.agent_id == "destination-a"
+        assert [server.id for server in await registry.list_servers(
+            "ws-1", "destination-a", "kubernetes"
+        )] == [target.id]
+        assert [server.id for server in await registry.list_servers(
+            "ws-1", "destination-a", "agent"
+        )] == [agent.id]
+
+        with pytest.raises(ValueError, match="revision"):
+            await registry.update_server(
+                "ws-1",
+                "destination-a",
+                str(target.id),
+                {"enabled": False, "expected_revision": 99},
+                target_type="kubernetes",
+            )
     finally:
         await registry.close()

@@ -23,6 +23,7 @@ def claims() -> TokenClaims:
         iat=1,
         exp=999,
         sub="sub-1",
+        user_id="user-1",
         run_id="run-1",
         workspace_id="ws-1",
         target_id="cl-1",

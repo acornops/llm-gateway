@@ -1,3 +1,4 @@
+import unicodedata
 from datetime import datetime
 from typing import Any, Literal, Self
 
@@ -12,8 +13,20 @@ from app.mcp.header_policy import (
 )
 from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, TargetType
 
-McpScopeType = Literal["workspace", "target"]
-McpRegistryTargetType = TargetType | Literal["workspace"]
+McpScopeType = Literal["agent", "target"]
+McpRegistryTargetType = TargetType | Literal["agent"]
+
+
+class AgentTargetConstraints(BaseModel):
+    target_types: list[TargetType] = Field(default_factory=list, max_length=16)
+    target_ids: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("target_types", "target_ids")
+    @classmethod
+    def _deduplicate_constraints(cls, value: list[str]) -> list[str]:
+        return sorted({item.strip() for item in value if item.strip()})
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def _effective_auth_header_prefix(auth_type: str | None, header_prefix: str | None) -> str:
@@ -33,6 +46,11 @@ class ToolConfigRequest(BaseModel):
     output_schema: dict[str, Any] | None = None
     artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool = True
+    review_state: Literal["pending", "approved", "rejected"] = "pending"
+    risk_level: Literal[
+        "read_only", "non_destructive_write", "high_risk", "destructive"
+    ] = "high_risk"
+    auto_allowed: bool = False
 
     @field_validator("name")
     @classmethod
@@ -44,9 +62,55 @@ class ToolConfigRequest(BaseModel):
             raise ValueError("tool name is reserved by the platform")
         return tool_name
 
+    @model_validator(mode="after")
+    def _validate_review(self) -> Self:
+        if self.auto_allowed and self.risk_level != "non_destructive_write":
+            raise ValueError("only non-destructive writes may be auto allowed")
+        if self.source == "mcp" and self.enabled and self.review_state != "approved":
+            raise ValueError("MCP tools must be approved before they are enabled")
+        return self
+
+
+class ToolConfigPatchRequest(BaseModel):
+    """Partial tool configuration used by the legacy server update surface."""
+
+    name: str = Field(min_length=1, examples=["records.list"])
+    timeout_ms: int | None = Field(default=None, ge=100, le=120000)
+    description: str | None = None
+    capability: Literal["read", "write"] | None = None
+    version: str | None = None
+    source: Literal["mcp", "builtin"] | None = None
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    artifact_policy: Literal["never", "if_detailed", "always"] | None = None
+    enabled: bool | None = None
+    review_state: Literal["pending", "approved", "rejected"] | None = None
+    risk_level: Literal[
+        "read_only", "non_destructive_write", "high_risk", "destructive"
+    ] | None = None
+    auto_allowed: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_tool_name(cls, value: str) -> str:
+        tool_name = value.strip()
+        if not tool_name:
+            raise ValueError("tool name is required")
+        if is_reserved_internal_tool_name(tool_name):
+            raise ValueError("tool name is reserved by the platform")
+        return tool_name
+
+    @model_validator(mode="after")
+    def _validate_auto_allowed(self) -> Self:
+        if self.auto_allowed and self.risk_level not in (None, "non_destructive_write"):
+            raise ValueError("only non-destructive writes may be auto allowed")
+        return self
+
 
 class ToolConfigResponse(BaseModel):
     name: str
+    server_id: str
+    model_alias: str
     mcp_server_url: str
     timeout_ms: int
     description: str | None = None
@@ -57,6 +121,11 @@ class ToolConfigResponse(BaseModel):
     output_schema: dict[str, Any] | None = None
     artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool
+    review_state: Literal["pending", "approved", "rejected"] = "pending"
+    risk_level: Literal[
+        "read_only", "non_destructive_write", "high_risk", "destructive"
+    ] = "high_risk"
+    auto_allowed: bool = False
 
 
 class ToolUpdateRequest(BaseModel):
@@ -68,23 +137,38 @@ class ToolUpdateRequest(BaseModel):
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
     artifact_policy: Literal["never", "if_detailed", "always"] | None = None
+    review_state: Literal["pending", "approved", "rejected"] | None = None
+    risk_level: Literal[
+        "read_only", "non_destructive_write", "high_risk", "destructive"
+    ] | None = None
+    auto_allowed: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_auto_allowed(self) -> Self:
+        if self.auto_allowed and self.risk_level not in (None, "non_destructive_write"):
+            raise ValueError("only non-destructive writes may be auto allowed")
+        return self
 
 
 class McpServerCreateRequest(BaseModel):
     workspace_id: str = Field(min_length=1, examples=[EXAMPLE_WORKSPACE_ID])
     scope_type: McpScopeType = "target"
-    target_id: str = Field(min_length=1)
-    target_type: McpRegistryTargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    agent_id: str | None = Field(default=None, min_length=1)
+    target_id: str | None = Field(default=None, min_length=1)
+    target_type: McpRegistryTargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    target_constraints: AgentTargetConstraints = Field(default_factory=AgentTargetConstraints)
     server_name: str = Field(min_length=1, examples=["operations-catalog"])
     server_url: str = Field(min_length=1, examples=["https://mcp.example.com/v1/"])
     enabled: bool = True
     auth_type: Literal["none", "bearer_token", "custom_header"] = "none"
+    auth_scope: Literal["none", "personal"] = "none"
     auth_secret_name: str | None = None
     auth_secret_value: str | None = None
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
     tools: list[ToolConfigRequest] = Field(default_factory=list)
+    expected_absent: bool = True
 
     @field_validator("public_headers")
     @classmethod
@@ -103,14 +187,28 @@ class McpServerCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_auth_config(self) -> Self:
-        if self.scope_type == "workspace" and (
-            self.target_id != "__workspace__" or self.target_type != "workspace"
-        ):
-            raise ValueError(
-                "workspace scope requires target_id=__workspace__ and target_type=workspace"
-            )
-        if self.scope_type == "target" and self.target_type == "workspace":
-            raise ValueError("target scope requires a concrete target_type")
+        if self.scope_type == "agent":
+            if not self.agent_id:
+                raise ValueError("agent scope requires agent_id")
+            if self.target_id or self.target_type:
+                raise ValueError("agent scope does not accept target_id or target_type")
+            # The current registry schema retains an internal owner key while
+            # the public contract exposes only agent_id for Agent records.
+            self.target_id = self.agent_id
+            self.target_type = "agent"
+        elif not self.target_id or self.target_type in (None, "agent"):
+            raise ValueError("target scope requires target_id and a concrete target_type")
+        external_authenticated = self.auth_type in ("bearer_token", "custom_header")
+        if external_authenticated:
+            if self.auth_secret_name or self.auth_secret_value:
+                raise ValueError("external MCP credentials must use personal connections")
+            self.auth_scope = "personal"
+        if self.auth_scope == "personal" and self.auth_type == "none":
+            raise ValueError("personal MCP authentication requires an auth type")
+        if self.auth_scope == "none" and self.scope_type == "agent" and self.auth_type != "none":
+            raise ValueError("Agent authentication must be personal or none")
+        if self.auth_scope == "personal" and (self.auth_secret_name or self.auth_secret_value):
+            raise ValueError("personal MCP installations cannot store shared credentials")
         if self.auth_secret_value is not None:
             validate_auth_header_value(
                 f"{_effective_auth_header_prefix(self.auth_type, self.auth_header_prefix)}"
@@ -125,12 +223,6 @@ class McpServerCreateRequest(BaseModel):
             )
         ):
             raise ValueError("auth fields are not allowed when auth_type is none")
-        if self.auth_type in ("bearer_token", "custom_header") and not (
-            self.auth_secret_name or self.auth_secret_value
-        ):
-            raise ValueError(
-                "auth_secret_name or auth_secret_value is required for configured auth_type"
-            )
         if self.auth_type == "custom_header" and not self.auth_header_name:
             raise ValueError("auth_header_name is required for custom_header auth")
         return self
@@ -147,7 +239,7 @@ class McpServerCreateRequest(BaseModel):
                 "enabled": True,
                 "public_headers": {"x-client-version": "2026-05"},
                 "auth_type": "bearer_token",
-                "auth_secret_name": "mcp_server::operations-catalog",
+                "auth_scope": "personal",
                 "auth_header_name": "Authorization",
                 "auth_header_prefix": "Bearer ",
                 "tools": [
@@ -163,6 +255,7 @@ class McpServerCreateRequest(BaseModel):
 
 
 class McpServerUpdateRequest(BaseModel):
+    server_url: str | None = Field(default=None, min_length=1)
     server_name: str | None = None
     enabled: bool | None = None
     auth_type: Literal["none", "bearer_token", "custom_header"] | None = None
@@ -171,8 +264,10 @@ class McpServerUpdateRequest(BaseModel):
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
-    tools: list[ToolConfigRequest] | None = None
+    tools: list[ToolConfigPatchRequest] | None = None
     remove_tools: list[str] = Field(default_factory=list)
+    target_constraints: AgentTargetConstraints | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("public_headers")
     @classmethod
@@ -214,7 +309,6 @@ class McpServerUpdateRequest(BaseModel):
                 "enabled": True,
                 "public_headers": {"x-client-version": "2026-05"},
                 "auth_type": "bearer_token",
-                "auth_secret_name": "mcp_server::operations-catalog",
                 "auth_header_name": "Authorization",
                 "auth_header_prefix": "Bearer ",
                 "tools": [
@@ -234,12 +328,15 @@ class McpServerResponse(BaseModel):
     id: str
     workspace_id: str
     scope_type: McpScopeType
-    target_id: str
-    target_type: McpRegistryTargetType
+    agent_id: str | None = None
+    target_id: str | None = None
+    target_type: McpRegistryTargetType | None = None
+    target_constraints: AgentTargetConstraints = Field(default_factory=AgentTargetConstraints)
     server_name: str
     server_url: str
     enabled: bool
     auth_type: str
+    auth_scope: Literal["none", "personal"] = "none"
     credential_configured: bool = False
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
@@ -247,6 +344,16 @@ class McpServerResponse(BaseModel):
     connection_status: Literal["unknown", "ok", "error"] = "unknown"
     last_discovery_at: datetime | None = None
     last_discovery_error: str | None = None
+    catalog_source_id: str | None = None
+    catalog_artifact_name: str | None = None
+    catalog_version: str | None = None
+    catalog_digest: str | None = None
+    catalog_imported_at: datetime | None = None
+    provenance_type: Literal["manual", "catalog", "builtin"] = "manual"
+    endpoint_configuration: dict[str, Any] = Field(default_factory=dict)
+    integration_profile_id: str | None = None
+    integration_profile_version: int | None = None
+    revision: int = 1
     tools: list[ToolConfigResponse]
 
 
@@ -259,3 +366,80 @@ class McpServerConnectionTestResponse(BaseModel):
     discovered_tool_count: int
     discovered_tools: list[str] = Field(default_factory=list)
     error: str | None = None
+
+
+class McpUserConnectionUpsertRequest(BaseModel):
+    workspace_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    credential: str = Field(min_length=1, max_length=8192)
+    consent_granted: Literal[True]
+
+    @field_validator("credential")
+    @classmethod
+    def _validate_credential(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 8192:
+            raise ValueError("credential must be no larger than 8 KiB")
+        if any(unicodedata.category(character) == "Cc" for character in value):
+            raise ValueError("credential must not contain control characters")
+        return value
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpUserConnectionResponse(BaseModel):
+    server_id: str
+    status: Literal["missing", "connected", "error"]
+    auth_type: Literal["bearer_token", "custom_header"]
+    action: Literal["connect_mcp_server", "verify_mcp_server"] | None = None
+    error_code: str | None = None
+
+
+class McpUserConnectionVerifyRequest(BaseModel):
+    workspace_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpPrincipalReference(BaseModel):
+    type: Literal["user", "service_identity"]
+    id: str = Field(min_length=1, max_length=256)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpExactToolReference(BaseModel):
+    server_id: str = Field(min_length=1, max_length=64)
+    tool_name: str = Field(min_length=1, max_length=256)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpReadinessRequest(BaseModel):
+    workspace_id: str = Field(min_length=1, max_length=256)
+    principal: McpPrincipalReference
+    tool_refs: list[McpExactToolReference] = Field(max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+McpReadinessFailureCode = Literal[
+    "MCP_PAT_USER_PRINCIPAL_REQUIRED",
+    "MCP_PERSONAL_CONNECTION_MISSING",
+    "MCP_PERSONAL_CONNECTION_ERROR",
+    "MCP_PERSONAL_TOOL_UNAVAILABLE",
+    "MCP_INSTALLATION_UNAVAILABLE",
+    "MCP_REMOTE_DISABLED",
+]
+
+
+class McpReadinessFailure(BaseModel):
+    server_id: str
+    tool_name: str
+    code: McpReadinessFailureCode
+    action: Literal["connect_mcp_server", "verify_mcp_server"] | None = None
+
+
+class McpReadinessResponse(BaseModel):
+    ready: bool
+    failures: list[McpReadinessFailure]

@@ -59,7 +59,6 @@ def test_internal_transport_tls_defaults_disabled():
     settings = Settings()
 
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is False
-    assert settings.BUILTIN_TARGET_MCP_SERVER_NAME == "acornops-target-agent"
     assert settings.BUILTIN_TARGET_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
     assert settings.ADDITIONAL_CA_BUNDLE_FILE == ""
 

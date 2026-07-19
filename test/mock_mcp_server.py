@@ -21,14 +21,39 @@ TOOLS = [
     }
 ]
 
+AUTH_STATE = {
+    "bearer": {"enabled": True, "requests": 0},
+    "custom": {"enabled": True, "requests": 0},
+}
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.post("/mcp")
-async def streamable_http(request: Request):
+@app.post("/control/reset")
+async def reset_auth_state():
+    for state in AUTH_STATE.values():
+        state["enabled"] = True
+        state["requests"] = 0
+    return AUTH_STATE
+
+
+@app.post("/control/revoke/{auth_mode}")
+async def revoke_auth_mode(auth_mode: str):
+    if auth_mode not in AUTH_STATE:
+        return JSONResponse({"detail": "unknown auth mode"}, status_code=404)
+    AUTH_STATE[auth_mode]["enabled"] = False
+    return AUTH_STATE[auth_mode]
+
+
+@app.get("/control/stats")
+async def auth_stats():
+    return AUTH_STATE
+
+
+async def _streamable_http(request: Request):
     payload = await request.json()
     method = payload.get("method")
     req_id = payload.get("id")
@@ -95,6 +120,33 @@ async def streamable_http(request: Request):
     )
 
 
+@app.post("/mcp")
+async def streamable_http(request: Request):
+    return await _streamable_http(request)
+
+
+@app.post("/mcp/bearer")
+async def streamable_http_bearer(request: Request):
+    AUTH_STATE["bearer"]["requests"] += 1
+    if (
+        not AUTH_STATE["bearer"]["enabled"]
+        or request.headers.get("authorization") != "Bearer bearer-pat"
+    ):
+        return JSONResponse({"detail": "bearer PAT required"}, status_code=401)
+    return await _streamable_http(request)
+
+
+@app.post("/mcp/custom")
+async def streamable_http_custom_header(request: Request):
+    AUTH_STATE["custom"]["requests"] += 1
+    if (
+        not AUTH_STATE["custom"]["enabled"]
+        or request.headers.get("x-mcp-pat") != "custom-pat"
+    ):
+        return JSONResponse({"detail": "custom-header PAT required"}, status_code=403)
+    return await _streamable_http(request)
+
+
 @app.get("/mcp")
 async def streamable_http_sse_not_supported():
     return Response(status_code=405)
@@ -102,6 +154,18 @@ async def streamable_http_sse_not_supported():
 
 @app.delete("/mcp")
 async def streamable_http_sessions_not_supported():
+    return Response(status_code=405)
+
+
+@app.get("/mcp/{auth_mode}")
+async def authenticated_streamable_http_sse_not_supported(auth_mode: str):
+    del auth_mode
+    return Response(status_code=405)
+
+
+@app.delete("/mcp/{auth_mode}")
+async def authenticated_streamable_http_sessions_not_supported(auth_mode: str):
+    del auth_mode
     return Response(status_code=405)
 
 

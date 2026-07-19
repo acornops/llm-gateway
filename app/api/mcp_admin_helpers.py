@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import structlog
@@ -6,14 +7,17 @@ from fastapi import HTTPException
 
 from app.api.mcp_admin_schemas import (
     McpServerResponse,
+    ToolConfigPatchRequest,
     ToolConfigRequest,
     ToolConfigResponse,
 )
 from app.config.settings import settings
 from app.internal_model_tools import is_reserved_internal_tool_name
 from app.mcp.header_policy import validate_auth_header_value
+from app.mcp.logging import loggable_mcp_server_origin
 from app.mcp.registry.models import McpServer, Tool
 from app.mcp.registry.store import mcp_server_registry, tool_registry
+from app.mcp.tool_identity import model_tool_alias
 from app.mcp.tool_metadata import (
     extract_discovery_error as _extract_discovery_error,
 )
@@ -32,6 +36,8 @@ def _build_tool_response(tool: Tool) -> ToolConfigResponse:
     source = tool.source if tool.source in ("mcp", "builtin") else "mcp"
     return ToolConfigResponse(
         name=tool.tool_name,
+        server_id=str(tool.server_id),
+        model_alias=model_tool_alias(str(tool.server_id), tool.tool_name),
         mcp_server_url=tool.mcp_server_url,
         timeout_ms=tool.timeout_ms,
         description=tool.description,
@@ -42,20 +48,36 @@ def _build_tool_response(tool: Tool) -> ToolConfigResponse:
         output_schema=getattr(tool, "output_schema", None),
         artifact_policy=getattr(tool, "artifact_policy", "never"),
         enabled=bool(tool.enabled),
+        review_state=getattr(tool, "review_state", "pending"),
+        risk_level=getattr(tool, "risk_level", "high_risk"),
+        auto_allowed=bool(getattr(tool, "auto_allowed", False)),
     )
 
 
 def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerResponse:
+    catalog_source_id = getattr(server, "catalog_source_id", None)
+    endpoint_configuration = getattr(server, "endpoint_configuration", {}) or {}
     return McpServerResponse(
         id=str(server.id),
         workspace_id=server.workspace_id,
         scope_type=getattr(server, "scope_type", "target"),
-        target_id=server.target_id,
-        target_type=server.target_type,
+        agent_id=server.agent_id if getattr(server, "scope_type", "target") == "agent" else None,
+        target_id=server.target_id if getattr(server, "scope_type", "target") == "target" else None,
+        target_type=(
+            server.target_type
+            if getattr(server, "scope_type", "target") == "target"
+            else None
+        ),
+        target_constraints=getattr(server, "target_constraints", {}) or {},
         server_name=server.server_name,
         server_url=server.server_url,
         enabled=bool(server.enabled),
         auth_type=server.auth_type,
+        auth_scope=(
+            getattr(server, "auth_scope", "none")
+            if getattr(server, "auth_scope", "none") in ("none", "personal")
+            else "none"
+        ),
         credential_configured=bool(server.auth_secret_name),
         auth_header_name=server.auth_header_name,
         auth_header_prefix=server.auth_header_prefix,
@@ -65,6 +87,18 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         else "unknown",
         last_discovery_at=server.last_discovery_at,
         last_discovery_error=server.last_discovery_error,
+        catalog_source_id=(
+            str(catalog_source_id) if catalog_source_id else None
+        ),
+        catalog_artifact_name=getattr(server, "catalog_artifact_name", None),
+        catalog_version=getattr(server, "catalog_version", None),
+        catalog_digest=getattr(server, "catalog_digest", None),
+        catalog_imported_at=getattr(server, "catalog_imported_at", None),
+        provenance_type=getattr(server, "provenance_type", "manual"),
+        endpoint_configuration=endpoint_configuration,
+        integration_profile_id=endpoint_configuration.get("integration_profile_id"),
+        integration_profile_version=endpoint_configuration.get("integration_profile_version"),
+        revision=int(getattr(server, "revision", 1) or 1),
         tools=[_build_tool_response(tool) for tool in tools],
     )
 
@@ -74,14 +108,27 @@ async def _resolve_tools_for_server(
     target_id: str,
     server_url: str,
     target_type: str,
+    server_id: str | None = None,
 ) -> list[Tool]:
+    resolved_server_id = server_id
+    if resolved_server_id is None:
+        server = await mcp_server_registry.get_server_by_url(
+            workspace_id,
+            target_id,
+            server_url,
+            target_type=target_type,
+            enabled_only=False,
+        )
+        if server is None:
+            return []
+        resolved_server_id = str(server.id)
     tools = await tool_registry.list_target_tools(
         workspace_id,
         target_id,
         target_type=target_type,
         include_disabled=True,
     )
-    return [tool for tool in tools if tool.mcp_server_url == server_url]
+    return [tool for tool in tools if str(tool.server_id) == resolved_server_id]
 
 
 async def _persist_server_secret(
@@ -237,9 +284,15 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
 
 
 async def _discover_server_tools(
-    workspace_id: str, target_id: str, server: McpServer
+    workspace_id: str,
+    target_id: str,
+    server: McpServer,
+    *,
+    request_headers: dict[str, str] | None = None,
 ) -> tuple[list[ToolConfigRequest], str | None]:
-    headers = await _build_server_request_headers(workspace_id, target_id, server)
+    headers = request_headers or await _build_server_request_headers(
+        workspace_id, target_id, server
+    )
     discovery_response = await mcp_transport.list_tools(
         server.server_url, settings.MCP_CALL_DEFAULT_TIMEOUT_MS, headers
     )
@@ -249,7 +302,7 @@ async def _discover_server_tools(
             workspace_id=workspace_id,
             target_id=target_id,
             server_name=server.server_name,
-            server_url=server.server_url,
+            server_url=loggable_mcp_server_origin(server.server_url),
         )
         return [], "Invalid response payload from MCP server tools/list."
 
@@ -260,8 +313,8 @@ async def _discover_server_tools(
             workspace_id=workspace_id,
             target_id=target_id,
             server_name=server.server_name,
-            server_url=server.server_url,
-            discovery_error=discovery_error,
+            server_url=loggable_mcp_server_origin(server.server_url),
+            error_code="MCP_DISCOVERY_UPSTREAM_ERROR",
         )
         return [], discovery_error
 
@@ -272,7 +325,7 @@ async def _discover_server_tools(
             workspace_id=workspace_id,
             target_id=target_id,
             server_name=server.server_name,
-            server_url=server.server_url,
+            server_url=loggable_mcp_server_origin(server.server_url),
         )
     return discovered, None
 
@@ -297,54 +350,111 @@ async def _record_discovery_status(
     )
 
 
+def _effective_patch_value(
+    tool: ToolConfigPatchRequest,
+    existing_tool: Tool | None,
+    provided_fields: set[str],
+    field: str,
+    default: Any,
+) -> Any:
+    if field in provided_fields:
+        return getattr(tool, field)
+    if existing_tool is not None:
+        return getattr(existing_tool, field, default)
+    return default
+
+
 async def _apply_tools_for_server(
     workspace_id: str,
     target_id: str,
     server_url: str,
-    tools: list[ToolConfigRequest],
+    tools: list[ToolConfigRequest | ToolConfigPatchRequest],
     *,
     target_type: str,
+    server_id: str | None = None,
     remove_disabled: bool = True,
 ) -> None:
+    resolved_server_id = server_id
+    if resolved_server_id is None:
+        server = await mcp_server_registry.get_server_by_url(
+            workspace_id,
+            target_id,
+            server_url,
+            target_type=target_type,
+            enabled_only=False,
+        )
+        if server is None:
+            raise HTTPException(status_code=404, detail="MCP server not found")
+        resolved_server_id = str(server.id)
     for tool in tools:
-        if not tool.enabled and remove_disabled:
-            await tool_registry.remove_tool_for_target(
-                tool.name,
-                workspace_id,
-                target_id,
-                target_type=target_type,
-            )
-            continue
         provided_fields = getattr(tool, "model_fields_set", {"capability"})
         capability_provided = "capability" in provided_fields
         existing_tool = None
-        if (
-            not capability_provided
-            and tool.source == "mcp"
-        ):
+        if isinstance(tool, ToolConfigPatchRequest) or not capability_provided:
             existing_tool = await tool_registry.get_tool(
                 workspace_id,
                 target_id,
                 tool.name,
                 target_type=target_type,
                 include_disabled=True,
+                server_id=resolved_server_id,
             )
-            if (
-                tool.enabled
-                and existing_tool is not None
-                and existing_tool.source == "mcp"
-                and not existing_tool.enabled
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="capability is required when enabling a discovered MCP tool",
-                )
-        capability = tool.capability
-        if not capability_provided and existing_tool is not None:
-            capability = (
-                existing_tool.capability
-                if existing_tool.capability in ("read", "write")
-                else "write"
+
+        if isinstance(tool, ToolConfigPatchRequest):
+            effective = partial(
+                _effective_patch_value, tool, existing_tool, provided_fields
+            )
+            enabled = bool(effective("enabled", True))
+            source = effective("source", "mcp")
+            capability = effective("capability", "write")
+            review_state = effective("review_state", "pending")
+            risk_level = effective("risk_level", "high_risk")
+            auto_allowed = bool(effective("auto_allowed", False))
+            timeout_ms = effective("timeout_ms", 10000)
+            description = effective("description", None)
+            version = effective("version", "v1")
+            input_schema = effective("input_schema", None)
+            output_schema = effective("output_schema", None)
+            artifact_policy = effective("artifact_policy", "never")
+        else:
+            enabled = bool(tool.enabled)
+            source = tool.source
+            capability = tool.capability
+            review_state = getattr(tool, "review_state", "pending")
+            risk_level = getattr(tool, "risk_level", "high_risk")
+            auto_allowed = bool(getattr(tool, "auto_allowed", False))
+            timeout_ms = tool.timeout_ms
+            description = tool.description
+            version = tool.version
+            input_schema = tool.input_schema
+            output_schema = getattr(tool, "output_schema", None)
+            artifact_policy = getattr(tool, "artifact_policy", "never")
+
+        if not enabled and remove_disabled:
+            await tool_registry.remove_tool_for_target(
+                tool.name,
+                workspace_id,
+                target_id,
+                target_type=target_type,
+                server_id=resolved_server_id,
+            )
+            continue
+        if (
+            not capability_provided
+            and source == "mcp"
+            and enabled
+            and existing_tool is not None
+            and existing_tool.source == "mcp"
+            and not existing_tool.enabled
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="capability is required when enabling a discovered MCP tool",
+            )
+        if source == "mcp" and enabled and review_state != "approved":
+            raise HTTPException(
+                status_code=400,
+                detail="MCP tools must be approved before they are enabled",
             )
         try:
             await tool_registry.upsert_tool(
@@ -353,15 +463,19 @@ async def _apply_tools_for_server(
                 workspace_id=workspace_id,
                 target_id=target_id,
                 target_type=target_type,
-                timeout_ms=tool.timeout_ms,
-                input_schema=tool.input_schema,
-                output_schema=getattr(tool, "output_schema", None),
-                artifact_policy=getattr(tool, "artifact_policy", "never"),
-                enabled=bool(tool.enabled),
-                description=tool.description,
+                timeout_ms=timeout_ms,
+                input_schema=input_schema,
+                output_schema=output_schema,
+                artifact_policy=artifact_policy,
+                enabled=enabled,
+                description=description,
                 capability=capability,
-                version=tool.version,
-                source=tool.source,
+                version=version,
+                source=source,
+                server_id=resolved_server_id,
+                review_state=review_state,
+                risk_level=risk_level,
+                auto_allowed=auto_allowed,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

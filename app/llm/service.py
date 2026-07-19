@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import re
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -26,6 +27,15 @@ class ToolSpec(BaseModel):
         default_factory=lambda: {"type": "object", "additionalProperties": True},
         examples=[{"type": "object", "properties": {"namespace": {"type": "string"}}}],
     )
+
+    @field_validator("name")
+    @classmethod
+    def validate_provider_neutral_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,62}", value):
+            raise ValueError(
+                "function name must match ^[A-Za-z_][A-Za-z0-9_-]{0,62}$"
+            )
+        return value
 
 
 class NativeToolSpec(BaseModel):
@@ -66,7 +76,6 @@ class NormalizedLLMRequest(BaseModel):
     workflow_id: str | None = None
     workflow_run_id: str | None = None
     workflow_session_id: str | None = None
-    workflow_step_id: str | None = None
     agent_id: str | None = None
     agent_version: int | None = None
     trigger_id: str | None = None

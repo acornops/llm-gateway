@@ -97,7 +97,8 @@ task validate
 ### Compose Layout
 
 - `docker-compose.yml`: base/default component runtime (`gateway`, `postgres`, `redis`, migration job). It is useful for local integration and image smoke tests; full deployment topology lives in `acornops-deployment`.
-- `docker-compose.override.yml`: local development additions (local builds, host ports, `mock-auth`, `mock-mcp`, seed data).
+- `docker-compose.override.yml`: local development additions (local builds, host ports, and `mock-auth`). It does not install MCP servers, tools, or provider credentials.
+- `docker-compose.integration-test.yml`: explicit test-only mock MCP infrastructure. Tests install and discover it through the same admin APIs used for real integrations.
 - base compose defaults `AUTH_JWKS_URL` to `https://api.<BASE_DOMAIN>/api/v1/auth/jwks.json` (`BASE_DOMAIN=acornops.dev` by default), gates the gateway on `/ready`, and uses `LLM_GATEWAY_IMAGE` for explicit image selection.
 
 ### Secret Backends
@@ -112,8 +113,10 @@ task validate
   - optional `VAULT_TIMEOUT_MS` / `VAULT_VERIFY_TLS`
 - LLM provider credentials are workspace-scoped and are configured through
   workspace AI settings.
-- MCP auth secrets remain target-scoped by `workspace_id`, `target_id`, and
-  `target_type`.
+- External MCP credentials are personal only. Each PAT is scoped to one
+  workspace user and one target or Agent installation, with both identities
+  embedded in its secret name; PATs are never exposed by the API. The
+  platform-owned built-in bridge uses its separate run-token trust boundary.
 - For local Vault testing, the override includes a `vault` service under the `vault` profile:
 
 ```bash
@@ -131,8 +134,17 @@ The control-plane manages target-scoped MCP and built-in tool configuration thro
 - `PATCH /api/v1/internal/mcp/servers/{server_id}`
 - `POST /api/v1/internal/mcp/servers/{server_id}/test`
 - `DELETE /api/v1/internal/mcp/servers/{server_id}`
+- `GET|PUT|DELETE /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}`
+- `POST /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}/verify`
 
 All of the above require `Authorization: Bearer <ADMIN_API_TOKEN>` and explicit `workspace_id` + `target_id` + `target_type` query/body scope where applicable.
+
+Personal-auth installations accept PATs only in V1. `PUT` accepts exactly a
+credential plus explicit consent, enforces an 8 KiB UTF-8 ceiling, stores or rotates a
+write-only PAT and verifies it through authenticated tool discovery. Failed
+verification retains the PAT with an error status so `POST .../verify` can
+retry it without re-entry. Runtime requests fail closed until verification
+succeeds, and service principals cannot use personal-auth MCP servers.
 
 ### MCP Server Discovery Contract
 
@@ -150,18 +162,26 @@ For remote MCP servers managed by the management console's MCP Servers tab:
   on close. Idempotent discovery reinitializes once after explicit session
   termination; tool calls are never automatically replayed.
 
-On server create (when no explicit tool list is supplied), llm-gateway discovers
+On unauthenticated server create (when no explicit tool list is supplied), llm-gateway discovers
 tools, stores them disabled, and sanitizes remote descriptions/schemas before
 they are shown for admin review. A discovered external tool is not returned to
 runtime tool lists or sent to an LLM until an admin explicitly enables it with a
 reviewed capability.
 Each MCP server also tracks `connection_status`, `last_discovery_at`, and `last_discovery_error` so UI can surface discovery health.
-If discovery fails or returns empty, server creation still succeeds but no tools are mapped until discovery succeeds.
+An authenticated discovery that succeeds with an empty tool list marks that
+user connection connected with an empty snapshot. Discovery failure marks only
+that user's connection erroneous and clears only that user's snapshot.
 MCP server `public_headers` are visible non-secret metadata. Credential-bearing headers must use secret-backed auth fields.
 
-MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an exact `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`; neither setting bypasses HTTPS or certificate verification. Mount an organization private CA and set `ADDITIONAL_CA_BUNDLE_FILE` to its PEM bundle. The same additive trust is used for providers, Vault, JWKS, remote MCP, `rediss://`, and explicitly TLS-enabled PostgreSQL. The configured AcornOps builtin bridge still uses the separate internal transport when mTLS is enabled.
+MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an exact `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`; neither setting bypasses HTTPS or certificate verification. Mount an organization private CA and set `ADDITIONAL_CA_BUNDLE_FILE` to extend trust for providers, Vault, JWKS, remote MCP, `rediss://`, and explicitly TLS-enabled PostgreSQL. Set `MCP_EGRESS_CA_BUNDLE_FILE` for additional trust limited to generic remote MCP traffic. The configured AcornOps target-adapter bridge uses the separate trusted internal transport and is selected only for an exact live target registration with `source: builtin`.
 
-LLM and tool-call limits are configured by `LLM_RATE_LIMIT_PER_WINDOW`, `TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. In production, `REQUIRE_REDIS_RATE_LIMITS_IN_PRODUCTION=true` makes missing Redis configuration a startup error.
+LLM and tool-call limits are configured by `LLM_RATE_LIMIT_PER_WINDOW`,
+`TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. Personal MCP
+connect and verify share the per-user, per-installation
+`MCP_CONNECTION_RATE_LIMIT_PER_WINDOW` budget. Set `REMOTE_MCP_ENABLED=false`
+to block external discovery and execution while leaving built-in tools
+operational. In production, `REQUIRE_REDIS_RATE_LIMITS_IN_PRODUCTION=true`
+makes missing Redis configuration a startup error.
 
 Runtime JWKS checks are configured with `JWKS_CACHE_TTL_SECONDS`,
 `JWKS_READINESS_MAX_STALENESS_SECONDS`, and `REQUIRE_JWKS_READINESS`. Production
@@ -188,9 +208,8 @@ This starts:
 - postgres (`localhost:5432`)
 - redis (`localhost:6379`)
 - mock-auth (`http://localhost:8003`)
-- mock-mcp (`http://localhost:8002/mcp`)
 
-The gateway and mock auth/MCP services run with Uvicorn `--reload`, so code changes are reflected immediately.
+The gateway and mock auth service run with Uvicorn `--reload`, so code changes are reflected immediately. The registry and provider credential stores start empty.
 
 2. Component-only image smoke test:
 
@@ -220,26 +239,7 @@ docker compose up -d --build
 
 ### Local Development (Docker Required)
 
-Docker is required for local development and testing to ensure consistency with the production environment.
-
-Optional re-seed command:
-
-```bash
-docker compose run --rm gateway-init sh -c "alembic upgrade head && python scripts/seed_db.py"
-```
-
-To test real inference in local development, set dev seed provider API keys before
-seeding. The seed job stores non-blank values as workspace-scoped provider
-credentials; production traffic should configure credentials through workspace
-settings. For providerless deterministic smoke runs,
-`LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` makes the seed job write fake
-local-only provider keys so upstream services can exercise credential preflight
-without calling a real provider. Gemini is the recommended demo default:
-
-```bash
-export ACORNOPS_DEV_SEED_GEMINI_API_KEY='<your-gemini-api-key>'
-docker compose run --rm gateway-init sh -c "alembic upgrade head && python scripts/seed_db.py"
-```
+Docker is required for local development and testing to ensure consistency with the production environment. Startup runs Alembic only; it never creates registry rows or credentials. Configure a real provider credential through workspace AI Settings, and install MCP servers through the normal admin API or console. Use `docker-compose.integration-test.yml` only for isolated mock-MCP integration tests.
 
 The Gemini adapter uses Google's current `google-genai` SDK.
 
@@ -360,8 +360,12 @@ pytest --cov=app
        "workspace_id": "4b930d98-add9-4924-ab26-3c16d96ec373",
        "target_id": "5b006e4c-509c-458a-9f02-5aafbdc01ade",
        "target_type": "kubernetes",
-       "tool": "get_weather",
-       "arguments": {"location": "San Francisco"}
+       "tool": "mcp__42573ae40a1f4488ae1fe6bd3fd2469b__repository_status",
+       "tool_ref": {
+         "server_id": "42573ae4-0a1f-4488-ae1f-e6bd3fd2469b",
+         "tool_name": "repository_status"
+       },
+       "arguments": {"repository": "acornops/control-plane"}
      }'
    ```
 

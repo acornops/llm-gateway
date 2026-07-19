@@ -125,7 +125,6 @@ class Settings(BaseSettings):
     PROVIDER_RETRY_BACKOFF_MS: int = 200
 
     # MCP
-    BUILTIN_TARGET_MCP_SERVER_NAME: str = "acornops-target-agent"
     BUILTIN_TARGET_MCP_SERVER_URL: str = "http://control-plane:8081/internal/v1/mcp"
     MCP_CALL_DEFAULT_TIMEOUT_MS: int = 10000
     MCP_MAX_TOOL_RESULT_BYTES: int = Field(default=2 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024)
@@ -141,7 +140,21 @@ class Settings(BaseSettings):
     MCP_EGRESS_ALLOW_LOCAL_ADDRESSES: bool = False
     MCP_EGRESS_ALLOWED_HOSTS: str = ""
     MCP_EGRESS_DNS_CACHE_TTL_SEC: int = 300
+    MCP_EGRESS_CA_BUNDLE_FILE: str = ""
+    REMOTE_MCP_ENABLED: bool = True
+    MCP_CONNECTION_RATE_LIMIT_PER_WINDOW: int = Field(default=10, ge=1, le=1000)
     TOOL_REGISTRY_CACHE_TTL_SEC: int = 300
+    # Catalog registry discovery
+    CATALOG_OFFICIAL_REGISTRY_ENABLED: bool = False
+    CATALOG_OFFICIAL_REGISTRY_URL: str = "https://registry.modelcontextprotocol.io"
+    CATALOG_WORKSPACE_MANAGED_SOURCES_ENABLED: bool = True
+    CATALOG_BOOTSTRAP_SOURCES_JSON: str = "[]"
+    CATALOG_REQUEST_TIMEOUT_MS: int = 10000
+    CATALOG_MAX_RESPONSE_BYTES: int = Field(
+        default=2 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024
+    )
+    CATALOG_SYNC_PAGE_SIZE: int = Field(default=100, ge=1, le=500)
+    CATALOG_MAX_SYNC_PAGES: int = Field(default=100, ge=1, le=1000)
 
     # Rate limits
     RATE_LIMIT_WINDOW_SECONDS: int = 60
@@ -171,6 +184,14 @@ class Settings(BaseSettings):
             except OSError as error:
                 raise ValueError(
                     "ADDITIONAL_CA_BUNDLE_FILE must point to a readable file"
+                ) from error
+        if self.MCP_EGRESS_CA_BUNDLE_FILE:
+            try:
+                with Path(self.MCP_EGRESS_CA_BUNDLE_FILE).open("rb"):
+                    pass
+            except OSError as error:
+                raise ValueError(
+                    "MCP_EGRESS_CA_BUNDLE_FILE must point to a readable file"
                 ) from error
         if runtime_env != "production":
             return self

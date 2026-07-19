@@ -27,6 +27,7 @@ def _payload() -> dict:
         "iat": 1,
         "exp": 2,
         "sub": "user-1",
+        "user_id": "user-1",
         "run_id": "run-1",
         "workspace_id": "ws-1",
         "target_id": "cluster-1",
@@ -46,13 +47,13 @@ def _workflow_payload() -> dict:
         "iat": 1,
         "exp": 2,
         "sub": "run:run-workflow",
+        "user_id": "user-1",
         "run_id": "run-workflow",
         "workspace_id": "ws-1",
         "scope": {"type": "workspace"},
         "workflow_id": "workflow-1",
         "workflow_run_id": "workflow-run-1",
         "workflow_session_id": "workflow-session-1",
-        "workflow_step_id": "inventory",
         "session_id": "workflow-session-1",
         "permissions": {
             "allowed_providers": ["openai"],
@@ -114,7 +115,6 @@ async def test_jwt_validator_returns_workspace_workflow_claims(monkeypatch: pyte
     assert claims.workflow_id == "workflow-1"
     assert claims.workflow_run_id == "workflow-run-1"
     assert claims.workflow_session_id == "workflow-session-1"
-    assert claims.workflow_step_id == "inventory"
     assert claims.target_id is None
     assert claims.target_type is None
     assert claims.permissions.allowed_tools == ["mcp.tools.list", "audit.events.search"]

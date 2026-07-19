@@ -18,14 +18,22 @@ ROUTER_SOURCE = read("app/api/router.py")
 LLM_SERVICE_SOURCE = read("app/llm/service.py")
 CLAIMS_SOURCE = read("app/auth/claims.py")
 LLM_HANDLER_SOURCE = read("app/api/handlers_llm_stream.py")
-TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py")
+TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py") + read(
+    "app/api/tool_call_contract.py"
+)
 INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
-MCP_ADMIN_SOURCE = read("app/api/handlers_mcp_admin.py") + read("app/api/mcp_admin_schemas.py")
+MCP_ADMIN_SOURCE = (
+    read("app/api/handlers_mcp_admin.py")
+    + read("app/api/handlers_mcp_connections.py")
+    + read("app/api/mcp_admin_schemas.py")
+)
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
+CATALOG_SCHEMA_SOURCE = read("app/catalog/schemas.py")
+CATALOG_HANDLER_SOURCE = read("app/api/handlers_catalog_admin.py")
+METRICS_SOURCE = read("app/observability/metrics.py")
 TRANSPORT_SOURCE = read("app/mcp/transports/http_transport.py")
 INTERNAL_TRANSPORT_SOURCE = read("app/internal_transport.py")
 SETTINGS_SOURCE = read("app/config/settings.py")
-SEED_SOURCE = read("scripts/seed_db.py")
 EXECUTION_ENGINE_CONTRACT = MANIFEST["counterparts"]["execution-engine"]
 CONTROL_PLANE_CONTRACT = MANIFEST["counterparts"]["control-plane"]
 
@@ -48,6 +56,30 @@ expect_in(
     "[`docs/contracts/manifest.json`](docs/contracts/manifest.json)",
     "README manifest link",
 )
+
+for needle in (
+    'scope_type: Literal["agent"] = "agent"',
+    "agent_id: str",
+    'scope_type: Literal["target"]',
+    "target_id: str",
+    "target_type: TargetType",
+    'Field(discriminator="scope_type")',
+    'return {**value, "scope_type": "agent"}',
+):
+    expect_in(CATALOG_SCHEMA_SOURCE, needle, "Catalog import destination union")
+
+for needle in (
+    "GATEWAY_CATALOG_IMPORTS_TOTAL",
+    'scope_type=payload.scope_type',
+    'operation=operation',
+    'outcome="success"',
+    'outcome="failure"',
+):
+    expect_in(
+        CATALOG_HANDLER_SOURCE + METRICS_SOURCE,
+        needle,
+        "Bounded catalog import observability",
+    )
 expect(MANIFEST["repo"] == "llm-gateway", "Manifest repo")
 
 for heading in (
@@ -175,6 +207,26 @@ for route in (
 ):
     expect_in(MAIN_SOURCE + ROUTER_SOURCE, route, "API route mounting")
 
+for route in (
+    '@router.get(\n    "/servers/{server_id}/connections/{user_id}"',
+    '@router.put(\n    "/servers/{server_id}/connections/{user_id}"',
+    '"/servers/{server_id}/connections/{user_id}/verify"',
+    '@router.delete("/servers/{server_id}/connections/{user_id}"',
+):
+    expect_in(MCP_ADMIN_SOURCE, route, "PAT-only MCP connection route")
+
+for removed in (
+    "/oauth/start",
+    "/oauth/complete",
+    "/oauth/client-credentials",
+    "MCP_OAUTH_",
+):
+    expect(
+        removed not in MCP_ADMIN_SOURCE + SETTINGS_SOURCE + MANIFEST_TEXT,
+        f"Removed MCP OAuth surface remains: {removed}",
+    )
+expect(not (ROOT / "app/mcp/oauth.py").exists(), "Removed MCP OAuth module remains")
+
 for documented in (
     EXECUTION_ENGINE_CONTRACT["streamPath"],
     EXECUTION_ENGINE_CONTRACT["toolCallPath"],
@@ -199,9 +251,9 @@ for needle in (
     'tool.source == "builtin"',
     'if claims.scope.type == "workspace":',
     "WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS",
-    "and server.server_name == BUILTIN_TARGET_MCP_SERVER_NAME",
-    "and server.server_url == BUILTIN_TARGET_MCP_SERVER_URL",
-    "and tool.mcp_server_url == BUILTIN_TARGET_MCP_SERVER_URL",
+    'getattr(server, "provenance_type", "manual") == "builtin"',
+    "validate_and_claim_approval_receipt",
+    '"MCP_TOOL_APPROVAL_REQUIRED"',
     '"Authorization": f"Bearer {token_context.token}"',
     'if not is_builtin_tool and server and server.auth_type in ("bearer_token", "custom_header"):',
     "detail=f\"Tool {req.tool} is not permitted for this run\"",
@@ -241,19 +293,6 @@ for needle in (
     expect_in(SETTINGS_SOURCE, needle, "Gateway settings")
     expect_in(DOC, needle, "Documented gateway setting")
 
-for needle in (
-    'LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES',
-    'if _env_flag("LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES")',
-    'Skipping {secret_name}: no dev seed key configured',
-):
-    expect_in(SEED_SOURCE, needle, "Deterministic local seed behavior")
-
-expect_in(
-    README,
-    "fake\nlocal-only provider keys",
-    "Documented deterministic local seed behavior",
-)
-
 for field in EXECUTION_ENGINE_CONTRACT["streamResponseTypes"]:
     expect_in(MANIFEST_TEXT, field, "Manifest stream response type")
 
@@ -270,7 +309,6 @@ expect_in(
 )
 
 for token in (
-    CONTROL_PLANE_CONTRACT["builtinBridge"]["serverName"],
     CONTROL_PLANE_CONTRACT["builtinBridge"]["serverUrl"],
     CONTROL_PLANE_CONTRACT["builtinBridge"]["authHeader"],
     CONTROL_PLANE_CONTRACT["builtinBridge"]["scopeSource"],

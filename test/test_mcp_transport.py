@@ -8,6 +8,7 @@ import pytest
 
 from app.mcp.egress_policy import ValidatedMcpRequestTarget
 from app.mcp.transports.http_transport import (
+    McpAuthenticationError,
     McpHttpTransport,
     McpToolTransportError,
 )
@@ -486,6 +487,20 @@ async def test_logs_only_bounded_sanitized_upstream_error(
     )
     assert "top-secret-token" not in str(log.warning.call_args)
     assert "tiny" not in str(log.warning.call_args)
+
+
+@pytest.mark.anyio
+async def test_upstream_auth_rejection_is_classified_without_exposing_pat() -> None:
+    transport = McpHttpTransport()
+    request = httpx.Request(
+        "POST",
+        "https://mcp.example/mcp",
+        headers={"Authorization": "Bearer top-secret-token"},
+    )
+    response = httpx.Response(401, request=request, json={"error": "invalid token"})
+
+    with pytest.raises(McpAuthenticationError):
+        await transport._observe_response(response)
 
 
 @pytest.mark.anyio

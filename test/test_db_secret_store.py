@@ -99,6 +99,7 @@ async def test_db_secret_store_serves_cached_secret_after_database_row_removed(t
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'cache.db'}"
     await _create_schema(database_url)
     store = DbSecretStore(database_url)
+    store._cache_ttl = 60
     scope = {
         "workspace_id": "ws-1",
         "target_id": "cluster-a",

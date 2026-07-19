@@ -1,7 +1,11 @@
 {
   "repo": "llm-gateway",
   "version": 1,
-  "runtimeDependencies": ["control-plane", "execution-engine"],
+  "executionContractVersion": 2,
+  "runtimeDependencies": [
+    "control-plane",
+    "execution-engine"
+  ],
   "counterparts": {
     "execution-engine": {
       "streamPath": "POST /api/v1/llm/generations:stream",
@@ -16,7 +20,6 @@
         "workflow_id",
         "workflow_run_id",
         "workflow_session_id",
-        "workflow_step_id",
         "agent_id",
         "agent_version",
         "trigger_id",
@@ -30,7 +33,10 @@
         "tools",
         "native_tools"
       ],
-      "internalModelOnlyTools": ["_acornops_load_skill"],
+      "internalModelOnlyTools": [
+        "_acornops_load_skill"
+      ],
+      "providerFunctionNamePattern": "^[A-Za-z_][A-Za-z0-9_-]{0,62}$",
       "streamResponseTypes": [
         "delta",
         "tool_call",
@@ -50,15 +56,23 @@
         "workflow_id",
         "workflow_run_id",
         "workflow_session_id",
-        "workflow_step_id",
         "agent_id",
         "agent_version",
         "trigger_id",
         "tool_call_id",
         "tool",
+        "tool_ref.server_id",
+        "tool_ref.tool_name",
+        "approval_receipt?",
         "arguments"
       ],
-      "toolCallResponseFields": ["full_result", "model_context", "context_meta", "artifact_eligible", "is_error"],
+      "toolCallResponseFields": [
+        "full_result",
+        "model_context",
+        "context_meta",
+        "artifact_eligible",
+        "is_error"
+      ],
       "toolCallResponseMaxBytes": 5242880
     },
     "control-plane": {
@@ -72,22 +86,108 @@
         "POST /api/v1/internal/mcp/servers",
         "PATCH /api/v1/internal/mcp/servers/{server_id}",
         "POST /api/v1/internal/mcp/servers/{server_id}/test",
-        "DELETE /api/v1/internal/mcp/servers/{server_id}"
+        "DELETE /api/v1/internal/mcp/servers/{server_id}",
+        "GET /api/v1/internal/catalog/sources",
+        "POST /api/v1/internal/catalog/sources",
+        "PATCH /api/v1/internal/catalog/sources/{source_id}",
+        "POST /api/v1/internal/catalog/sources/{source_id}/sync",
+        "DELETE /api/v1/internal/catalog/sources/{source_id}",
+        "GET /api/v1/internal/catalog/artifacts",
+        "GET /api/v1/internal/catalog/artifacts/{artifact_id}",
+        "POST /api/v1/internal/catalog/imports",
+        "GET /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
+        "PUT /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
+        "DELETE /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
+        "POST /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}/verify",
+        "POST /api/v1/internal/mcp/connections/readiness",
+        "DELETE /api/v1/internal/mcp/connections"
       ],
-      "providerCredentialScope": "workspace-only: secret_name={provider}_api_key, tenant_scope={workspace_id}; target-scoped secrets are reserved for MCP/server credentials",
-      "providerCredentialScopeFields": ["workspace_id"],
-      "providerCredentialStatusFields": ["provider", "configured", "enabled"],
-      "mcpRegistryScopeFields": ["workspace_id", "scope_type", "target_id", "target_type"],
+      "providerCredentialScope": "workspace-only: secret_name={provider}_api_key, tenant_scope={workspace_id}; external MCP PATs are separate per user and installation, while the built-in bridge uses run tokens",
+      "providerCredentialScopeFields": [
+        "workspace_id"
+      ],
+      "providerCredentialStatusFields": [
+        "provider",
+        "configured",
+        "enabled"
+      ],
+      "mcpRegistryScopeFields": [
+        "workspace_id",
+        "scope_type",
+        "agent_id",
+        "target_id",
+        "target_type",
+        "target_constraints"
+      ],
+      "catalogContracts": {
+        "artifactKinds": [
+          "mcp_server",
+          "agent_skill (reserved)"
+        ],
+        "adapterType": "mcp_registry_v0_1",
+        "adapterOperations": [
+          "probe",
+          "list_updated",
+          "list_versions",
+          "resolve",
+          "fetch_artifact"
+        ],
+        "sourceFields": [
+          "workspace_id",
+          "display_name",
+          "base_url",
+          "auth_type",
+          "credential_configured",
+          "auth_header_name",
+          "network_route",
+          "enabled",
+          "management_mode",
+          "bindings"
+        ],
+        "artifactFields": [
+          "id",
+          "source_id",
+          "binding_id",
+          "artifact_kind",
+          "name",
+          "description",
+          "version",
+          "digest",
+          "metadata",
+          "compatible",
+          "incompatibility_reason",
+          "remote_endpoints"
+        ],
+        "importFields": [
+          "scope_type",
+          "agent_id? (agent scope)",
+          "target_constraints? (agent scope only)",
+          "target_id? (target scope)",
+          "target_type? (target scope; server-derived at browser boundary)",
+          "artifact",
+          "version",
+          "remote_endpoint",
+          "server_name?",
+          "enabled?",
+          "public_headers?",
+          "endpoint_configuration?",
+          "reimport_server_id?",
+          "expected_revision?"
+        ],
+        "importMetric": "gateway_catalog_imports_total{scope_type,operation,outcome}"
+      },
       "serverFields": [
         "id",
         "workspace_id",
         "scope_type",
+        "agent_id",
         "target_id",
         "target_type",
         "server_name",
         "server_url",
         "enabled",
         "auth_type",
+        "auth_scope",
         "credential_configured",
         "auth_header_name",
         "auth_header_prefix",
@@ -95,14 +195,44 @@
         "connection_status",
         "last_discovery_at",
         "last_discovery_error",
+        "catalog_source_id",
+        "catalog_artifact_name",
+        "catalog_version",
+        "catalog_digest",
+        "catalog_imported_at",
+        "provenance_type",
+        "endpoint_configuration",
+        "target_constraints",
+        "revision",
         "tools"
       ],
+      "serverProvenanceValues": ["manual", "catalog", "builtin"],
+      "personalConnectionContract": {
+        "putFields": ["credential", "consent_granted=true"],
+        "credentialLimit": "8192 UTF-8 bytes; control characters rejected; no normalization",
+        "responseFields": ["server_id", "status=connected|error", "auth_type", "action?"],
+        "missingRepresentation": "row absence",
+        "mutationSerialization": "workspace_id + server_id + user_id",
+        "runtimePrincipal": "user only; service principals return MCP_PAT_USER_PRINCIPAL_REQUIRED"
+      },
+      "readinessContract": {
+        "path": "POST /api/v1/internal/mcp/connections/readiness",
+        "input": ["workspace_id", "principal.{type,id}", "scope_type", "tool_refs[].{server_id,tool_name}"],
+        "output": "bounded failure codes only; no connection snapshots",
+        "toolGranularity": "enabled tools require matching server/tool identity; trusted built-in tools bypass remote review and personal snapshots, while remote tools require approval and personal tools must exist in the acting user's verified snapshot"
+      },
+      "remoteMcpKillSwitch": "REMOTE_MCP_ENABLED=false blocks external discovery and execution but not built-in tools or platform readiness",
       "toolFields": [
         "name",
+        "server_id",
+        "model_alias",
         "mcp_server_url",
         "timeout_ms",
         "description",
         "capability",
+        "review_state",
+        "risk_level",
+        "auto_allowed",
         "version",
         "source",
         "input_schema",
@@ -115,8 +245,14 @@
         "allowed_providers",
         "allowed_models",
         "allowed_tools",
+        "allowed_tool_refs[].server_id",
+        "allowed_tool_refs[].tool_name",
         "allowed_native_tools",
         "allowed_tool_operations?",
+        "allowed_repository.provider?",
+        "allowed_repository.repository?",
+        "allowed_repository.ref?",
+        "allowed_repository.change_request_number?",
         "max_output_tokens"
       ],
       "runJwtWorkspaceScopeFields": [
@@ -124,17 +260,16 @@
         "workflow_id? (required for workflow scope)",
         "workflow_run_id? (required for workflow scope)",
         "workflow_session_id? (required for workflow scope)",
-        "workflow_step_id?",
         "agent_id?",
         "agent_version?",
         "trigger_id?",
+        "user_id? (required for personal MCP authorization)",
         "permissions.context_grants",
         "standalone Agent scope requires agent_id and agent_version",
         "write tool calls receive a gateway-injected idempotencyKey derived from run_id and tool_call_id"
       ],
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",
       "builtinBridge": {
-        "serverName": "acornops-target-agent",
         "serverUrl": "http://control-plane:8081/internal/v1/mcp",
         "egressException": "Allowed internal HTTP only for configured builtin server registrations with source=builtin tools, auth type none, and no public headers",
         "authHeader": "Authorization: Bearer <run-scoped-jwt>",

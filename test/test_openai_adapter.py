@@ -7,12 +7,13 @@ import httpx
 import pytest
 
 from app.llm.adapters.common import (
+    build_openai_response_tools,
     should_retry_openai_without_reasoning,
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
 )
 from app.llm.adapters.openai_adapter import OpenAIAdapter
-from app.llm.service import NormalizedLLMRequest, ReasoningConfig
+from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
 OPENAI_STREAM_REPLAY_FIXTURES = json.loads(
@@ -48,6 +49,19 @@ def _to_namespace(value):
 def test_openai_output_token_param_resolution() -> None:
     assert supports_openai_custom_temperature("gpt-4o") is True
     assert supports_openai_custom_temperature("gpt-5-nano") is False
+
+
+def test_openai_preserves_platform_function_alias() -> None:
+    tools = build_openai_response_tools([
+        ToolSpec(name="acornops_generate_pdf_report", description="Generate report.")
+    ])
+    assert tools[0]["name"] == "acornops_generate_pdf_report"
+
+
+@pytest.mark.parametrize("name", ["reports.pdf.generate", "9invalid", "bad name", "a" * 64])
+def test_gateway_rejects_provider_unsafe_function_names(name: str) -> None:
+    with pytest.raises(ValueError, match="function name must match"):
+        ToolSpec(name=name)
 
 
 def test_retry_detection_for_openai_temperature_error() -> None:

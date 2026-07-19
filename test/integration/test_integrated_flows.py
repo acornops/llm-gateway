@@ -1,136 +1,128 @@
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
-import respx
-from httpx import ASGITransport, AsyncClient, Response
+from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.mcp.registry.models import Tool
 
 
 @pytest.mark.anyio
 async def test_full_tool_call_flow_integrated():
-    """
-    Tests the full flow from a gateway request to an MCP tool call,
-    mocking the external MCP server with respx.
-    """
-    mock_claims = {
-        "iss": "llm-gateway",
-        "aud": "execution-gateway",
-        "iat": 1234567890,
-        "exp": 2234567890,
-        "sub": "test-user",
-        "run_id": "run_999",
-        "workspace_id": "ws_999",
-        "target_id": "cl_999",
-        "target_type": "kubernetes",
-        "session_id": "sess_999",
-        "permissions": {
-            "allowed_providers": ["openai"],
-            "allowed_tools": ["*"],
-            "max_output_tokens": 4096,
-        },
-    }
+    """Install, discover, approve, and execute the test MCP through normal APIs."""
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+    from app.auth.service_token import require_admin_service_token
 
-    # 1. Setup tool in registry
-    tool = Tool(
-        workspace_id="ws_999",
-        target_id="cl_999",
-        target_type="kubernetes",
-        tool_name="integrated_test_tool",
-        mcp_server_url="http://mock-mcp-service:8002/mcp",
-        enabled=True,
-        timeout_ms=5000,
-    )
+    workspace_id = f"ws-{uuid4()}"
+    target_id = f"target-{uuid4()}"
+    run_id = f"run-{uuid4()}"
+    session_id = f"session-{uuid4()}"
+    server_url = os.getenv("INTEGRATION_MCP_URL", "https://localhost:8002/mcp")
+    app.dependency_overrides[require_admin_service_token] = lambda: None
 
-    # Mocking DB to avoid relying on a real running Postgres for this test
-    with (
-        patch(
-            "app.mcp.registry.store.tool_registry.get_tool", new_callable=AsyncMock
-        ) as mock_get_tool,
-        patch(
-            "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-    ):
-        mock_get_tool.return_value = tool
-
-        # 2. Mock external MCP server
-        with respx.mock:
-            def handle_mcp(request):
-                request_payload = json.loads(request.content)
-                method = request_payload.get("method")
-                request_id = request_payload.get("id")
-                if method == "initialize":
-                    result = {
-                        "protocolVersion": "2025-11-25",
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "integration", "version": "1.0.0"},
-                    }
-                elif method == "notifications/initialized":
-                    return Response(202)
-                elif method == "tools/call":
-                    result = {
-                        "content": [
-                            {"type": "text", "text": "Integrated Success"}
-                        ],
-                        "isError": False,
-                    }
-                else:
-                    raise AssertionError(f"Unexpected MCP method: {method}")
-                return Response(
-                    200,
-                    json={"jsonrpc": "2.0", "id": request_id, "result": result},
-                )
-
-            mcp_route = respx.post("http://mock-mcp-service:8002/mcp").mock(
-                side_effect=handle_mcp
+    server_id: str | None = None
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        try:
+            created = await ac.post(
+                "/api/v1/internal/mcp/servers",
+                json={
+                    "workspace_id": workspace_id,
+                    "target_id": target_id,
+                    "target_type": "kubernetes",
+                    "server_name": f"integration-{uuid4()}",
+                    "server_url": server_url,
+                    "enabled": True,
+                    "auth_type": "none",
+                    "tools": [],
+                },
             )
-            respx.get("http://mock-mcp-service:8002/mcp").mock(
-                return_value=Response(405)
-            )
+            assert created.status_code == 201, created.text
+            server = created.json()
+            server_id = server["id"]
+            discovered = {tool["name"]: tool for tool in server["tools"]}
+            assert "get_weather" in discovered
 
-            # 3. Override Auth
-            from app.auth.claims import TokenClaims
-            from app.auth.jwt_validator import validator
+            reviewed = await ac.patch(
+                "/api/v1/internal/mcp/tools/get_weather",
+                params={
+                    "workspace_id": workspace_id,
+                    "target_id": target_id,
+                    "target_type": "kubernetes",
+                    "server_id": server_id,
+                },
+                json={
+                    "enabled": True,
+                    "capability": "read",
+                    "review_state": "approved",
+                    "risk_level": "read_only",
+                },
+            )
+            assert reviewed.status_code == 200, reviewed.text
+            tool = reviewed.json()
+
+            claims = TokenClaims(**{
+                "iss": "llm-gateway",
+                "aud": "execution-gateway",
+                "iat": 1234567890,
+                "exp": 2234567890,
+                "sub": "test-user",
+                "user_id": "test-user",
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "target_id": target_id,
+                "target_type": "kubernetes",
+                "session_id": session_id,
+                "permissions": {
+                    "allowed_providers": ["openai"],
+                    "allowed_tools": [tool["model_alias"]],
+                    "allowed_tool_refs": [
+                        {"server_id": server_id, "tool_name": "get_weather"}
+                    ],
+                    "max_output_tokens": 4096,
+                },
+            })
 
             async def override_validate():
-                return TokenClaims(**mock_claims)
+                return claims
 
             app.dependency_overrides[validator.validate] = override_validate
-
-            try:
-                # 4. Execute request
-                async with AsyncClient(
-                    transport=ASGITransport(app=app), base_url="http://test"
-                ) as ac:
-                    payload = {
-                        "run_id": "run_999",
-                        "workspace_id": "ws_999",
-                        "target_id": "cl_999",
+            response = await ac.post(
+                "/api/v1/mcp/tool-call",
+                json={
+                    "run_id": run_id,
+                    "workspace_id": workspace_id,
+                    "target_id": target_id,
+                    "target_type": "kubernetes",
+                    "tool": tool["model_alias"],
+                    "tool_ref": {"server_id": server_id, "tool_name": "get_weather"},
+                    "arguments": {"location": "Singapore"},
+                },
+                headers={"Authorization": "Bearer run-scoped-test-token"},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert "Singapore" in data["full_result"][0]["text"]
+            assert data["model_context"] == data["full_result"]
+            assert data["context_meta"]["strategy"] == "mcp_content"
+            assert data["artifact_eligible"] is False
+            assert data["is_error"] is False
+        finally:
+            if server_id is not None:
+                await ac.delete(
+                    f"/api/v1/internal/mcp/servers/{server_id}",
+                    params={
+                        "workspace_id": workspace_id,
+                        "target_id": target_id,
                         "target_type": "kubernetes",
-                        "tool": "integrated_test_tool",
-                        "arguments": {"input": "test"},
-                    }
-                    headers = {"Authorization": "Bearer fake-token"}
-                    response = await ac.post("/api/v1/mcp/tool-call", json=payload, headers=headers)
-
-                # 5. Verify
-                assert response.status_code == 200
-                data = response.json()
-                expected_result = [{"type": "text", "text": "Integrated Success"}]
-                assert data["full_result"] == expected_result
-                assert data["model_context"] == expected_result
-                assert data["context_meta"]["strategy"] == "mcp_content"
-                assert data["artifact_eligible"] is False
-                assert data["is_error"] is False
-                assert mcp_route.called
-
-            finally:
-                app.dependency_overrides.clear()
+                    },
+                )
+            app.dependency_overrides.clear()
 
 
 @pytest.mark.anyio
@@ -144,6 +136,7 @@ async def test_llm_stream_integrated_openai(monkeypatch: pytest.MonkeyPatch):
         "iat": 1234567890,
         "exp": 2234567890,
         "sub": "test-user",
+        "user_id": "test-user",
         "run_id": "run_888",
         "workspace_id": "ws_888",
         "target_id": "cl_888",

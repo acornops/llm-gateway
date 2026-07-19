@@ -34,8 +34,6 @@ services:
     depends_on:
       mock-auth:
         condition: service_started
-      mock-mcp:
-        condition: service_started
     ports:
       - "8001:8001"
     volumes:
@@ -49,13 +47,7 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       SECRETS_BACKEND: ${SECRETS_BACKEND:-database}
-      ACORNOPS_DEV_SEED_OPENAI_API_KEY: ${ACORNOPS_DEV_SEED_OPENAI_API_KEY:-}
-      ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY: ${ACORNOPS_DEV_SEED_ANTHROPIC_API_KEY:-}
-      ACORNOPS_DEV_SEED_GEMINI_API_KEY: ${ACORNOPS_DEV_SEED_GEMINI_API_KEY:-}
-    command: ["sh", "-c", "alembic upgrade head && python scripts/seed_db.py"]
-    depends_on:
-      mock-mcp:
-        condition: service_started
+    command: ["sh", "-c", "alembic upgrade head"]
     volumes:
       - ./:/app
 
@@ -66,29 +58,6 @@ services:
   redis:
     ports:
       - "6379:6379"
-
-  mock-mcp:
-    build:
-      context: .
-      dockerfile: deployments/Dockerfile.mock-mcp
-    command:
-      [
-        "uvicorn",
-        "mock_mcp_server:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8002",
-        "--reload",
-        "--reload-dir",
-        "/app"
-      ]
-    environment:
-      PYTHONDONTWRITEBYTECODE: "1"
-    ports:
-      - "8002:8002"
-    volumes:
-      - ./test:/app
 
   mock-auth:
     build:

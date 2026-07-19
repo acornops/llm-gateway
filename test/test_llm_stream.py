@@ -20,6 +20,7 @@ BASE_CLAIMS = {
     "iat": 1234567890,
     "exp": 2234567890,
     "sub": "test-user",
+    "user_id": "test-user",
     "run_id": EXAMPLE_RUN_ID,
     "workspace_id": EXAMPLE_WORKSPACE_ID,
     "target_id": EXAMPLE_TARGET_ID,
