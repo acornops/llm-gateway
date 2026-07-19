@@ -38,8 +38,8 @@ MCP_SERVER_AUTH_NOT_CONFIGURED = "MCP server authentication is not configured"
 MCP_SERVER_AUTH_BACKEND_UNAVAILABLE = "MCP server authentication backend unavailable"
 BUILTIN_MCP_BRIDGE_NOT_CONFIGURED = "Builtin MCP bridge is not configured for this target"
 TOOL_EXECUTION_FAILED_MESSAGE = "Tool execution failed"
-BUILTIN_MCP_SERVER_NAME = settings.BUILTIN_MCP_SERVER_NAME
-BUILTIN_MCP_SERVER_URL = settings.BUILTIN_MCP_SERVER_URL
+BUILTIN_TARGET_MCP_SERVER_NAME = settings.BUILTIN_TARGET_MCP_SERVER_NAME
+BUILTIN_TARGET_MCP_SERVER_URL = settings.BUILTIN_TARGET_MCP_SERVER_URL
 WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS = 10000
 
 
@@ -320,8 +320,8 @@ async def execute_tool_call(
 
         is_builtin_tool = (
             tool.source == "builtin"
-            and server.server_name == BUILTIN_MCP_SERVER_NAME
-            and server.server_url == BUILTIN_MCP_SERVER_URL
+            and server.server_name == BUILTIN_TARGET_MCP_SERVER_NAME
+            and server.server_url == BUILTIN_TARGET_MCP_SERVER_URL
         )
         if tool.source == "builtin" and not is_builtin_tool:
             raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
@@ -458,9 +458,9 @@ async def execute_tool_call(
     is_builtin_tool = (
         tool.source == "builtin"
         and server is not None
-        and server.server_name == BUILTIN_MCP_SERVER_NAME
-        and server.server_url == BUILTIN_MCP_SERVER_URL
-        and tool.mcp_server_url == BUILTIN_MCP_SERVER_URL
+        and server.server_name == BUILTIN_TARGET_MCP_SERVER_NAME
+        and server.server_url == BUILTIN_TARGET_MCP_SERVER_URL
+        and tool.mcp_server_url == BUILTIN_TARGET_MCP_SERVER_URL
     )
     if tool.source == "builtin" and not is_builtin_tool:
         logger.warning(

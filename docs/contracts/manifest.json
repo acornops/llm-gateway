@@ -134,7 +134,7 @@
       ],
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",
       "builtinBridge": {
-        "serverName": "acornops-cluster-agent",
+        "serverName": "acornops-target-agent",
         "serverUrl": "http://control-plane:8081/internal/v1/mcp",
         "egressException": "Allowed internal HTTP only for configured builtin server registrations with source=builtin tools, auth type none, and no public headers",
         "authHeader": "Authorization: Bearer <run-scoped-jwt>",

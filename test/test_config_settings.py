@@ -59,8 +59,8 @@ def test_internal_transport_tls_defaults_disabled():
     settings = Settings()
 
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is False
-    assert settings.BUILTIN_MCP_SERVER_NAME == "acornops-cluster-agent"
-    assert settings.BUILTIN_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
+    assert settings.BUILTIN_TARGET_MCP_SERVER_NAME == "acornops-target-agent"
+    assert settings.BUILTIN_TARGET_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
     assert settings.ADDITIONAL_CA_BUNDLE_FILE == ""
 
 
@@ -97,7 +97,7 @@ def test_internal_transport_tls_requires_files_and_https_urls(tmp_path: Path):
         Settings(
             INTERNAL_TRANSPORT_TLS_ENABLED=True,
             AUTH_JWKS_URL="http://control-plane:8081/api/v1/auth/jwks.json",
-            BUILTIN_MCP_SERVER_URL="http://control-plane:8081/internal/v1/mcp",
+            BUILTIN_TARGET_MCP_SERVER_URL="http://control-plane:8081/internal/v1/mcp",
         )
 
     message = str(exc_info.value)
@@ -115,7 +115,7 @@ def test_internal_transport_tls_requires_files_and_https_urls(tmp_path: Path):
         INTERNAL_TRANSPORT_TLS_CERT_FILE=str(cert_file),
         INTERNAL_TRANSPORT_TLS_KEY_FILE=str(key_file),
         AUTH_JWKS_URL="https://control-plane.acornops.svc:8443/api/v1/auth/jwks.json",
-        BUILTIN_MCP_SERVER_URL="https://control-plane.acornops.svc:8443/internal/v1/mcp",
+        BUILTIN_TARGET_MCP_SERVER_URL="https://control-plane.acornops.svc:8443/internal/v1/mcp",
     )
 
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is True
@@ -134,7 +134,7 @@ def test_internal_transport_tls_requires_ca_even_when_client_cert_not_required(t
             INTERNAL_TRANSPORT_TLS_CERT_FILE=str(cert_file),
             INTERNAL_TRANSPORT_TLS_KEY_FILE=str(key_file),
             AUTH_JWKS_URL="https://control-plane.acornops.svc:8443/api/v1/auth/jwks.json",
-            BUILTIN_MCP_SERVER_URL="https://control-plane.acornops.svc:8443/internal/v1/mcp",
+            BUILTIN_TARGET_MCP_SERVER_URL="https://control-plane.acornops.svc:8443/internal/v1/mcp",
         )
 
     assert "INTERNAL_TRANSPORT_TLS_CA_FILE" in str(exc_info.value)

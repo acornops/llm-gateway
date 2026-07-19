@@ -65,8 +65,8 @@ def _validate_registry_scope(scope_type: str, target_id: str, target_type: str) 
 
 def _is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
     return (
-        request.server_name == settings.BUILTIN_MCP_SERVER_NAME
-        and request.server_url == settings.BUILTIN_MCP_SERVER_URL
+        request.server_name == settings.BUILTIN_TARGET_MCP_SERVER_NAME
+        and request.server_url == settings.BUILTIN_TARGET_MCP_SERVER_URL
         and request.auth_type == "none"
         and request.auth_secret_name is None
         and request.auth_secret_value is None

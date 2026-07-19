@@ -125,8 +125,8 @@ class Settings(BaseSettings):
     PROVIDER_RETRY_BACKOFF_MS: int = 200
 
     # MCP
-    BUILTIN_MCP_SERVER_NAME: str = "acornops-cluster-agent"
-    BUILTIN_MCP_SERVER_URL: str = "http://control-plane:8081/internal/v1/mcp"
+    BUILTIN_TARGET_MCP_SERVER_NAME: str = "acornops-target-agent"
+    BUILTIN_TARGET_MCP_SERVER_URL: str = "http://control-plane:8081/internal/v1/mcp"
     MCP_CALL_DEFAULT_TIMEOUT_MS: int = 10000
     MCP_MAX_TOOL_RESULT_BYTES: int = Field(default=2 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024)
     BUILTIN_MCP_MAX_RESPONSE_BYTES: int = Field(
@@ -243,7 +243,7 @@ class Settings(BaseSettings):
                 "INTERNAL_TRANSPORT_TLS_CA_FILE must point to a readable file "
                 "when internal transport TLS is enabled"
             )
-        for field_name in ("AUTH_JWKS_URL", "BUILTIN_MCP_SERVER_URL"):
+        for field_name in ("AUTH_JWKS_URL", "BUILTIN_TARGET_MCP_SERVER_URL"):
             value = getattr(self, field_name)
             if urlparse(value).scheme != "https":
                 raise ValueError(
