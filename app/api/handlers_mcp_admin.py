@@ -16,14 +16,12 @@ from app.api.mcp_admin_helpers import (
     _apply_tools_for_server,
     _auth_header_name_for,
     _auth_header_prefix_for,
+    _build_server_request_headers,  # noqa: F401 - retained as a public test helper
     _build_server_response,
     _build_tool_response,
     _discover_server_tools,
     _record_discovery_status,
     _resolve_tools_for_server,
-)
-from app.api.mcp_admin_helpers import (
-    _build_server_request_headers as _build_server_request_headers,
 )
 from app.api.mcp_admin_helpers import (
     _extract_discovery_error as _extract_discovery_error,
@@ -33,9 +31,6 @@ from app.api.mcp_admin_helpers import (
 )
 from app.api.mcp_admin_helpers import (
     mcp_transport as mcp_transport,
-)
-from app.api.mcp_admin_helpers import (
-    secret_store as secret_store,
 )
 from app.api.mcp_admin_schemas import (
     McpServerConnectionTestResponse,
@@ -142,12 +137,6 @@ async def create_mcp_server(
         except McpEgressPolicyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if request.auth_secret_name is not None or request.auth_secret_value is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="shared external MCP credentials are not supported",
-        )
-
     auth_header_name = _auth_header_name_for(request.auth_type, request.auth_header_name)
     auth_header_prefix = _auth_header_prefix_for(request.auth_type, request.auth_header_prefix)
 
@@ -160,11 +149,10 @@ async def create_mcp_server(
             server_url=request.server_url,
             enabled=request.enabled,
             auth_type=request.auth_type,
-            auth_secret_name=None,
             auth_header_name=auth_header_name,
             auth_header_prefix=auth_header_prefix,
             public_headers=request.public_headers,
-            auth_scope=request.auth_scope,
+            credential_mode=request.credential_mode,
             target_constraints=request.target_constraints.model_dump(),
             provenance_type="builtin" if is_builtin_bridge else "manual",
             endpoint_configuration=None,
@@ -177,10 +165,10 @@ async def create_mcp_server(
 
     tools_to_apply = request.tools
     discovery_error: str | None = None
-    # Personal installations have no usable credential until the user creates
-    # their installation-specific connection. That connection flow owns the
+    # Authenticated installations have no usable credential until the resolved
+    # owner creates its connection. That connection flow owns the
     # first authenticated discovery and its connected/error state.
-    if len(tools_to_apply) == 0 and request.auth_scope != "personal":
+    if len(tools_to_apply) == 0 and request.credential_mode == "none":
         if not is_builtin_bridge:
             require_remote_mcp_enabled()
         try:
@@ -285,8 +273,6 @@ async def update_mcp_server(
     request_has_auth_fields = any(
         value is not None
         for value in (
-            request.auth_secret_name,
-            request.auth_secret_value,
             request.auth_header_name,
             request.auth_header_prefix,
         )
@@ -296,15 +282,23 @@ async def update_mcp_server(
             status_code=400,
             detail="auth fields are not allowed when auth_type is none",
         )
-    if request.auth_secret_name is not None or request.auth_secret_value is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="shared external MCP credentials are not supported",
-        )
     if next_auth_type == "custom_header" and not next_auth_header_name:
         raise HTTPException(
             status_code=400,
             detail="auth_header_name is required for custom_header auth",
+        )
+    next_credential_mode = (
+        request.credential_mode if request.credential_mode is not None else server.credential_mode
+    )
+    if next_auth_type == "none" and next_credential_mode != "none":
+        raise HTTPException(
+            status_code=400,
+            detail="credential_mode must be none when auth_type is none",
+        )
+    if next_auth_type != "none" and next_credential_mode == "none":
+        raise HTTPException(
+            status_code=400,
+            detail="authenticated MCP installations require a credential mode",
         )
     patch: dict[str, Any] = {}
     if request.server_url is not None:
@@ -323,11 +317,11 @@ async def update_mcp_server(
         patch["enabled"] = request.enabled
     if request.auth_type is not None:
         patch["auth_type"] = request.auth_type
-        patch["auth_scope"] = "none" if request.auth_type == "none" else "personal"
+    if request.credential_mode is not None or request.auth_type == "none":
+        patch["credential_mode"] = next_credential_mode
     if request.auth_type is not None:
         patch["auth_header_name"] = next_auth_header_name
         patch["auth_header_prefix"] = next_auth_header_prefix
-        patch["auth_secret_name"] = None
     else:
         if next_auth_type == "bearer_token" and request_has_auth_fields:
             patch["auth_header_name"] = next_auth_header_name
@@ -361,19 +355,54 @@ async def update_mcp_server(
     if patch:
         trust_changed = any(
             (
+                request.server_url is not None and request.server_url != server.server_url,
                 next_auth_type != server.auth_type,
                 next_auth_header_name != server.auth_header_name,
                 next_auth_header_prefix != server.auth_header_prefix,
+                next_credential_mode != server.credential_mode,
+                request.public_headers is not None
+                and request.public_headers != (server.public_headers or {}),
             )
         )
         if trust_changed:
-            await cleanup_server_connections(workspace_id, server_id)
+            reason = (
+                "mode_transition"
+                if next_credential_mode != server.credential_mode
+                else "trust_change"
+            )
+            transition_patch: dict[str, Any] = {
+                "credential_transitioning": True,
+                "connection_status": "error",
+                "last_discovery_at": None,
+                "last_discovery_error": "Credential configuration update in progress.",
+            }
+            if request.expected_revision is not None:
+                transition_patch["expected_revision"] = request.expected_revision
+            try:
+                transitioning = await mcp_server_registry.update_server(
+                    workspace_id,
+                    target_id,
+                    server_id,
+                    transition_patch,
+                    target_type=target_type,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if not transitioning:
+                raise HTTPException(status_code=404, detail="MCP server not found")
+            patch.pop("expected_revision", None)
+            await cleanup_server_connections(workspace_id, server_id, reason=reason)
             logger.info(
                 "mcp_connections_invalidated_for_trust_change",
                 workspace_id=workspace_id,
                 scope_type=scope_type,
                 server_id=server_id,
+                reason=reason,
             )
+            patch["credential_transitioning"] = False
+            patch["connection_status"] = "unknown"
+            patch["last_discovery_at"] = None
+            patch["last_discovery_error"] = None
         try:
             updated = await mcp_server_registry.update_server(
                 workspace_id,
@@ -411,7 +440,7 @@ async def update_mcp_server(
             target_type=server.target_type,
             server_id=str(server.id),
         )
-        if len(current_tools) == 0 and server.auth_scope != "personal":
+        if len(current_tools) == 0 and server.credential_mode == "none":
             if getattr(server, "provenance_type", "manual") != "builtin":
                 require_remote_mcp_enabled()
             discovery_error: str | None = None
@@ -497,10 +526,10 @@ async def test_mcp_server_connection(
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
-    if server.auth_scope == "personal":
+    if server.credential_mode != "none":
         raise HTTPException(
             status_code=409,
-            detail="Use the personal connection verify endpoint for discovery",
+            detail="Use the connection verify endpoint for authenticated discovery",
         )
     if getattr(server, "provenance_type", "manual") != "builtin":
         require_remote_mcp_enabled()
@@ -582,28 +611,6 @@ async def delete_mcp_server(
             target_type=server.target_type,
             server_id=str(server.id),
         )
-
-    if server.auth_secret_name:
-        try:
-            await secret_store.delete_secret(
-                server.auth_secret_name,
-                {
-                    "workspace_id": workspace_id,
-                    "target_id": target_id,
-                    "target_type": server.target_type,
-                },
-            )
-        except Exception as exc:
-            logger.exception(
-                "mcp_server_secret_delete_failed",
-                workspace_id=workspace_id,
-                scope_type=scope_type,
-                server_name=server.server_name,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="MCP credential backend unavailable",
-            ) from exc
 
     deleted = await mcp_server_registry.delete_server(
         workspace_id,

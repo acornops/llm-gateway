@@ -77,8 +77,7 @@ def is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
     return (
         request.server_url == settings.BUILTIN_TARGET_MCP_SERVER_URL
         and request.auth_type == "none"
-        and request.auth_secret_name is None
-        and request.auth_secret_value is None
+        and request.credential_mode == "none"
         and request.auth_header_name is None
         and request.auth_header_prefix is None
         and request.public_headers is None

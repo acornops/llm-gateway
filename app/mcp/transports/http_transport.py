@@ -23,6 +23,7 @@ from app.mcp.egress_policy import (
 )
 from app.mcp.header_policy import MCP_TRANSPORT_HEADER_NAMES
 from app.mcp.logging import loggable_mcp_server_origin
+from app.outbound_tls import httpx_additional_ca_ssl_context
 from app.resilience.outbound import (
     CircuitOpenError,
     backoff_seconds,
@@ -54,17 +55,11 @@ SessionOperation = Callable[[ClientSession], Awaitable[T]]
 
 
 def _default_transport_factory() -> httpx.AsyncBaseTransport:
-    """Extend normal HTTPX trust only for generic remote MCP traffic."""
+    """Use the shared additive trust configuration for remote MCP traffic."""
     try:
-        ssl_context = httpx.create_ssl_context()
-        for ca_bundle_file in (
-            settings.ADDITIONAL_CA_BUNDLE_FILE.strip(),
-            settings.MCP_EGRESS_CA_BUNDLE_FILE.strip(),
-        ):
-            if ca_bundle_file:
-                ssl_context.load_verify_locations(cafile=ca_bundle_file)
+        ssl_context = httpx_additional_ca_ssl_context()
     except OSError as error:
-        raise McpEgressPolicyError("MCP egress CA bundle could not be loaded") from error
+        raise McpEgressPolicyError("Additional CA bundle could not be loaded") from error
     return httpx.AsyncHTTPTransport(verify=ssl_context)
 
 
@@ -136,6 +131,17 @@ class _BoundedAsyncTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._transport.handle_async_request(request)
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except ValueError:
+                declared_bytes = -1
+            if declared_bytes > self._max_bytes:
+                await response.aclose()
+                raise McpResponseTooLargeError(
+                    "MCP response exceeds the 2 MiB result limit"
+                )
         response.stream = _BoundedResponseStream(response.stream, self._max_bytes)
         return response
 
@@ -255,9 +261,6 @@ class McpHttpTransport:
             dispatch_outcome=dispatch_outcome,
             retryable=retryable,
         )
-
-    async def close(self) -> None:
-        """Retained for application-lifespan compatibility; sessions are per operation."""
 
     async def _observe_response(self, response: httpx.Response) -> None:
         content_encoding = response.headers.get("content-encoding", "identity").lower()

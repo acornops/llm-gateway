@@ -28,7 +28,8 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.43b0",
     "tenacity>=8.2.3",
     "jsonschema>=4.21.1",
-    "python-dotenv>=1.0.1"
+    "python-dotenv>=1.0.1",
+    "rfc8785>=0.1.4,<0.2"
 ]
 
 [project.optional-dependencies]

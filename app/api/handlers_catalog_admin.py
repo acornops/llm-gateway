@@ -162,9 +162,7 @@ async def import_catalog_mcp_server(
     if artifact is None:
         raise HTTPException(status_code=404, detail="Catalog artifact version not found")
     if artifact.version != request.version:
-        pair = await catalog_store.get_source_binding(
-            request.workspace_id, str(artifact.source_id)
-        )
+        pair = await catalog_store.get_source_binding(request.workspace_id, str(artifact.source_id))
         if pair is None:
             raise HTTPException(status_code=404, detail="Catalog source not found")
         source, binding = pair
@@ -193,12 +191,13 @@ async def import_catalog_mcp_server(
     resolved_endpoint_configuration = await resolve_catalog_endpoint(artifact, request)
     resolved_endpoint = resolved_endpoint_configuration.url
     public_headers = resolved_endpoint_configuration.public_headers
-    requires_personal_auth = resolved_endpoint_configuration.requires_personal_auth
-    personal_header_name = resolved_endpoint_configuration.personal_header_name
-    personal_auth_type = resolved_endpoint_configuration.personal_auth_type
-    personal_auth_header_prefix = resolved_endpoint_configuration.personal_auth_header_prefix
+    credential_mode = resolved_endpoint_configuration.credential_mode
+    credential_header_name = resolved_endpoint_configuration.credential_header_name
+    credential_auth_type = resolved_endpoint_configuration.credential_auth_type
+    credential_auth_header_prefix = resolved_endpoint_configuration.credential_auth_header_prefix
+    requires_credential = credential_mode != "none"
     server_name = request.server_name or artifact.title or artifact.artifact_name
-    if not requires_personal_auth:
+    if not requires_credential:
         require_remote_mcp_enabled()
     reimport_server = None
     if request.reimport_server_id:
@@ -266,25 +265,68 @@ async def import_catalog_mcp_server(
                 request.expected_revision is not None
                 and reimport_server.revision != request.expected_revision
             ):
-                raise HTTPException(
-                    status_code=409, detail="MCP server revision does not match"
-                )
+                raise HTTPException(status_code=409, detail="MCP server revision does not match")
             trust_changed = any(
                 (
                     reimport_server.server_url != resolved_endpoint,
                     reimport_server.auth_type
-                    != (personal_auth_type if requires_personal_auth else "none"),
+                    != (credential_auth_type if requires_credential else "none"),
                     reimport_server.auth_header_name
-                    != (personal_header_name if requires_personal_auth else None),
+                    != (credential_header_name if requires_credential else None),
                     reimport_server.auth_header_prefix
-                    != (
-                        personal_auth_header_prefix if requires_personal_auth else None
-                    ),
+                    != (credential_auth_header_prefix if requires_credential else None),
+                    reimport_server.credential_mode != credential_mode,
+                    (reimport_server.public_headers or {}) != (public_headers or {}),
+                    reimport_server.catalog_digest != artifact.digest,
                 )
             )
+            server_patch = {
+                "server_name": server_name,
+                "server_url": resolved_endpoint,
+                "enabled": request.enabled,
+                "auth_type": credential_auth_type if requires_credential else "none",
+                "auth_header_name": credential_header_name if requires_credential else None,
+                "auth_header_prefix": (
+                    credential_auth_header_prefix if requires_credential else None
+                ),
+                "credential_mode": credential_mode,
+                "public_headers": public_headers or None,
+                "catalog_source_id": artifact.source_id,
+                "catalog_artifact_name": artifact.artifact_name,
+                "catalog_version": artifact.version,
+                "catalog_digest": artifact.digest,
+                "catalog_imported_at": datetime.now(UTC),
+                "provenance_type": "catalog",
+                "endpoint_configuration": request.endpoint_configuration,
+                "target_constraints": target_constraints,
+                "connection_status": "unknown",
+                "last_discovery_at": None,
+                "last_discovery_error": None,
+            }
             if trust_changed:
+                transitioning = await mcp_server_registry.update_server(
+                    request.workspace_id,
+                    destination_id,
+                    str(reimport_server.id),
+                    {
+                        "expected_revision": request.expected_revision,
+                        "credential_transitioning": True,
+                        "connection_status": "error",
+                        "last_discovery_at": None,
+                        "last_discovery_error": ("Credential configuration update in progress."),
+                    },
+                    target_type=registry_target_type,
+                )
+                if transitioning is None:
+                    raise HTTPException(status_code=404, detail="MCP installation not found")
                 await cleanup_server_connections(
-                    request.workspace_id, str(reimport_server.id)
+                    request.workspace_id,
+                    str(reimport_server.id),
+                    reason=(
+                        "mode_transition"
+                        if reimport_server.credential_mode != credential_mode
+                        else "trust_change"
+                    ),
                 )
                 logger.info(
                     "mcp_connections_invalidated_for_trust_change",
@@ -292,63 +334,40 @@ async def import_catalog_mcp_server(
                     scope_type=request.scope_type,
                     server_id=str(reimport_server.id),
                 )
+                server_patch["credential_transitioning"] = False
+            else:
+                server_patch["expected_revision"] = request.expected_revision
             server = await mcp_server_registry.update_server(
                 request.workspace_id,
                 destination_id,
                 str(reimport_server.id),
-                {
-                    "expected_revision": request.expected_revision,
-                    "server_name": server_name,
-                    "server_url": resolved_endpoint,
-                    "enabled": request.enabled,
-                    "auth_type": personal_auth_type if requires_personal_auth else "none",
-                    "auth_secret_name": None,
-                    "auth_header_name": personal_header_name if requires_personal_auth else None,
-                    "auth_header_prefix": (
-                        personal_auth_header_prefix if requires_personal_auth else None
-                    ),
-                    "auth_scope": "personal" if requires_personal_auth else "none",
-                    "public_headers": public_headers or None,
-                    "catalog_source_id": artifact.source_id,
-                    "catalog_artifact_name": artifact.artifact_name,
-                    "catalog_version": artifact.version,
-                    "catalog_digest": artifact.digest,
-                    "catalog_imported_at": datetime.now(UTC),
-                    "provenance_type": "catalog",
-                    "endpoint_configuration": request.endpoint_configuration,
-                    "target_constraints": target_constraints,
-                    "connection_status": "unknown",
-                    "last_discovery_at": None,
-                    "last_discovery_error": None,
-                },
+                server_patch,
                 target_type=registry_target_type,
             )
             if server is None:
                 raise HTTPException(status_code=404, detail="MCP installation not found")
         else:
             server = await mcp_server_registry.create_server(
-            workspace_id=request.workspace_id,
-            target_id=destination_id,
-            target_type=registry_target_type,
-            server_name=server_name,
-            server_url=resolved_endpoint,
-            enabled=request.enabled,
-            auth_type=personal_auth_type if requires_personal_auth else "none",
-            auth_header_name=personal_header_name if requires_personal_auth else None,
-            auth_header_prefix=(
-                personal_auth_header_prefix if requires_personal_auth else None
-            ),
-            auth_scope="personal" if requires_personal_auth else "none",
-            public_headers=public_headers or None,
-            catalog_source_id=str(artifact.source_id),
-            catalog_artifact_name=artifact.artifact_name,
-            catalog_version=artifact.version,
-            catalog_digest=artifact.digest,
-            catalog_imported_at=datetime.now(UTC),
-            provenance_type="catalog",
-            endpoint_configuration=request.endpoint_configuration,
-            target_constraints=target_constraints,
-        )
+                workspace_id=request.workspace_id,
+                target_id=destination_id,
+                target_type=registry_target_type,
+                server_name=server_name,
+                server_url=resolved_endpoint,
+                enabled=request.enabled,
+                auth_type=credential_auth_type if requires_credential else "none",
+                auth_header_name=credential_header_name if requires_credential else None,
+                auth_header_prefix=(credential_auth_header_prefix if requires_credential else None),
+                credential_mode=credential_mode,
+                public_headers=public_headers or None,
+                catalog_source_id=str(artifact.source_id),
+                catalog_artifact_name=artifact.artifact_name,
+                catalog_version=artifact.version,
+                catalog_digest=artifact.digest,
+                catalog_imported_at=datetime.now(UTC),
+                provenance_type="catalog",
+                endpoint_configuration=request.endpoint_configuration,
+                target_constraints=target_constraints,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -358,8 +377,8 @@ async def import_catalog_mcp_server(
 
     discovery_error: str | None = None
     tools = []
-    if requires_personal_auth:
-        discovery_error = "A personal connection is required before tool discovery."
+    if requires_credential:
+        discovery_error = "A credential connection is required before tool discovery."
     else:
         try:
             tools, discovery_error = await _discover_server_tools(

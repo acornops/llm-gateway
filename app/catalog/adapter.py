@@ -13,6 +13,7 @@ import httpx
 
 from app.config.settings import settings
 from app.mcp.egress_policy import McpEgressPolicyError, prepare_mcp_egress_request
+from app.outbound_tls import httpx_additional_ca_ssl_context
 
 
 class CatalogAdapterError(ValueError):
@@ -132,7 +133,7 @@ def normalize_mcp_registry_entry(entry: dict[str, Any]) -> NormalizedMcpArtifact
                 )
         public_header_templates: list[dict[str, str]] = []
         secret_header_names: set[str] = set()
-        personal_auth_header_prefix: str | None = None
+        credential_auth_header_prefix: str | None = None
         for header in remote.get("headers") or []:
             if not isinstance(header, dict) or not isinstance(header.get("name"), str):
                 continue
@@ -162,7 +163,7 @@ def normalize_mcp_registry_entry(entry: dict[str, Any]) -> NormalizedMcpArtifact
                 if isinstance(header_value, str):
                     matches = list(_TEMPLATE_VARIABLE.finditer(header_value))
                     if len(matches) == 1 and matches[0].end() == len(header_value):
-                        personal_auth_header_prefix = header_value[: matches[0].start()]
+                        credential_auth_header_prefix = header_value[: matches[0].start()]
             elif isinstance(header_value, str):
                 public_header_templates.append({"name": header_name, "value": header_value})
         url_secret_variables = {
@@ -178,7 +179,12 @@ def normalize_mcp_registry_entry(entry: dict[str, Any]) -> NormalizedMcpArtifact
                 "url": url,
                 "supported": endpoint_supported,
                 "requiresConfiguration": bool(configuration_fields),
-                "requiresPersonalAuth": bool(secret_header_names),
+                "supportedCredentialModes": (
+                    ["workspace", "individual"] if secret_header_names else ["none"]
+                ),
+                "recommendedCredentialMode": (
+                    "individual" if secret_header_names else "none"
+                ),
                 "headerNames": sorted(
                     {
                         header.get("name")
@@ -188,7 +194,7 @@ def normalize_mcp_registry_entry(entry: dict[str, Any]) -> NormalizedMcpArtifact
                     }
                 ),
                 "secretHeaderNames": sorted(secret_header_names),
-                "personalAuthHeaderPrefix": personal_auth_header_prefix,
+                "credentialAuthHeaderPrefix": credential_auth_header_prefix,
                 "configurationFields": configuration_fields,
                 "publicHeaderTemplates": public_header_templates,
             }
@@ -244,13 +250,10 @@ class McpRegistryV01Adapter:
 
     @staticmethod
     def _ssl_context() -> ssl.SSLContext:
-        context = httpx.create_ssl_context()
-        if settings.MCP_EGRESS_CA_BUNDLE_FILE.strip():
-            try:
-                context.load_verify_locations(cafile=settings.MCP_EGRESS_CA_BUNDLE_FILE.strip())
-            except OSError as exc:
-                raise CatalogAdapterError("Catalog CA bundle could not be loaded") from exc
-        return context
+        try:
+            return httpx_additional_ca_ssl_context()
+        except OSError as exc:
+            raise CatalogAdapterError("Additional CA bundle could not be loaded") from exc
 
     async def _get(
         self, path: str, *, params: dict[str, str | int] | None = None
@@ -260,7 +263,11 @@ class McpRegistryV01Adapter:
             target = await prepare_mcp_egress_request(url)
         except McpEgressPolicyError as exc:
             raise CatalogAdapterError(str(exc)) from exc
-        request_headers = {**self.headers, "Host": target.host_header}
+        request_headers = {
+            **self.headers,
+            "Host": target.host_header,
+            "Accept-Encoding": "identity",
+        }
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(
             timeout=httpx.Timeout(settings.CATALOG_REQUEST_TIMEOUT_MS / 1000),
@@ -268,16 +275,32 @@ class McpRegistryV01Adapter:
             follow_redirects=False,
         )
         try:
-            response = await client.get(
+            async with client.stream(
+                "GET",
                 target.connection_url,
                 params=params,
                 headers=request_headers,
                 extensions=target.extensions,
-            )
-            response.raise_for_status()
-            if len(response.content) > settings.CATALOG_MAX_RESPONSE_BYTES:
-                raise CatalogAdapterError("Registry response exceeds the configured size limit")
-            payload = response.json()
+            ) as response:
+                response.raise_for_status()
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_bytes = int(content_length)
+                    except ValueError:
+                        declared_bytes = -1
+                    if declared_bytes > settings.CATALOG_MAX_RESPONSE_BYTES:
+                        raise CatalogAdapterError(
+                            "Registry response exceeds the configured size limit"
+                        )
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > settings.CATALOG_MAX_RESPONSE_BYTES:
+                        raise CatalogAdapterError(
+                            "Registry response exceeds the configured size limit"
+                        )
+                payload = json.loads(body)
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             raise CatalogAdapterError("Registry request failed") from exc
         finally:

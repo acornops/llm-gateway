@@ -12,17 +12,17 @@ from app.mcp.tool_identity import model_tool_alias
 
 
 @pytest.mark.anyio
-async def test_target_and_agent_pat_connections_use_independent_header_formats() -> None:
+async def test_target_and_agent_credentials_use_independent_header_formats() -> None:
     from app.auth.service_token import require_admin_service_token
 
-    workspace_id = f"ws-pat-{uuid4()}"
+    workspace_id = f"ws-credential-{uuid4()}"
     user_id = f"user-{uuid4()}"
     base_url = os.getenv(
         "INTEGRATION_MCP_URL", "https://localhost:8002/mcp"
     ).rstrip("/")
     parsed_mcp_url = urlsplit(base_url)
     mock_control_origin = f"{parsed_mcp_url.scheme}://{parsed_mcp_url.netloc}"
-    ca_bundle_file = os.getenv("MCP_EGRESS_CA_BUNDLE_FILE", "").strip()
+    ca_bundle_file = os.getenv("ADDITIONAL_CA_BUNDLE_FILE", "").strip()
     mock_control_verify = (
         ssl.create_default_context(cafile=ca_bundle_file) if ca_bundle_file else True
     )
@@ -35,16 +35,16 @@ async def test_target_and_agent_pat_connections_use_independent_header_formats()
             "auth_type": "bearer_token",
             "auth_header_name": "Authorization",
             "auth_header_prefix": "Bearer ",
-            "credential": "bearer-pat",
+            "credential": "bearer-credential",
         },
         {
             "scope_type": "agent",
             "agent_id": f"agent-{uuid4()}",
             "server_url": f"{base_url}/custom",
             "auth_type": "custom_header",
-            "auth_header_name": "X-Mcp-Pat",
+            "auth_header_name": "X-Mcp-Credential",
             "auth_header_prefix": "",
-            "credential": "custom-pat",
+            "credential": "custom-credential",
         },
     ]
     app.dependency_overrides[require_admin_service_token] = lambda: None
@@ -67,9 +67,9 @@ async def test_target_and_agent_pat_connections_use_independent_header_formats()
                     "/api/v1/internal/mcp/servers",
                     json={
                         "workspace_id": workspace_id,
-                        "server_name": f"PAT integration {index}",
+                        "server_name": f"Credential integration {index}",
                         "enabled": True,
-                        "auth_scope": "personal",
+                        "credential_mode": "individual",
                         "tools": [],
                         **server_input,
                     },
@@ -213,7 +213,7 @@ async def test_target_and_agent_pat_connections_use_independent_header_formats()
                 json={
                     "workspace_id": workspace_id,
                     "user_id": user_id,
-                    "credential": "revoked-pat",
+                    "credential": "revoked-credential",
                     "consent_granted": True,
                 },
             )
@@ -233,7 +233,7 @@ async def test_target_and_agent_pat_connections_use_independent_header_formats()
                 json={
                     "workspace_id": workspace_id,
                     "user_id": user_id,
-                    "credential": "bearer-pat",
+                    "credential": "bearer-credential",
                     "consent_granted": True,
                 },
             )

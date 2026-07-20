@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "rfc-primitives-and-number-forms",
+      "inputJson": "{\"literals\":[null,true,false],\"string\":\"€\\u000f\\nA\",\"numbers\":[333333333.33333329,1e+30,4.50,2e-3,1e-27]}",
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€\\u000f\\nA\"}",
+      "sha256": "e1a68171095661063fbbfef5def4545453c572a96f4ad640dcde522a186239f6"
+    },
+    {
+      "name": "unicode-key-ordering",
+      "inputJson": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"€\":\"Euro Sign\",\"😀\":\"Emoji\",\"ö\":\"Latin Small Letter O With Diaeresis\"}",
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji\"}",
+      "sha256": "35bc1121f88942f9e16b544d5467ceeae99038006767ebaa3a31e93cea02d9dd"
+    },
+    {
+      "name": "negative-zero",
+      "inputJson": "{\"value\":-0}",
+      "canonical": "{\"value\":0}",
+      "sha256": "23d7b286bd429460b92a2a1c21b6afc34110446c5034c17363fda363aa0a7c5d"
+    },
+    {
+      "name": "exponent-boundaries",
+      "inputJson": "[1e-7,1e-6,1e20,1e21]",
+      "canonical": "[1e-7,0.000001,100000000000000000000,1e+21]",
+      "sha256": "ad225a86d4a7622eb33ace2e94b5f9e44bf5e4bd39eb9b5a2f49497d15d48f27"
+    },
+    {
+      "name": "formerly-divergent-large-integer-valued-double",
+      "inputJson": "{\"amount\":1373428634809579000}",
+      "canonical": "{\"amount\":1373428634809579000}",
+      "sha256": "b1423c86695b3035a50fe65e85fb32bff89a74a8d8194eb74f5eb800ca23a870"
+    },
+    {
+      "name": "subnormal-values",
+      "inputJson": "[5e-324,-5e-324]",
+      "canonical": "[5e-324,-5e-324]",
+      "sha256": "39cd7d1a8ced55e3c0f57779c09f31a0e7bf7f973e75e57b7b6bef623da6d2c2"
+    }
+  ],
+  "finiteDoubleSample": {
+    "algorithm": "xorshift64star",
+    "seed": "6a09e667f3bcc909",
+    "count": 512,
+    "newlineDelimitedCanonicalSha256": "6b342356b3128e8c21d200159fd8670d96375f8ec7b9d31431d41dc86d4068e6"
+  }
+}

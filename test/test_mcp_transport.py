@@ -10,7 +10,9 @@ from app.mcp.egress_policy import ValidatedMcpRequestTarget
 from app.mcp.transports.http_transport import (
     McpAuthenticationError,
     McpHttpTransport,
+    McpResponseTooLargeError,
     McpToolTransportError,
+    _BoundedAsyncTransport,
 )
 from app.resilience.outbound import dependency_circuit_breaker
 
@@ -420,6 +422,45 @@ async def test_rejects_oversized_streamable_http_response(
     assert isinstance(payload, McpToolTransportError)
     assert payload.code == "MCP_RESULT_TOO_LARGE"
     assert payload["content"][0]["text"] == "MCP response exceeds the result limit"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("declared_length", "body_size", "raises"),
+    [
+        (1024, 1024, False),
+        (1025, 0, True),
+        (None, 1025, True),
+        (1, 1025, True),
+    ],
+)
+async def test_bounded_transport_enforces_declared_and_streamed_response_limits(
+    declared_length: int | None,
+    body_size: int,
+    raises: bool,
+) -> None:
+    headers = {} if declared_length is None else {"content-length": str(declared_length)}
+    transport = _BoundedAsyncTransport(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers=headers,
+                stream=httpx.ByteStream(b"x" * body_size),
+                request=request,
+            )
+        ),
+        1024,
+    )
+    client = httpx.AsyncClient(transport=transport)
+    try:
+        if raises:
+            with pytest.raises(McpResponseTooLargeError):
+                await client.get("https://mcp.example/test")
+        else:
+            response = await client.get("https://mcp.example/test")
+            assert len(response.content) == 1024
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.anyio

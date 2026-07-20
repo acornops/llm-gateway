@@ -130,9 +130,9 @@ async def streamable_http_bearer(request: Request):
     AUTH_STATE["bearer"]["requests"] += 1
     if (
         not AUTH_STATE["bearer"]["enabled"]
-        or request.headers.get("authorization") != "Bearer bearer-pat"
+        or request.headers.get("authorization") != "Bearer bearer-credential"
     ):
-        return JSONResponse({"detail": "bearer PAT required"}, status_code=401)
+        return JSONResponse({"detail": "bearer credential required"}, status_code=401)
     return await _streamable_http(request)
 
 
@@ -141,9 +141,9 @@ async def streamable_http_custom_header(request: Request):
     AUTH_STATE["custom"]["requests"] += 1
     if (
         not AUTH_STATE["custom"]["enabled"]
-        or request.headers.get("x-mcp-pat") != "custom-pat"
+        or request.headers.get("x-mcp-credential") != "custom-credential"
     ):
-        return JSONResponse({"detail": "custom-header PAT required"}, status_code=403)
+        return JSONResponse({"detail": "custom-header credential required"}, status_code=403)
     return await _streamable_http(request)
 
 

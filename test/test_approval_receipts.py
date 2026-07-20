@@ -78,6 +78,20 @@ async def test_exact_approval_receipt_is_claimed_once(
 
 
 @pytest.mark.anyio
+async def test_receipt_accepts_formerly_divergent_ieee754_arguments(
+    receipt_keys, monkeypatch: pytest.MonkeyPatch
+):
+    request = _request({"amount": float(1373428634809579000)})
+    claim = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.mcp.approval_receipts.approval_receipt_store.claim", claim)
+
+    await validate_and_claim_approval_receipt(_receipt(receipt_keys, request), request)
+
+    assert canonical_json(request.arguments) == '{"amount":1373428634809579000}'
+    claim.assert_awaited_once()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "override",
     [

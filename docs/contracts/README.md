@@ -61,7 +61,7 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after an enabled workspace registry entry identifies the tool as built-in.
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - Target adapters register their live built-in tools against the configured internal bridge URL (the local deployment default is `http://control-plane:8081/internal/v1/mcp`). The server identity comes from the registered target, not a seeded workspace integration.
-- Connection readiness accepts enabled tools only when their server and tool identities match. Trusted built-in tools do not require remote MCP review or a personal connection snapshot; remote tools remain review-gated, and personal tools must also exist in the acting user's verified snapshot.
+- Connection readiness accepts enabled tools only when their server and tool identities match. Trusted built-in tools do not require remote MCP review or a credential connection snapshot; remote tools remain review-gated, and the exact resolved credential must include the tool in its verified snapshot.
 - Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
 - Optional `tool_call_id` values are forwarded as `toolCallId` only on this
   trusted built-in bridge, preserving AgentK idempotency while keeping generic
@@ -78,23 +78,25 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   and optional `target_constraints`; target requests carry `target_id` and
   `target_type` and cannot carry Agent constraints. Duplicate and re-import
   checks include workspace, scope type, and destination identity.
-- `auth_scope: personal` is mechanism-neutral installation metadata. In V1 it
-  requires one write-only PAT per workspace user and installation. Target and
-  Agent installations never share or copy a connection, even when their server
-  URLs match; workflows reuse the selected Agent installation and connection.
+- `credential_mode` is explicit installation metadata with values `none`,
+  `workspace`, or `individual`. Workspace mode resolves one installation-owned
+  service or bot credential; individual mode resolves only the exact user's
+  credential. Target and Agent installations never share or copy a connection.
 - The installation derives bearer or custom-header formatting. Connecting or
-  rotating a PAT persists it before authenticated tool discovery. A failed
-  discovery retains the PAT with `status: error`; the verify endpoint retries
-  that stored PAT without returning it.
+  rotating a credential persists it before authenticated tool discovery. A failed
+  discovery retains an error state; the verify endpoint retries that stored
+  credential without returning it.
 - Runtime calls fail closed for missing or erroneous connections. Upstream
-  401/403 responses mark the connection erroneous. Personal MCP calls reject
-  service principals with `MCP_PAT_USER_PRINCIPAL_REQUIRED`; scheduled runs
-  remain supported when their delegated principal is a user.
+  401/403 responses mark the connection erroneous. Workspace credentials support
+  user and service-identity principals; individual credentials reject service
+  identities with `MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED`.
 - Import metrics use only bounded scope, operation, and outcome labels; artifact
   and destination IDs stay in neither labels nor sanitized logs.
-- Legacy workspace-scoped rows remain stored but dormant until an explicit ownership-mapped migration is available. New admin requests cannot create workspace-scoped rows.
-- Connection responses expose only the installation ID, status, installation-derived
-  auth type, and next action. Secret values and secret identifiers are not returned.
+- The greenfield schema contains only the final installation and credential-owner
+  records. In-place migration from an earlier schema epoch is unsupported.
+- Connection responses expose only the installation ID, credential mode, status,
+  installation-derived auth type, and next action. Secret values, secret
+  identifiers, and user inventories are not returned.
 - Target calls resolve only the selected Cluster or VM registry tools. Agent calls resolve only the selected Agent installation. The built-in bridge is used only when the resolved tool is explicitly registered with source `builtin`.
 - Generic remote servers use the configured URL as a single MCP Streamable HTTP
   endpoint. Each operation performs `initialize`,

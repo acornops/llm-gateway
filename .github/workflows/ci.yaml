@@ -201,7 +201,7 @@ jobs:
           export SECRETS_KEK_BASE64=SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=
           export INTEGRATION_MCP_URL=https://localhost:8002/mcp
           export MCP_EGRESS_ALLOWED_HOSTS=localhost
-          export MCP_EGRESS_CA_BUNDLE_FILE="$PWD/.integration-certs/mock-mcp-cert.pem"
+          export ADDITIONAL_CA_BUNDLE_FILE="$PWD/.integration-certs/mock-mcp-cert.pem"
           pytest test/
 
   image-supply-chain:

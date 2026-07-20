@@ -1,8 +1,15 @@
+from collections.abc import Mapping
+
 from fastapi import HTTPException
 
 from app.auth.claims import TokenClaims
-from app.mcp.connections import mcp_connection_store
-from app.mcp.header_policy import validate_auth_header_value
+from app.mcp.connections import (
+    ConnectionOwnerError,
+    credential_secret_name,
+    mcp_connection_store,
+    resolve_connection_owner,
+)
+from app.mcp.header_policy import build_mcp_request_headers
 from app.mcp.remote_policy import require_remote_mcp_enabled
 from app.observability.metrics import (
     GATEWAY_MCP_READINESS_FAILURES_TOTAL,
@@ -12,96 +19,117 @@ from app.secrets.errors import SecretNotFoundError
 from app.secrets.store import secret_store
 
 
-async def mark_personal_connection_error(server, claims: TokenClaims) -> None:
-    if claims.principal is None or claims.principal.type != "user":
+def _principal(claims: TokenClaims) -> tuple[str | None, str | None]:
+    if claims.principal is None:
+        return None, None
+    return claims.principal.type, claims.principal.id
+
+
+async def mark_connection_error(server, claims: TokenClaims) -> None:
+    principal_type, principal_id = _principal(claims)
+    try:
+        owner = resolve_connection_owner(server, principal_type, principal_id)
+    except ConnectionOwnerError:
         return
-    connection = await mcp_connection_store.get(
-        claims.workspace_id, str(server.id), claims.principal.id
-    )
+    if owner is None:
+        return
+    connection = await mcp_connection_store.get(claims.workspace_id, str(server.id), owner)
     if connection is not None:
         await mcp_connection_store.set_state(
             connection,
             "error",
-            error_code="MCP_PAT_RUNTIME_AUTH_REJECTED",
+            error_code="MCP_CREDENTIAL_RUNTIME_AUTH_REJECTED",
         )
-        GATEWAY_MCP_RUNTIME_AUTH_REJECTIONS_TOTAL.labels(
-            scope_type=claims.scope.type
-        ).inc()
+        GATEWAY_MCP_RUNTIME_AUTH_REJECTIONS_TOTAL.labels(scope_type=claims.scope.type).inc()
 
 
-async def personal_connection_headers(
-    server, claims: TokenClaims, tool_name: str
+async def connection_request_headers(
+    server,
+    claims: TokenClaims,
+    tool_name: str,
+    *,
+    platform_headers: Mapping[str, str],
 ) -> dict[str, str]:
+    """Resolve one owner and build the complete runtime request header set."""
     require_remote_mcp_enabled()
-    if claims.principal is None or claims.principal.type != "user":
-        GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
-            scope_type=claims.scope.type, reason="user_principal_required"
-        ).inc()
+    if getattr(server, "credential_transitioning", False):
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "MCP_PAT_USER_PRINCIPAL_REQUIRED",
-                "message": "Personal MCP authentication requires a user principal.",
+                "code": "MCP_INSTALLATION_UNAVAILABLE",
+                "message": "Credential ownership is being updated. Retry later.",
                 "serverId": str(server.id),
             },
         )
-    user_id = claims.principal.id
-    connection = await mcp_connection_store.get(
-        claims.workspace_id, str(server.id), user_id
-    )
-    if not mcp_connection_store.is_ready(connection):
+    principal_type, principal_id = _principal(claims)
+    try:
+        owner = resolve_connection_owner(server, principal_type, principal_id)
+    except ConnectionOwnerError as exc:
         GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
-            scope_type=claims.scope.type, reason="personal_connection_not_ready"
+            scope_type=claims.scope.type, reason="individual_user_principal_required"
         ).inc()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "MCP_PERSONAL_CONNECTION_REQUIRED",
+                "code": "MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED",
+                "message": "Individual MCP credentials require a user principal.",
+                "serverId": str(server.id),
+            },
+        ) from exc
+    if owner is None:
+        return build_mcp_request_headers(server, None, platform_headers=platform_headers)
+    connection = await mcp_connection_store.get(claims.workspace_id, str(server.id), owner)
+    if not mcp_connection_store.is_ready(connection):
+        GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
+            scope_type=claims.scope.type, reason="connection_not_ready"
+        ).inc()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MCP_CONNECTION_REQUIRED",
                 "message": (
                     "Verify this MCP server connection before starting the run."
                     if connection
                     else "Connect this MCP server before starting the run."
                 ),
                 "serverId": str(server.id),
-                "action": (
-                    "verify_mcp_server" if connection else "connect_mcp_server"
-                ),
+                "action": "verify_mcp_server" if connection else "connect_mcp_server",
             },
         )
     if not mcp_connection_store.has_verified_tool(connection, tool_name):
         GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
-            scope_type=claims.scope.type, reason="personal_tool_unavailable"
+            scope_type=claims.scope.type, reason="credential_tool_unavailable"
         ).inc()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "MCP_PERSONAL_TOOL_UNAVAILABLE",
-                "message": "This PAT has not verified the requested approved tool.",
+                "code": "MCP_CREDENTIAL_TOOL_UNAVAILABLE",
+                "message": "The connected credential has not verified the requested tool.",
                 "serverId": str(server.id),
                 "toolName": tool_name,
                 "action": "verify_mcp_server",
             },
         )
     assert connection is not None
+    secret_name = credential_secret_name(claims.workspace_id, str(server.id), owner)
     try:
         credential = await secret_store.get_secret(
-            connection.access_secret_name,
-            {"workspace_id": claims.workspace_id},
+            secret_name, {"workspace_id": claims.workspace_id}
         )
     except SecretNotFoundError as exc:
         await mcp_connection_store.set_state(
-            connection, "error", error_code="MCP_PAT_SECRET_MISSING"
+            connection, "error", error_code="MCP_CREDENTIAL_SECRET_MISSING"
         )
         GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
-            scope_type=claims.scope.type, reason="personal_secret_missing"
+            scope_type=claims.scope.type, reason="credential_secret_missing"
         ).inc()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "MCP_PERSONAL_CONNECTION_REQUIRED",
-                "message": "Replace the PAT for this MCP server before starting the run.",
+                "code": "MCP_CONNECTION_REQUIRED",
+                "message": "Replace the credential for this MCP server before starting the run.",
                 "serverId": str(server.id),
-                "action": "verify_mcp_server",
+                "action": "connect_mcp_server",
             },
         ) from exc
     except Exception as exc:
@@ -113,27 +141,21 @@ async def personal_connection_headers(
                 "serverId": str(server.id),
             },
         ) from exc
-    header_name = server.auth_header_name or "Authorization"
-    prefix = server.auth_header_prefix
-    if prefix is None:
-        prefix = "Bearer " if server.auth_type == "bearer_token" else ""
-    header_value = f"{prefix}{credential}"
     try:
-        validate_auth_header_value(header_value)
+        return build_mcp_request_headers(server, credential, platform_headers=platform_headers)
     except ValueError as exc:
         await mcp_connection_store.set_state(
-            connection, "error", error_code="MCP_PAT_HEADER_INVALID"
+            connection, "error", error_code="MCP_CREDENTIAL_HEADER_INVALID"
         )
         GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
-            scope_type=claims.scope.type, reason="personal_header_invalid"
+            scope_type=claims.scope.type, reason="credential_header_invalid"
         ).inc()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "MCP_PERSONAL_CONNECTION_REQUIRED",
-                "message": "Replace the PAT for this MCP server before starting the run.",
+                "code": "MCP_CONNECTION_REQUIRED",
+                "message": "Replace the credential for this MCP server before starting the run.",
                 "serverId": str(server.id),
-                "action": "verify_mcp_server",
+                "action": "connect_mcp_server",
             },
         ) from exc
-    return {header_name: header_value}

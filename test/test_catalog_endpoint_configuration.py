@@ -20,7 +20,6 @@ def _artifact(*, public_header_templates: list[dict[str, str]]) -> SimpleNamespa
                 "configurationFields": [],
                 "publicHeaderTemplates": public_header_templates,
                 "secretHeaderNames": [],
-                "requiresPersonalAuth": False,
             }
         ],
     )
@@ -31,6 +30,7 @@ def _request(*, public_headers: dict[str, str] | None = None) -> SimpleNamespace
         remote_endpoint="https://mcp.example.test/mcp",
         endpoint_configuration={},
         public_headers=public_headers,
+        credential_mode=None,
     )
 
 
@@ -42,6 +42,7 @@ def test_catalog_request_rejects_forbidden_public_headers() -> None:
                 "artifact": {"artifact_id": "artifact-1"},
                 "version": "1.0.0",
                 "remote_endpoint": "https://mcp.example.test/mcp",
+                "scope_type": "agent",
                 "agent_id": "agent-1",
                 "public_headers": {"Authorization": "Bearer must-not-persist"},
             }

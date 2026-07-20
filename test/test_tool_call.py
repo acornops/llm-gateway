@@ -168,6 +168,7 @@ def enabled_server(**overrides):
         "server_url": "http://mock-mcp:8002",
         "enabled": True,
         "auth_type": "none",
+        "credential_mode": "none",
     }
     values.update(overrides)
     return McpServer(**values)
@@ -358,8 +359,7 @@ async def test_tool_call_sanitizes_server_auth_backend_failures():
         server_url="http://mock-mcp:8002",
         enabled=True,
         auth_type="bearer_token",
-        auth_scope="personal",
-        auth_secret_name="weather-token",
+        credential_mode="individual",
         auth_header_name="Authorization",
         auth_header_prefix="Bearer ",
     )
@@ -379,7 +379,7 @@ async def test_tool_call_sanitizes_server_auth_backend_failures():
             return_value=SimpleNamespace(
                 status="connected",
                 verified_tool_names=["get_weather"],
-                access_secret_name="mcp_pat::weather::test-user",
+                access_secret_name="mcp_credential::weather::test-user",
             ),
         ),
         patch(
@@ -574,8 +574,7 @@ async def test_tool_call_merges_public_and_secret_headers():
         server_url="http://mock-mcp:8002",
         enabled=True,
         auth_type="bearer_token",
-        auth_scope="personal",
-        auth_secret_name="weather-token",
+        credential_mode="individual",
         auth_header_name="Authorization",
         auth_header_prefix="Bearer ",
         public_headers={"x-public-header": "true", "x-run-id": "spoofed"},
@@ -591,11 +590,18 @@ async def test_tool_call_merges_public_and_secret_headers():
             new_callable=AsyncMock,
             return_value=mock_server,
         ),
-        patch(
-            "app.api.handlers_tool_call.personal_connection_headers",
-            new_callable=AsyncMock,
-            return_value={"Authorization": "Bearer secret-token"},
-        ) as mock_personal_headers,
+            patch(
+                "app.api.handlers_tool_call.connection_request_headers",
+                new_callable=AsyncMock,
+                return_value={
+                    "x-workspace-id": EXAMPLE_WORKSPACE_ID,
+                    "x-target-id": EXAMPLE_TARGET_ID,
+                    "x-target-type": "kubernetes",
+                    "x-run-id": EXAMPLE_RUN_ID,
+                    "x-public-header": "true",
+                    "Authorization": "Bearer secret-token",
+                },
+            ) as mock_connection_headers,
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool",
             new_callable=AsyncMock,
@@ -623,8 +629,16 @@ async def test_tool_call_merges_public_and_secret_headers():
                 )
 
             assert response.status_code == 200
-            mock_personal_headers.assert_awaited_once_with(
-                mock_server, ANY, "get_weather"
+            mock_connection_headers.assert_awaited_once_with(
+                mock_server,
+                ANY,
+                "get_weather",
+                platform_headers={
+                    "x-workspace-id": EXAMPLE_WORKSPACE_ID,
+                    "x-target-id": EXAMPLE_TARGET_ID,
+                    "x-target-type": "kubernetes",
+                    "x-run-id": EXAMPLE_RUN_ID,
+                },
             )
             assert mock_call_tool.await_args.args[4] == {
                 "x-workspace-id": EXAMPLE_WORKSPACE_ID,
@@ -662,7 +676,6 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
         server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
         auth_type="bearer_token",
-        auth_secret_name="legacy-builtin-token",
         auth_header_name="Authorization",
         auth_header_prefix="Bearer ",
         public_headers={"x-public-header": "true", "x-run-id": "spoofed"},
@@ -869,9 +882,10 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         target_type="agent",
         server_name="operations-catalog",
         server_url="https://mcp.example.com/v1",
-        enabled=True,
-        auth_type="none",
-        public_headers={"x-client-version": "test"},
+            enabled=True,
+            auth_type="none",
+            credential_mode="none",
+            public_headers={"x-client-version": "test"},
     )
 
     with (
@@ -1056,8 +1070,7 @@ async def test_tool_call_rejects_invalid_secret_header_value():
         server_url="http://mock-mcp:8002",
         enabled=True,
         auth_type="bearer_token",
-        auth_scope="personal",
-        auth_secret_name="weather-token",
+        credential_mode="individual",
         auth_header_prefix="Bearer ",
     )
 
@@ -1071,11 +1084,11 @@ async def test_tool_call_rejects_invalid_secret_header_value():
             return_value=mock_server,
         ),
         patch(
-            "app.api.handlers_tool_call.personal_connection_headers",
+            "app.api.handlers_tool_call.connection_request_headers",
             new_callable=AsyncMock,
             side_effect=HTTPException(
                 status_code=409,
-                detail={"code": "MCP_PERSONAL_CONNECTION_REQUIRED"},
+                detail={"code": "MCP_CONNECTION_REQUIRED"},
             ),
         ),
         patch(
@@ -1104,7 +1117,7 @@ async def test_tool_call_rejects_invalid_secret_header_value():
                 )
 
             assert response.status_code == 409
-            assert response.json()["detail"]["code"] == "MCP_PERSONAL_CONNECTION_REQUIRED"
+            assert response.json()["detail"]["code"] == "MCP_CONNECTION_REQUIRED"
             mock_call_tool.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()

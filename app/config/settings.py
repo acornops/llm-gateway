@@ -140,7 +140,6 @@ class Settings(BaseSettings):
     MCP_EGRESS_ALLOW_LOCAL_ADDRESSES: bool = False
     MCP_EGRESS_ALLOWED_HOSTS: str = ""
     MCP_EGRESS_DNS_CACHE_TTL_SEC: int = 300
-    MCP_EGRESS_CA_BUNDLE_FILE: str = ""
     REMOTE_MCP_ENABLED: bool = True
     MCP_CONNECTION_RATE_LIMIT_PER_WINDOW: int = Field(default=10, ge=1, le=1000)
     TOOL_REGISTRY_CACHE_TTL_SEC: int = 300
@@ -184,14 +183,6 @@ class Settings(BaseSettings):
             except OSError as error:
                 raise ValueError(
                     "ADDITIONAL_CA_BUNDLE_FILE must point to a readable file"
-                ) from error
-        if self.MCP_EGRESS_CA_BUNDLE_FILE:
-            try:
-                with Path(self.MCP_EGRESS_CA_BUNDLE_FILE).open("rb"):
-                    pass
-            except OSError as error:
-                raise ValueError(
-                    "MCP_EGRESS_CA_BUNDLE_FILE must point to a readable file"
                 ) from error
         if runtime_env != "production":
             return self

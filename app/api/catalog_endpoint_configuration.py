@@ -18,10 +18,11 @@ logger = structlog.get_logger()
 class ResolvedCatalogEndpoint:
     url: str
     public_headers: dict[str, str]
-    requires_personal_auth: bool
-    personal_header_name: str | None
-    personal_auth_type: str
-    personal_auth_header_prefix: str
+    supported_credential_modes: tuple[str, ...]
+    credential_mode: str
+    credential_header_name: str | None
+    credential_auth_type: str
+    credential_auth_header_prefix: str
 
 
 async def resolve_catalog_endpoint(
@@ -49,7 +50,7 @@ async def resolve_catalog_endpoint(
             status_code=422,
             detail=(
                 "Selected endpoint requires an unsupported secret URL or "
-                "multiple personal credentials"
+                "multiple individual credentials"
             ),
         )
 
@@ -69,7 +70,10 @@ async def resolve_catalog_endpoint(
     if set(request.endpoint_configuration) & secret_configuration_names:
         raise HTTPException(
             status_code=422,
-            detail="Secret endpoint fields must be configured as a personal connection",
+            detail=(
+                "Secret endpoint fields must be configured through the installation "
+                "credential connection"
+            ),
         )
     if set(request.endpoint_configuration) - configurable_names:
         raise HTTPException(
@@ -128,12 +132,30 @@ async def resolve_catalog_endpoint(
     secret_header_names = {
         item for item in endpoint.get("secretHeaderNames") or [] if isinstance(item, str)
     }
-    personal_header_name = sorted(secret_header_names)[0] if secret_header_names else None
-    personal_auth_type = (
+    credential_header_name = sorted(secret_header_names)[0] if secret_header_names else None
+    credential_auth_type = (
         "bearer_token"
-        if personal_header_name is None or personal_header_name.lower() == "authorization"
+        if credential_header_name is None or credential_header_name.lower() == "authorization"
         else "custom_header"
     )
+    declared_modes = endpoint.get("supportedCredentialModes")
+    if isinstance(declared_modes, list):
+        supported_modes = tuple(
+            mode for mode in declared_modes if mode in ("workspace", "individual")
+        )
+    else:
+        supported_modes = ("none",)
+    if not supported_modes:
+        raise HTTPException(status_code=422, detail="Endpoint has no supported credential mode")
+    recommended_mode = endpoint.get("recommendedCredentialMode")
+    credential_mode = request.credential_mode or (
+        recommended_mode if recommended_mode in supported_modes else supported_modes[0]
+    )
+    if credential_mode not in supported_modes:
+        raise HTTPException(
+            status_code=422,
+            detail="Selected credential mode is not supported by this endpoint",
+        )
     merged_headers = {**(request.public_headers or {}), **configured_headers}
     try:
         validate_public_headers(merged_headers)
@@ -146,12 +168,13 @@ async def resolve_catalog_endpoint(
     return ResolvedCatalogEndpoint(
         url=resolved_url,
         public_headers=merged_headers,
-        requires_personal_auth=bool(endpoint.get("requiresPersonalAuth")),
-        personal_header_name=personal_header_name,
-        personal_auth_type=personal_auth_type,
-        personal_auth_header_prefix=(
-            endpoint["personalAuthHeaderPrefix"]
-            if isinstance(endpoint.get("personalAuthHeaderPrefix"), str)
-            else "Bearer " if personal_auth_type == "bearer_token" else ""
+        supported_credential_modes=supported_modes,
+        credential_mode=credential_mode,
+        credential_header_name=credential_header_name,
+        credential_auth_type=credential_auth_type,
+        credential_auth_header_prefix=(
+            endpoint["credentialAuthHeaderPrefix"]
+            if isinstance(endpoint.get("credentialAuthHeaderPrefix"), str)
+            else "Bearer " if credential_auth_type == "bearer_token" else ""
         ),
     )

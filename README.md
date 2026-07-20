@@ -113,10 +113,11 @@ task validate
   - optional `VAULT_TIMEOUT_MS` / `VAULT_VERIFY_TLS`
 - LLM provider credentials are workspace-scoped and are configured through
   workspace AI settings.
-- External MCP credentials are personal only. Each PAT is scoped to one
-  workspace user and one target or Agent installation, with both identities
-  embedded in its secret name; PATs are never exposed by the API. The
-  platform-owned built-in bridge uses its separate run-token trust boundary.
+- External MCP installations select `workspace` or `individual` credential
+  ownership. Workspace credentials are installation-owned; individual
+  credentials are scoped to one workspace user and one target or Agent
+  installation. Secret values and identifiers are never exposed by the API.
+  The platform-owned built-in bridge uses its separate run-token trust boundary.
 - For local Vault testing, the override includes a `vault` service under the `vault` profile:
 
 ```bash
@@ -139,12 +140,13 @@ The control-plane manages target-scoped MCP and built-in tool configuration thro
 
 All of the above require `Authorization: Bearer <ADMIN_API_TOKEN>` and explicit `workspace_id` + `target_id` + `target_type` query/body scope where applicable.
 
-Personal-auth installations accept PATs only in V1. `PUT` accepts exactly a
-credential plus explicit consent, enforces an 8 KiB UTF-8 ceiling, stores or rotates a
-write-only PAT and verifies it through authenticated tool discovery. Failed
-verification retains the PAT with an error status so `POST .../verify` can
-retry it without re-entry. Runtime requests fail closed until verification
-succeeds, and service principals cannot use personal-auth MCP servers.
+Credential-bearing installations declare `workspace` or `individual` ownership.
+`PUT` accepts exactly a credential plus explicit consent, enforces an 8 KiB UTF-8
+ceiling, stores or rotates the write-only value, and verifies it through
+authenticated tool discovery. Failed verification retains the credential with an
+error status so `POST .../verify` can retry it without re-entry. Runtime requests
+fail closed until verification succeeds, and only the declared owner can manage or
+use the connection.
 
 ### MCP Server Discovery Contract
 
@@ -173,11 +175,11 @@ user connection connected with an empty snapshot. Discovery failure marks only
 that user's connection erroneous and clears only that user's snapshot.
 MCP server `public_headers` are visible non-secret metadata. Credential-bearing headers must use secret-backed auth fields.
 
-MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an exact `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`; neither setting bypasses HTTPS or certificate verification. Mount an organization private CA and set `ADDITIONAL_CA_BUNDLE_FILE` to extend trust for providers, Vault, JWKS, remote MCP, `rediss://`, and explicitly TLS-enabled PostgreSQL. Set `MCP_EGRESS_CA_BUNDLE_FILE` for additional trust limited to generic remote MCP traffic. The configured AcornOps target-adapter bridge uses the separate trusted internal transport and is selected only for an exact live target registration with `source: builtin`.
+MCP egress is protected by default. Remote MCP URLs must be absolute HTTP(S) URLs without embedded credentials; production requires HTTPS and rejects DNS results in loopback, link-local, multicast, private, reserved, or unspecified address ranges. Local development allows Docker service-name targets such as `mock-mcp`. Private production MCP targets require an exact `MCP_EGRESS_ALLOWED_HOSTS` allowlist entry or `MCP_EGRESS_ALLOW_PRIVATE_NETWORKS=true`; neither setting bypasses HTTPS or certificate verification. Mount an organization private CA and set `ADDITIONAL_CA_BUNDLE_FILE` to extend trust for providers, Vault, JWKS, remote MCP, `rediss://`, and explicitly TLS-enabled PostgreSQL. The configured AcornOps target-adapter bridge uses the separate trusted internal transport and is selected only for an exact live target registration with `source: builtin`.
 
 LLM and tool-call limits are configured by `LLM_RATE_LIMIT_PER_WINDOW`,
-`TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. Personal MCP
-connect and verify share the per-user, per-installation
+`TOOL_RATE_LIMIT_PER_WINDOW`, and `RATE_LIMIT_WINDOW_SECONDS`. MCP credential
+connect and verify share the per-owner, per-installation
 `MCP_CONNECTION_RATE_LIMIT_PER_WINDOW` budget. Set `REMOTE_MCP_ENABLED=false`
 to block external discovery and execution while leaving built-in tools
 operational. In production, `REQUIRE_REDIS_RATE_LIMITS_IN_PRODUCTION=true`

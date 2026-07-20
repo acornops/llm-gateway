@@ -1,5 +1,5 @@
-from collections.abc import AsyncIterator
 import re
+from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator, model_validator

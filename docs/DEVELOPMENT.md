@@ -75,7 +75,7 @@ Important variables:
   install and discover the server through normal admin APIs. The mock endpoint
   serves HTTPS with an ephemeral certificate generated under
   `.integration-certs/`; integration runners trust that certificate explicitly
-  through `MCP_EGRESS_CA_BUNDLE_FILE`.
+  through `ADDITIONAL_CA_BUNDLE_FILE`.
 
 ## Migrations
 
@@ -85,7 +85,8 @@ Alembic migrations live under `alembic/`. Production and Kubernetes deployments 
 alembic upgrade head
 ```
 
-Back up production Postgres before upgrades that include migrations.
+This branch establishes a greenfield schema epoch. Recreate every pre-release
+gateway database; the single baseline intentionally has no upgrade path.
 
 ## Documentation Drift Control
 

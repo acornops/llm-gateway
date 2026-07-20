@@ -22,7 +22,6 @@ from app.errors.envelope import ErrorEnvelope
 from app.mcp.approval_receipts import approval_receipt_cleanup_loop, approval_receipt_store
 from app.mcp.connections import mcp_connection_store
 from app.mcp.registry.store import mcp_server_registry, tool_registry
-from app.mcp.transports.http_transport import mcp_transport
 from app.observability.metrics import (
     GATEWAY_HTTP_REQUEST_DURATION_MS,
     GATEWAY_HTTP_REQUESTS_TOTAL,
@@ -131,7 +130,6 @@ async def lifespan(app: FastAPI):
     approval_receipt_cleanup_task.cancel()
     with suppress(asyncio.CancelledError):
         await approval_receipt_cleanup_task
-    await mcp_transport.close()
     await secret_store.close()
     await tool_registry.close()
     await mcp_server_registry.close()

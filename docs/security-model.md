@@ -10,13 +10,14 @@
 ## Secrets
 
 - Never log provider API keys, MCP auth secrets, or bearer tokens.
-- Personal MCP PATs are write-only, encrypted by the configured secret backend,
-  and isolated by workspace user plus installation ID. They are never copied or
-  compared across target and Agent installations.
+- MCP credentials are write-only and encrypted by the configured secret backend.
+  Workspace-managed credentials are isolated by installation; individual
+  credentials are isolated by workspace user plus installation. They are never
+  copied or compared across target and Agent installations.
 - Keep issuer/audience configuration aligned with control-plane token issuance.
 - Treat secret-backed MCP auth material as sensitive configuration. MCP `public_headers` are visible non-secret metadata and must reject credential-like names.
 - Validate MCP auth header names and constructed header values before outbound forwarding so malformed secrets cannot inject additional headers.
-- Derive personal PAT header names and prefixes from the installation; clients
+- Derive credential header names and prefixes from the installation; clients
   cannot choose outbound credential formatting when they connect.
 - Production must run with `SECRETS_CACHE_TTL_SEC=0`; the gateway rejects
   production startup otherwise to avoid retaining plaintext provider secrets in

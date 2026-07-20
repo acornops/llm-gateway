@@ -1,4 +1,6 @@
 import re
+from collections.abc import Mapping
+from typing import Any
 
 MAX_PUBLIC_HEADERS = 64
 MAX_HEADER_NAME_LENGTH = 128
@@ -40,6 +42,7 @@ _RESERVED_HEADER_NAMES = {
     "content-length",
     "transfer-encoding",
     "connection",
+    "proxy-connection",
     "upgrade",
     "keep-alive",
     "te",
@@ -113,3 +116,41 @@ def validate_auth_header_name(name: str | None) -> str | None:
     if normalized in _RESERVED_HEADER_NAMES:
         raise ValueError(f"auth header {name} is reserved by the platform")
     return name
+
+
+def build_mcp_request_headers(
+    server: Any,
+    credential: str | None,
+    *,
+    platform_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build public, platform, and credential headers in one stable order.
+
+    Public installation headers are applied first, platform routing headers
+    second, and the authentication header last. Callers must never log the
+    returned mapping because it can contain plaintext credentials.
+    """
+    headers = validate_public_headers(dict(server.public_headers or {})) or {}
+    headers.update(dict(platform_headers or {}))
+    auth_type = getattr(server, "auth_type", "none")
+    if auth_type == "none":
+        if credential is not None:
+            raise ValueError("unauthenticated MCP installations do not accept credentials")
+        return headers
+    if credential is None:
+        raise ValueError("authenticated MCP installations require a credential")
+    validate_auth_header_value(credential)
+    if auth_type == "bearer_token":
+        header_name = "Authorization"
+        prefix = "Bearer "
+    elif auth_type == "custom_header":
+        header_name = validate_auth_header_name(server.auth_header_name)
+        if not header_name:
+            raise ValueError("custom-header MCP authentication requires a header name")
+        prefix = server.auth_header_prefix or ""
+    else:
+        raise ValueError("unsupported MCP authentication type")
+    header_value = f"{prefix}{credential}"
+    validate_auth_header_value(header_value)
+    headers[header_name] = header_value
+    return headers

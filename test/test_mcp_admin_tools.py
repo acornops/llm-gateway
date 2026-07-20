@@ -17,6 +17,7 @@ from app.api.mcp_admin_schemas import (
     McpServerCreateRequest,
     McpServerUpdateRequest,
     ToolConfigRequest,
+    ToolUpdateRequest,
 )
 from app.main import app
 
@@ -63,7 +64,7 @@ def _make_auth_server(**overrides) -> SimpleNamespace:
         "target_type": "kubernetes",
         "server_name": "github",
         "auth_type": "none",
-        "auth_secret_name": None,
+        "credential_mode": "none",
         "auth_header_name": None,
         "auth_header_prefix": None,
         "public_headers": None,
@@ -157,6 +158,14 @@ def test_mcp_tool_schema_rejects_blank_tool_names_after_trimming():
         ToolConfigRequest(name="   ")
 
 
+def test_mcp_tool_request_schemas_reject_unknown_fields():
+    with pytest.raises(ValidationError):
+        ToolConfigRequest(name="records.list", ignored=True)
+
+    with pytest.raises(ValidationError):
+        ToolUpdateRequest(enabled=True, ignored=True)
+
+
 def test_mcp_tool_discovery_skips_reserved_internal_tool_names():
     discovered = _normalize_discovered_tools({
         "tools": [
@@ -169,7 +178,7 @@ def test_mcp_tool_discovery_skips_reserved_internal_tool_names():
     assert [tool.name for tool in discovered] == ["example.lookup"]
 
 
-def test_mcp_server_schema_derives_personal_auth_without_shared_secrets():
+def test_mcp_server_schema_requires_explicit_mode_without_server_secrets():
     request = McpServerCreateRequest(
         workspace_id="ws-1",
         target_id="cluster-a",
@@ -177,22 +186,9 @@ def test_mcp_server_schema_derives_personal_auth_without_shared_secrets():
         server_name="github",
         server_url="https://mcp.example.com",
         auth_type="bearer_token",
+        credential_mode="individual",
     )
-    assert request.auth_scope == "personal"
-    assert request.auth_secret_name is None
-    assert request.auth_secret_value is None
-
-    with pytest.raises(ValidationError):
-        McpServerCreateRequest(
-            workspace_id="ws-1",
-            target_id="cluster-a",
-            target_type="kubernetes",
-            server_name="github",
-            server_url="https://mcp.example.com",
-            auth_type="custom_header",
-            auth_secret_name="mcp_server::github",
-            auth_header_name="X-Mcp-Pat",
-        )
+    assert request.credential_mode == "individual"
 
     with pytest.raises(ValidationError):
         McpServerCreateRequest(
@@ -323,23 +319,9 @@ def test_normalize_discovered_tools_sanitizes_prompt_injection_metadata():
 
 
 @pytest.mark.anyio
-async def test_build_server_request_headers_uses_secret_backed_auth(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "app.api.handlers_mcp_admin.secret_store.get_secret",
-        AsyncMock(return_value="super-secret"),
-    )
+async def test_build_server_request_headers_builds_unauthenticated_platform_headers():
     server = _make_auth_server(
-        auth_type="custom_header",
-        auth_secret_name="mcp_server::github",
-        auth_header_name="X-Api-Key",
-        auth_header_prefix="Token ",
-        public_headers={
-            "x-trace-id": "trace-1",
-            "x-workspace-id": "spoofed",
-            "X-Api-Key": "public-value",
-        },
+        public_headers={"x-trace-id": "trace-1"},
     )
 
     headers = await _build_server_request_headers("ws-1", "cluster-a", server)
@@ -349,38 +331,17 @@ async def test_build_server_request_headers_uses_secret_backed_auth(
         "x-target-id": "cluster-a",
         "x-target-type": "kubernetes",
         "x-trace-id": "trace-1",
-        "X-Api-Key": "Token super-secret",
     }
 
 
 @pytest.mark.anyio
-async def test_build_server_request_headers_rejects_missing_secret_name():
-    server = _make_auth_server(auth_type="bearer_token")
+async def test_build_server_request_headers_requires_connection_for_authenticated_server():
+    server = _make_auth_server(auth_type="bearer_token", credential_mode="individual")
 
-    with pytest.raises(HTTPException, match="missing auth_secret_name") as exc_info:
+    with pytest.raises(HTTPException, match="verified connection") as exc_info:
         await _build_server_request_headers("ws-1", "cluster-a", server)
 
-    assert exc_info.value.status_code == 400
-
-
-@pytest.mark.anyio
-async def test_build_server_request_headers_rejects_invalid_secret_header_value(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "app.api.handlers_mcp_admin.secret_store.get_secret",
-        AsyncMock(return_value="secret\r\nx-injected: true"),
-    )
-    server = _make_auth_server(
-        auth_type="bearer_token",
-        auth_secret_name="mcp_server::github",
-        auth_header_prefix="Bearer ",
-    )
-
-    with pytest.raises(HTTPException, match="header values must not contain") as exc_info:
-        await _build_server_request_headers("ws-1", "cluster-a", server)
-
-    assert exc_info.value.status_code == 400
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.anyio
@@ -481,8 +442,7 @@ async def test_create_builtin_server_allows_configured_internal_http_bridge() ->
         server_url=server_url,
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -765,8 +725,7 @@ async def test_create_server_stores_auto_discovered_tools_disabled_for_review() 
         server_url=server_url,
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -953,8 +912,7 @@ async def test_test_connection_endpoint_records_status_and_returns_discovered_to
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1020,8 +978,7 @@ async def test_update_server_auto_discovers_tools_when_none_are_mapped() -> None
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1081,8 +1038,7 @@ async def test_update_server_tool_list_requires_capability_review_for_discovered
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1135,8 +1091,7 @@ async def test_update_server_tool_list_preserves_existing_capability_when_omitte
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1194,8 +1149,7 @@ async def test_update_server_rejects_custom_header_auth_without_header_name() ->
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1229,52 +1183,6 @@ async def test_update_server_rejects_custom_header_auth_without_header_name() ->
 
 
 @pytest.mark.anyio
-async def test_update_server_rejects_shared_external_secret_fields() -> None:
-    server = SimpleNamespace(
-        id="srv-auth",
-        workspace_id="ws-auth",
-        target_id="cl-auth",
-        target_type="kubernetes",
-        server_name="github",
-        server_url="http://github-mcp",
-        enabled=True,
-        auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
-        auth_header_name=None,
-        auth_header_prefix=None,
-        public_headers=None,
-        connection_status="unknown",
-        last_discovery_at=None,
-        last_discovery_error=None,
-    )
-
-    with (
-        patch(
-            "app.api.handlers_mcp_admin.mcp_server_registry.get_server",
-            new=AsyncMock(return_value=server),
-        ),
-        patch(
-            "app.api.handlers_mcp_admin.mcp_server_registry.update_server",
-            new=AsyncMock(),
-        ) as update_server_mock,
-    ):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.patch(
-                "/api/v1/internal/mcp/servers/srv-auth?workspace_id=ws-auth&target_id=cl-auth&target_type=kubernetes",
-                headers={"Authorization": "Bearer dev_orchestrator_token"},
-                json={
-                    "auth_type": "bearer_token",
-                    "auth_secret_name": "mcp_server::github",
-                },
-            )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "shared external MCP credentials are not supported"
-    update_server_mock.assert_not_awaited()
-
-
-@pytest.mark.anyio
 async def test_update_server_normalizes_bearer_auth_fields() -> None:
     server = SimpleNamespace(
         id="srv-auth",
@@ -1285,8 +1193,7 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="custom_header",
-        auth_scope="personal",
-        auth_secret_name=None,
+        credential_mode="individual",
         auth_header_name="X-Api-Key",
         auth_header_prefix=None,
         public_headers=None,
@@ -1337,12 +1244,18 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
             )
 
     assert response.status_code == 200
-    update_server_mock.assert_awaited_once()
+    assert update_server_mock.await_count == 2
+    transition_patch = update_server_mock.await_args_list[0].args[3]
+    assert transition_patch["credential_transitioning"] is True
+    assert transition_patch["connection_status"] == "error"
     patch_payload = update_server_mock.await_args.args[3]
+    assert patch_payload["credential_transitioning"] is False
     assert patch_payload["auth_type"] == "bearer_token"
     assert patch_payload["auth_header_name"] == "Authorization"
     assert patch_payload["auth_header_prefix"] == "Bearer "
-    cleanup_connections_mock.assert_awaited_once_with("ws-auth", "srv-auth")
+    cleanup_connections_mock.assert_awaited_once_with(
+        "ws-auth", "srv-auth", reason="trust_change"
+    )
 
 
 @pytest.mark.anyio
@@ -1356,8 +1269,7 @@ async def test_update_existing_bearer_server_keeps_bearer_auth_shape() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="bearer_token",
-        auth_scope="personal",
-        auth_secret_name=None,
+        credential_mode="individual",
         auth_header_name="Authorization",
         auth_header_prefix="Bearer ",
         public_headers=None,
@@ -1410,8 +1322,7 @@ async def test_update_none_auth_server_rejects_orphan_auth_fields() -> None:
         server_url="http://github-mcp",
         enabled=True,
         auth_type="none",
-        auth_scope="none",
-        auth_secret_name=None,
+        credential_mode="none",
         auth_header_name=None,
         auth_header_prefix=None,
         public_headers=None,
@@ -1434,7 +1345,7 @@ async def test_update_none_auth_server_rejects_orphan_auth_fields() -> None:
             response = await client.patch(
                 "/api/v1/internal/mcp/servers/srv-none?workspace_id=ws-auth&target_id=cl-auth&target_type=kubernetes",
                 headers={"Authorization": "Bearer dev_orchestrator_token"},
-                json={"auth_secret_name": "mcp_server::github"},
+                json={"auth_header_name": "X-Api-Key"},
             )
 
     assert response.status_code == 400
@@ -1448,7 +1359,6 @@ async def test_delete_server_removes_tools_before_deleting_server() -> None:
         id="srv-delete",
         target_type="kubernetes",
         server_url="http://github-mcp",
-        auth_secret_name=None,
     )
     server_tools = [
         _make_tool(

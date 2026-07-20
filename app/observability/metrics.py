@@ -109,13 +109,13 @@ GATEWAY_MCP_SCOPED_INVOCATIONS_TOTAL = Counter(
 
 GATEWAY_MCP_CONNECTION_OPERATIONS_TOTAL = Counter(
     "gateway_mcp_connection_operations_total",
-    "Personal MCP connection operations by bounded operation and outcome",
+    "MCP credential connection operations by bounded operation and outcome",
     ["operation", "outcome"],
 )
 
 GATEWAY_MCP_CONNECTION_OPERATION_LATENCY_MS = Histogram(
     "gateway_mcp_connection_operation_latency_ms",
-    "Personal MCP connection operation latency in milliseconds",
+    "MCP credential connection operation latency in milliseconds",
     ["operation"],
 )
 
@@ -127,7 +127,7 @@ GATEWAY_MCP_RUNTIME_AUTH_REJECTIONS_TOTAL = Counter(
 
 GATEWAY_MCP_SECRET_CLEANUP_TOTAL = Counter(
     "gateway_mcp_secret_cleanup_total",
-    "Personal MCP secret cleanup outcomes by bounded reason",
+    "MCP credential cleanup outcomes by bounded reason",
     ["reason", "outcome"],
 )
 

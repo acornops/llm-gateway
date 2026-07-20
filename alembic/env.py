@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.catalog.models import CatalogArtifact, CatalogBinding, CatalogSource  # noqa: F401
-from app.mcp.registry.models import McpUserConnection, Tool  # noqa: F401
+from app.mcp.registry.models import McpConnection, Tool  # noqa: F401
 from app.outbound_tls import sqlalchemy_connection_config
 from app.secrets.db_models import Base
 

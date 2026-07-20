@@ -24,7 +24,8 @@ class Tool(Base):
     __tablename__ = "gateway_tools"
     __table_args__ = (
         UniqueConstraint(
-            "server_id", "tool_name",
+            "server_id",
+            "tool_name",
             name="uq_gateway_tools_ws_target_name",
         ),
         Index("ix_gateway_tools_workspace_target", "workspace_id", "target_id"),
@@ -63,20 +64,27 @@ class McpServer(Base):
     __tablename__ = "gateway_mcp_servers"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "scope_type", "target_id", "server_name",
+            "workspace_id",
+            "scope_type",
+            "target_id",
+            "server_name",
             name="uq_gateway_mcp_servers_ws_target_name",
         ),
         UniqueConstraint(
-            "workspace_id", "scope_type", "target_id", "server_url",
+            "workspace_id",
+            "scope_type",
+            "target_id",
+            "server_url",
             name="uq_gateway_mcp_servers_ws_target_url",
         ),
-        UniqueConstraint(
-            "id", "workspace_id", name="uq_gateway_mcp_servers_id_workspace"
-        ),
+        UniqueConstraint("id", "workspace_id", name="uq_gateway_mcp_servers_id_workspace"),
         Index("ix_gateway_mcp_servers_workspace_target", "workspace_id", "target_id"),
         Index(
             "uq_gateway_mcp_servers_builtin_destination",
-            "workspace_id", "scope_type", "target_id", "target_type",
+            "workspace_id",
+            "scope_type",
+            "target_id",
+            "target_type",
             unique=True,
             postgresql_where=text("provenance_type='builtin'"),
             sqlite_where=text("provenance_type='builtin'"),
@@ -84,6 +92,10 @@ class McpServer(Base):
         CheckConstraint(
             "provenance_type IN ('manual','catalog','builtin')",
             name="ck_gateway_mcp_servers_provenance_type",
+        ),
+        CheckConstraint(
+            "credential_mode IN ('none','workspace','individual')",
+            name="ck_gateway_mcp_servers_credential_mode",
         ),
     )
 
@@ -97,11 +109,11 @@ class McpServer(Base):
     server_url = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
     auth_type = Column(String, nullable=False, default="none")
-    auth_secret_name = Column(String, nullable=True)
     auth_header_name = Column(String, nullable=True)
     auth_header_prefix = Column(String, nullable=True)
     public_headers = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
-    auth_scope = Column(String, nullable=False, default="none")
+    credential_mode = Column(String, nullable=False, default="none")
+    credential_transitioning = Column(Boolean, nullable=False, default=False)
     catalog_source_id = Column(UUID(as_uuid=True), nullable=True)
     catalog_artifact_name = Column(String, nullable=True)
     catalog_version = Column(String, nullable=True)
@@ -130,30 +142,40 @@ class ApprovalReceiptUse(Base):
     claimed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
-class McpUserConnection(Base):
-    __tablename__ = "gateway_mcp_user_connections"
+class McpConnection(Base):
+    __tablename__ = "gateway_mcp_connections"
     __table_args__ = (
         UniqueConstraint(
-            "server_id", "user_id", name="uq_gateway_mcp_user_connection"
+            "server_id", "owner_type", "owner_id", name="uq_gateway_mcp_connection_owner"
         ),
         Index(
-            "ix_gateway_mcp_user_connections_workspace_user",
+            "ix_gateway_mcp_connections_workspace_owner",
             "workspace_id",
-            "user_id",
+            "owner_type",
+            "owner_id",
         ),
         ForeignKeyConstraint(
             ["server_id", "workspace_id"],
             ["gateway_mcp_servers.id", "gateway_mcp_servers.workspace_id"],
-            name="fk_gateway_mcp_user_connection_server_workspace",
+            name="fk_gateway_mcp_connection_server_workspace",
             ondelete="CASCADE",
         ),
         CheckConstraint(
             "status IN ('connected', 'error')",
-            name="ck_gateway_mcp_user_connection_status",
+            name="ck_gateway_mcp_connection_status",
+        ),
+        CheckConstraint(
+            "owner_type IN ('installation', 'user')",
+            name="ck_gateway_mcp_connection_owner_type",
+        ),
+        CheckConstraint(
+            "(owner_type = 'installation' AND owner_id = 'installation') OR "
+            "(owner_type = 'user' AND length(owner_id) > 0)",
+            name="ck_gateway_mcp_connection_owner_id",
         ),
         CheckConstraint(
             "error_code IS NULL OR length(error_code) <= 64",
-            name="ck_gateway_mcp_user_connection_error_code",
+            name="ck_gateway_mcp_connection_error_code",
         ),
     )
 
@@ -163,9 +185,9 @@ class McpUserConnection(Base):
         UUID(as_uuid=True),
         nullable=False,
     )
-    user_id = Column(String, nullable=False)
+    owner_type = Column(String, nullable=False)
+    owner_id = Column(String, nullable=False)
     status = Column(String, nullable=False, default="error")
-    access_secret_name = Column(String, nullable=False)
     verified_tool_names = Column(
         JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list
     )

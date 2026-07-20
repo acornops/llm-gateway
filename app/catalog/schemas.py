@@ -71,7 +71,7 @@ class CatalogSourceCreateRequest(BaseModel):
             raise ValueError("custom_header sources require auth_header_name")
         return self
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class CatalogSourceAuthPatch(BaseModel):
@@ -91,7 +91,7 @@ class CatalogSourceAuthPatch(BaseModel):
             raise ValueError("header_name is only allowed for custom_header authentication")
         return self
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class CatalogSourcePatchRequest(BaseModel):
@@ -119,7 +119,7 @@ class CatalogSourcePatchRequest(BaseModel):
             raise ValueError("auth must be an authentication object when provided")
         return self
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class CatalogBindingResponse(BaseModel):
@@ -199,6 +199,8 @@ class CatalogArtifactLocator(BaseModel):
             "artifact locator requires artifact_id or source_id plus artifact_name"
         )
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
 
 class CatalogMcpImportBase(BaseModel):
     workspace_id: str = Field(min_length=1)
@@ -208,6 +210,7 @@ class CatalogMcpImportBase(BaseModel):
     server_name: str | None = Field(default=None, min_length=1, max_length=160)
     public_headers: dict[str, str] | None = None
     endpoint_configuration: dict[str, str] = Field(default_factory=dict)
+    credential_mode: Literal["none", "workspace", "individual"] | None = None
     enabled: bool = True
     reimport_server_id: str | None = None
     expected_revision: int | None = Field(default=None, ge=1)
@@ -225,11 +228,11 @@ class CatalogMcpImportBase(BaseModel):
             )
         return self
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class CatalogAgentMcpImportRequest(CatalogMcpImportBase):
-    scope_type: Literal["agent"] = "agent"
+    scope_type: Literal["agent"]
     agent_id: str = Field(min_length=1)
     target_constraints: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -241,8 +244,12 @@ class CatalogAgentMcpImportRequest(CatalogMcpImportBase):
         unknown = set(value) - {"target_types", "target_ids"}
         if unknown:
             raise ValueError("target constraints contain unsupported fields")
+        if any(not item.strip() for items in value.values() for item in items):
+            raise ValueError("target constraints cannot contain empty values")
+        if set(value.get("target_types", [])) - {"kubernetes", "virtual_machine"}:
+            raise ValueError("target constraints contain unsupported target types")
         return {
-            key: sorted({item.strip() for item in items if item.strip()})
+            key: sorted({item.strip() for item in items})
             for key, items in value.items()
         }
 
@@ -260,11 +267,4 @@ CatalogMcpImportUnion = Annotated[
 
 
 class CatalogMcpImportRequest(RootModel[CatalogMcpImportUnion]):
-    """Discriminated import request with compatibility for legacy Agent payloads."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def infer_legacy_agent_scope(cls, value: object) -> object:
-        if isinstance(value, dict) and "scope_type" not in value and value.get("agent_id"):
-            return {**value, "scope_type": "agent"}
-        return value
+    """Final destination-discriminated catalog import request."""

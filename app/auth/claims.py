@@ -1,7 +1,9 @@
+import hashlib
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.mcp.canonical_json import canonical_json
 from app.target_types import TargetType
 
 
@@ -20,11 +22,18 @@ class RunPrincipalRef(BaseModel):
     id: str
 
 
-class AllowedRepository(BaseModel):
-    provider: Literal["github", "gitlab"]
-    repository: str
-    ref: str | None = None
-    change_request_number: int | None = Field(default=None, ge=1)
+class ResourceBindingClaim(BaseModel):
+    binding_id: str
+    type: str
+    resource_id: str
+    provider: str
+    provider_version: str
+    workspace_id: str
+    label_snapshot: str
+    source: Literal["explicit", "implicit", "trigger"]
+    operations: list[str]
+    context_mode: Literal["inline", "tool", "routing_only"]
+    provider_data: dict[str, Any] | None = None
 
 
 class Scope(BaseModel):
@@ -39,8 +48,56 @@ class Permissions(BaseModel):
     allowed_native_tools: list[NativeToolPermission] = []
     allowed_tool_operations: dict[str, Literal["read", "write"]] = {}
     context_grants: list[str] = []
-    allowed_repository: AllowedRepository | None = None
+    resource_bindings: list[ResourceBindingClaim] = Field(default_factory=list, max_length=64)
+    binding_digest: str | None = None
     max_output_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def validate_resource_bindings(self):
+        binding_ids = [binding.binding_id for binding in self.resource_bindings]
+        if len(binding_ids) != len(set(binding_ids)):
+            raise ValueError("resource binding IDs must be unique")
+        for binding in self.resource_bindings:
+            if (
+                not binding.operations
+                or len(binding.operations) > 64
+                or len(binding.operations) != len(set(binding.operations))
+                or any(not operation.strip() for operation in binding.operations)
+            ):
+                raise ValueError(
+                    "resource binding operations must be unique, non-empty, and bounded"
+                )
+        if self.binding_digest is not None and (
+            len(self.binding_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.binding_digest)
+        ):
+            raise ValueError("binding_digest must be a lowercase SHA-256 hex string")
+        if self.resource_bindings and self.binding_digest is None:
+            raise ValueError("binding_digest is required when resource bindings are present")
+        if self.binding_digest is not None:
+            canonical = []
+            for binding in self.resource_bindings:
+                value = {
+                    "bindingId": binding.binding_id,
+                    "type": binding.type,
+                    "resourceId": binding.resource_id,
+                    "provider": binding.provider,
+                    "providerVersion": binding.provider_version,
+                    "workspaceId": binding.workspace_id,
+                    "labelSnapshot": binding.label_snapshot,
+                    "source": binding.source,
+                    "operations": binding.operations,
+                    "contextMode": binding.context_mode,
+                }
+                if binding.provider_data is not None:
+                    value["providerData"] = binding.provider_data
+                canonical.append(value)
+            actual = hashlib.sha256(
+                canonical_json(canonical).encode("utf-8")
+            ).hexdigest()
+            if actual != self.binding_digest:
+                raise ValueError("binding_digest does not match resource_bindings")
+        return self
 
 
 class TokenClaims(BaseModel):
@@ -74,6 +131,11 @@ class TokenClaims(BaseModel):
             self.principal = RunPrincipalRef(type="user", id=self.user_id)
         if self.principal is None:
             raise ValueError("run principal is required")
+        if any(
+            binding.workspace_id != self.workspace_id
+            for binding in self.permissions.resource_bindings
+        ):
+            raise ValueError("resource bindings must match the token workspace")
         if self.user_id and (
             self.principal.type != "user" or self.principal.id != self.user_id
         ):

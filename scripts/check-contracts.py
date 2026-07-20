@@ -13,14 +13,13 @@ README = read("README.md")
 DOC = read("docs/contracts/README.md")
 MANIFEST = json.loads(read("docs/contracts/manifest.json"))
 MANIFEST_TEXT = json.dumps(MANIFEST, sort_keys=True)
+CANONICAL_JSON_VECTORS = read("docs/contracts/canonical-json-vectors.json")
 MAIN_SOURCE = read("app/main.py")
 ROUTER_SOURCE = read("app/api/router.py")
 LLM_SERVICE_SOURCE = read("app/llm/service.py")
 CLAIMS_SOURCE = read("app/auth/claims.py")
 LLM_HANDLER_SOURCE = read("app/api/handlers_llm_stream.py")
-TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py") + read(
-    "app/api/tool_call_contract.py"
-)
+TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py") + read("app/api/tool_call_contract.py")
 INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = (
     read("app/api/handlers_mcp_admin.py")
@@ -50,6 +49,14 @@ def expect_in(content: str, needle: str, message: str) -> None:
     expect(needle in content, f"{message}: missing {needle}")
 
 
+control_plane_vectors = ROOT.parent / "control-plane/docs/contracts/canonical-json-vectors.json"
+if control_plane_vectors.exists():
+    expect(
+        control_plane_vectors.read_text() == CANONICAL_JSON_VECTORS,
+        "Control-plane and LLM-gateway canonical JSON vectors must be byte-identical",
+    )
+
+
 expect_in(README, "[`docs/contracts/README.md`](docs/contracts/README.md)", "README contract link")
 expect_in(
     README,
@@ -58,20 +65,19 @@ expect_in(
 )
 
 for needle in (
-    'scope_type: Literal["agent"] = "agent"',
+    'scope_type: Literal["agent"]',
     "agent_id: str",
     'scope_type: Literal["target"]',
     "target_id: str",
     "target_type: TargetType",
     'Field(discriminator="scope_type")',
-    'return {**value, "scope_type": "agent"}',
 ):
     expect_in(CATALOG_SCHEMA_SOURCE, needle, "Catalog import destination union")
 
 for needle in (
     "GATEWAY_CATALOG_IMPORTS_TOTAL",
-    'scope_type=payload.scope_type',
-    'operation=operation',
+    "scope_type=payload.scope_type",
+    "operation=operation",
     'outcome="success"',
     'outcome="failure"',
 ):
@@ -178,14 +184,10 @@ for needle in (
         "Documented internal model-only tools",
     )
 
-for needle in (
-    'capability: Literal["read", "write"] = "write"',
-):
+for needle in ('capability: Literal["read", "write"] = "write"',):
     expect_in(MCP_ADMIN_SOURCE, needle, "MCP tool capability conservative default")
 
-for needle in (
-    'capability="write"',
-):
+for needle in ('capability="write"',):
     expect_in(MCP_ADMIN_HELPER_SOURCE, needle, "MCP discovery capability conservative default")
 
 expect_in(
@@ -208,12 +210,12 @@ for route in (
     expect_in(MAIN_SOURCE + ROUTER_SOURCE, route, "API route mounting")
 
 for route in (
-    '@router.get(\n    "/servers/{server_id}/connections/{user_id}"',
-    '@router.put(\n    "/servers/{server_id}/connections/{user_id}"',
-    '"/servers/{server_id}/connections/{user_id}/verify"',
-    '@router.delete("/servers/{server_id}/connections/{user_id}"',
+    '@router.get(\n    "/servers/{server_id}/connections/{owner_id}"',
+    '@router.put(\n    "/servers/{server_id}/connections/{owner_id}"',
+    '"/servers/{server_id}/connections/{owner_id}/verify"',
+    '@router.delete("/servers/{server_id}/connections/{owner_id}"',
 ):
-    expect_in(MCP_ADMIN_SOURCE, route, "PAT-only MCP connection route")
+    expect_in(MCP_ADMIN_SOURCE, route, "MCP credential connection route")
 
 for removed in (
     "/oauth/start",
@@ -230,8 +232,6 @@ expect(not (ROOT / "app/mcp/oauth.py").exists(), "Removed MCP OAuth module remai
 for documented in (
     EXECUTION_ENGINE_CONTRACT["streamPath"],
     EXECUTION_ENGINE_CONTRACT["toolCallPath"],
-    *CONTROL_PLANE_CONTRACT["adminPaths"],
-    CONTROL_PLANE_CONTRACT["jwksPath"],
 ):
     expect_in(MANIFEST_TEXT, documented, "Manifest route")
 
@@ -255,8 +255,9 @@ for needle in (
     "validate_and_claim_approval_receipt",
     '"MCP_TOOL_APPROVAL_REQUIRED"',
     '"Authorization": f"Bearer {token_context.token}"',
-    'if not is_builtin_tool and server and server.auth_type in ("bearer_token", "custom_header"):',
-    "detail=f\"Tool {req.tool} is not permitted for this run\"",
+    "request_headers = await connection_request_headers(",
+    "platform_headers=platform_headers",
+    'detail=f"Tool {req.tool} is not permitted for this run"',
     "tool_call_id: str | None = Field(default=None, min_length=1, max_length=256)",
 ):
     expect_in(TOOL_HANDLER_SOURCE, needle, "Tool handler")

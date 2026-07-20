@@ -70,9 +70,11 @@ class ToolConfigRequest(BaseModel):
             raise ValueError("MCP tools must be approved before they are enabled")
         return self
 
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-class ToolConfigPatchRequest(BaseModel):
-    """Partial tool configuration used by the legacy server update surface."""
+
+class ToolConfigUpdateRequest(BaseModel):
+    """Partial tool configuration for the current server update endpoint."""
 
     name: str = Field(min_length=1, examples=["records.list"])
     timeout_ms: int | None = Field(default=None, ge=100, le=120000)
@@ -105,6 +107,8 @@ class ToolConfigPatchRequest(BaseModel):
         if self.auto_allowed and self.risk_level not in (None, "non_destructive_write"):
             raise ValueError("only non-destructive writes may be auto allowed")
         return self
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class ToolConfigResponse(BaseModel):
@@ -149,6 +153,8 @@ class ToolUpdateRequest(BaseModel):
             raise ValueError("only non-destructive writes may be auto allowed")
         return self
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
 
 class McpServerCreateRequest(BaseModel):
     workspace_id: str = Field(min_length=1, examples=[EXAMPLE_WORKSPACE_ID])
@@ -161,9 +167,7 @@ class McpServerCreateRequest(BaseModel):
     server_url: str = Field(min_length=1, examples=["https://mcp.example.com/v1/"])
     enabled: bool = True
     auth_type: Literal["none", "bearer_token", "custom_header"] = "none"
-    auth_scope: Literal["none", "personal"] = "none"
-    auth_secret_name: str | None = None
-    auth_secret_value: str | None = None
+    credential_mode: Literal["none", "workspace", "individual"] = "none"
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
@@ -180,7 +184,7 @@ class McpServerCreateRequest(BaseModel):
     def _validate_auth_header_name(cls, value: str | None) -> str | None:
         return validate_auth_header_name(value)
 
-    @field_validator("auth_header_prefix", "auth_secret_value")
+    @field_validator("auth_header_prefix")
     @classmethod
     def _validate_auth_header_value(cls, value: str | None) -> str | None:
         return validate_auth_header_value(value)
@@ -199,25 +203,12 @@ class McpServerCreateRequest(BaseModel):
         elif not self.target_id or self.target_type in (None, "agent"):
             raise ValueError("target scope requires target_id and a concrete target_type")
         external_authenticated = self.auth_type in ("bearer_token", "custom_header")
-        if external_authenticated:
-            if self.auth_secret_name or self.auth_secret_value:
-                raise ValueError("external MCP credentials must use personal connections")
-            self.auth_scope = "personal"
-        if self.auth_scope == "personal" and self.auth_type == "none":
-            raise ValueError("personal MCP authentication requires an auth type")
-        if self.auth_scope == "none" and self.scope_type == "agent" and self.auth_type != "none":
-            raise ValueError("Agent authentication must be personal or none")
-        if self.auth_scope == "personal" and (self.auth_secret_name or self.auth_secret_value):
-            raise ValueError("personal MCP installations cannot store shared credentials")
-        if self.auth_secret_value is not None:
-            validate_auth_header_value(
-                f"{_effective_auth_header_prefix(self.auth_type, self.auth_header_prefix)}"
-                f"{self.auth_secret_value}"
-            )
+        if external_authenticated and self.credential_mode == "none":
+            raise ValueError("authenticated MCP installations require a credential mode")
+        if not external_authenticated and self.credential_mode != "none":
+            raise ValueError("credential_mode must be none when auth_type is none")
         if self.auth_type == "none" and any(
             (
-                self.auth_secret_name,
-                self.auth_secret_value,
                 self.auth_header_name,
                 self.auth_header_prefix,
             )
@@ -239,7 +230,7 @@ class McpServerCreateRequest(BaseModel):
                 "enabled": True,
                 "public_headers": {"x-client-version": "2026-05"},
                 "auth_type": "bearer_token",
-                "auth_scope": "personal",
+                "credential_mode": "individual",
                 "auth_header_name": "Authorization",
                 "auth_header_prefix": "Bearer ",
                 "tools": [
@@ -259,12 +250,11 @@ class McpServerUpdateRequest(BaseModel):
     server_name: str | None = None
     enabled: bool | None = None
     auth_type: Literal["none", "bearer_token", "custom_header"] | None = None
-    auth_secret_name: str | None = None
-    auth_secret_value: str | None = None
+    credential_mode: Literal["none", "workspace", "individual"] | None = None
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
-    tools: list[ToolConfigPatchRequest] | None = None
+    tools: list[ToolConfigUpdateRequest] | None = None
     remove_tools: list[str] = Field(default_factory=list)
     target_constraints: AgentTargetConstraints | None = None
     expected_revision: int | None = Field(default=None, ge=1)
@@ -279,22 +269,15 @@ class McpServerUpdateRequest(BaseModel):
     def _validate_auth_header_name(cls, value: str | None) -> str | None:
         return validate_auth_header_name(value)
 
-    @field_validator("auth_header_prefix", "auth_secret_value")
+    @field_validator("auth_header_prefix")
     @classmethod
     def _validate_auth_header_value(cls, value: str | None) -> str | None:
         return validate_auth_header_value(value)
 
     @model_validator(mode="after")
     def _validate_constructed_auth_header_value(self) -> Self:
-        if self.auth_secret_value is not None:
-            validate_auth_header_value(
-                f"{_effective_auth_header_prefix(self.auth_type, self.auth_header_prefix)}"
-                f"{self.auth_secret_value}"
-            )
         if self.auth_type == "none" and any(
             (
-                self.auth_secret_name,
-                self.auth_secret_value,
                 self.auth_header_name,
                 self.auth_header_prefix,
             )
@@ -318,7 +301,7 @@ class McpServerUpdateRequest(BaseModel):
                         "enabled": True,
                     }
                 ],
-                "remove_tools": ["records.deprecated"],
+                "remove_tools": ["records.removed"],
             }
         },
     )
@@ -336,8 +319,7 @@ class McpServerResponse(BaseModel):
     server_url: str
     enabled: bool
     auth_type: str
-    auth_scope: Literal["none", "personal"] = "none"
-    credential_configured: bool = False
+    credential_mode: Literal["none", "workspace", "individual"] = "none"
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
@@ -368,9 +350,10 @@ class McpServerConnectionTestResponse(BaseModel):
     error: str | None = None
 
 
-class McpUserConnectionUpsertRequest(BaseModel):
+class McpConnectionUpsertRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
+    owner_type: Literal["installation", "user"]
+    owner_id: str = Field(min_length=1)
     credential: str = Field(min_length=1, max_length=8192)
     consent_granted: Literal[True]
 
@@ -386,17 +369,21 @@ class McpUserConnectionUpsertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class McpUserConnectionResponse(BaseModel):
+class McpConnectionResponse(BaseModel):
     server_id: str
+    credential_mode: Literal["workspace", "individual"]
     status: Literal["missing", "connected", "error"]
     auth_type: Literal["bearer_token", "custom_header"]
     action: Literal["connect_mcp_server", "verify_mcp_server"] | None = None
     error_code: str | None = None
+    verified_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
-class McpUserConnectionVerifyRequest(BaseModel):
+class McpConnectionVerifyRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
+    owner_type: Literal["installation", "user"]
+    owner_id: str = Field(min_length=1)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -424,10 +411,10 @@ class McpReadinessRequest(BaseModel):
 
 
 McpReadinessFailureCode = Literal[
-    "MCP_PAT_USER_PRINCIPAL_REQUIRED",
-    "MCP_PERSONAL_CONNECTION_MISSING",
-    "MCP_PERSONAL_CONNECTION_ERROR",
-    "MCP_PERSONAL_TOOL_UNAVAILABLE",
+    "MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED",
+    "MCP_CONNECTION_MISSING",
+    "MCP_CONNECTION_ERROR",
+    "MCP_CREDENTIAL_TOOL_UNAVAILABLE",
     "MCP_INSTALLATION_UNAVAILABLE",
     "MCP_REMOTE_DISABLED",
 ]

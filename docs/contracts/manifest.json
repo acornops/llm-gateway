@@ -76,33 +76,7 @@
       "toolCallResponseMaxBytes": 5242880
     },
     "control-plane": {
-      "adminPaths": [
-        "GET /api/v1/internal/llm/provider-credentials",
-        "PUT /api/v1/internal/llm/provider-credentials/{provider}",
-        "DELETE /api/v1/internal/llm/provider-credentials/{provider}",
-        "GET /api/v1/internal/mcp/servers",
-        "GET /api/v1/internal/mcp/tools",
-        "PATCH /api/v1/internal/mcp/tools/{tool_name}",
-        "POST /api/v1/internal/mcp/servers",
-        "PATCH /api/v1/internal/mcp/servers/{server_id}",
-        "POST /api/v1/internal/mcp/servers/{server_id}/test",
-        "DELETE /api/v1/internal/mcp/servers/{server_id}",
-        "GET /api/v1/internal/catalog/sources",
-        "POST /api/v1/internal/catalog/sources",
-        "PATCH /api/v1/internal/catalog/sources/{source_id}",
-        "POST /api/v1/internal/catalog/sources/{source_id}/sync",
-        "DELETE /api/v1/internal/catalog/sources/{source_id}",
-        "GET /api/v1/internal/catalog/artifacts",
-        "GET /api/v1/internal/catalog/artifacts/{artifact_id}",
-        "POST /api/v1/internal/catalog/imports",
-        "GET /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
-        "PUT /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
-        "DELETE /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}",
-        "POST /api/v1/internal/mcp/servers/{server_id}/connections/{user_id}/verify",
-        "POST /api/v1/internal/mcp/connections/readiness",
-        "DELETE /api/v1/internal/mcp/connections"
-      ],
-      "providerCredentialScope": "workspace-only: secret_name={provider}_api_key, tenant_scope={workspace_id}; external MCP PATs are separate per user and installation, while the built-in bridge uses run tokens",
+      "providerCredentialScope": "workspace-only AI provider secret_name={provider}_api_key and tenant_scope={workspace_id}; runtime MCP credentials use exact workspace or individual installation connections, while the built-in bridge uses run tokens",
       "providerCredentialScopeFields": [
         "workspace_id"
       ],
@@ -169,6 +143,7 @@
           "remote_endpoint",
           "server_name?",
           "enabled?",
+          "credential_mode?",
           "public_headers?",
           "endpoint_configuration?",
           "reimport_server_id?",
@@ -187,8 +162,7 @@
         "server_url",
         "enabled",
         "auth_type",
-        "auth_scope",
-        "credential_configured",
+        "credential_mode",
         "auth_header_name",
         "auth_header_prefix",
         "public_headers",
@@ -207,19 +181,19 @@
         "tools"
       ],
       "serverProvenanceValues": ["manual", "catalog", "builtin"],
-      "personalConnectionContract": {
-        "putFields": ["credential", "consent_granted=true"],
+      "credentialConnectionContract": {
+        "putFields": ["owner_type", "owner_id", "credential", "consent_granted=true"],
         "credentialLimit": "8192 UTF-8 bytes; control characters rejected; no normalization",
-        "responseFields": ["server_id", "status=connected|error", "auth_type", "action?"],
+        "responseFields": ["server_id", "credential_mode", "status=connected|error", "auth_type", "action?"],
         "missingRepresentation": "row absence",
-        "mutationSerialization": "workspace_id + server_id + user_id",
-        "runtimePrincipal": "user only; service principals return MCP_PAT_USER_PRINCIPAL_REQUIRED"
+        "mutationSerialization": "workspace_id + server_id + owner_type + owner_id",
+        "runtimePrincipal": "workspace mode supports users and service identities; individual mode requires a user and returns MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED otherwise"
       },
       "readinessContract": {
         "path": "POST /api/v1/internal/mcp/connections/readiness",
-        "input": ["workspace_id", "principal.{type,id}", "scope_type", "tool_refs[].{server_id,tool_name}"],
+        "input": ["workspace_id", "principal.{type,id}", "tool_refs[].{server_id,tool_name}"],
         "output": "bounded failure codes only; no connection snapshots",
-        "toolGranularity": "enabled tools require matching server/tool identity; trusted built-in tools bypass remote review and personal snapshots, while remote tools require approval and personal tools must exist in the acting user's verified snapshot"
+        "toolGranularity": "enabled tools require matching server/tool identity; trusted built-in tools bypass remote review and credential snapshots, while remote tools require approval and the exact resolved credential must include the tool in its verified snapshot"
       },
       "remoteMcpKillSwitch": "REMOTE_MCP_ENABLED=false blocks external discovery and execution but not built-in tools or platform readiness",
       "toolFields": [
@@ -240,7 +214,6 @@
         "artifact_policy",
         "enabled"
       ],
-      "jwksPath": "GET /api/v1/auth/jwks.json",
       "runJwtPermissionFields": [
         "allowed_providers",
         "allowed_models",
@@ -249,10 +222,8 @@
         "allowed_tool_refs[].tool_name",
         "allowed_native_tools",
         "allowed_tool_operations?",
-        "allowed_repository.provider?",
-        "allowed_repository.repository?",
-        "allowed_repository.ref?",
-        "allowed_repository.change_request_number?",
+        "resource_bindings[].{binding_id,type,resource_id,provider,provider_version,workspace_id,label_snapshot,source,operations,context_mode,provider_data?}",
+        "binding_digest",
         "max_output_tokens"
       ],
       "runJwtWorkspaceScopeFields": [
@@ -263,7 +234,7 @@
         "agent_id?",
         "agent_version?",
         "trigger_id?",
-        "user_id? (required for personal MCP authorization)",
+        "user_id? (required for individual MCP authorization)",
         "permissions.context_grants",
         "standalone Agent scope requires agent_id and agent_version",
         "write tool calls receive a gateway-injected idempotencyKey derived from run_id and tool_call_id"

@@ -11,13 +11,13 @@ from app.examples import (
     EXAMPLE_WORKSPACE_ID,
 )
 from app.llm.adapters import gemini_adapter
+from app.llm.adapters.common import build_gemini_tools
 from app.llm.adapters.gemini_adapter import (
     GeminiAdapter,
     _close_client,
     _extract_function_calls,
     _function_call_args,
 )
-from app.llm.adapters.common import build_gemini_tools
 from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 

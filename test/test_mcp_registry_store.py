@@ -16,18 +16,41 @@ async def _create_schema(database_url: str) -> None:
         await engine.dispose()
 
 
+async def _create_server(
+    registry: McpServerRegistry,
+    *,
+    server_name: str,
+    server_url: str,
+    target_type: str = "kubernetes",
+):
+    return await registry.create_server(
+        workspace_id="ws-1",
+        target_id="cluster-a",
+        target_type=target_type,
+        server_name=server_name,
+        server_url=server_url,
+        enabled=True,
+        auth_type="none",
+    )
+
+
 @pytest.mark.anyio
 async def test_tool_registry_crud_and_source_cleanup(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     await _create_schema(database_url)
     registry = ToolRegistry(database_url)
+    server_registry = McpServerRegistry(database_url)
     try:
+        server = await _create_server(
+            server_registry, server_name="server-a", server_url="http://server-a"
+        )
         created = await registry.upsert_tool(
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(server.id),
             enabled=False,
             description="search repos",
             source="mcp",
@@ -55,6 +78,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             "cluster-a",
             "github.search",
             target_type="kubernetes",
+            server_id=str(server.id),
             include_disabled=True,
         )
         assert included is not None
@@ -66,6 +90,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(server.id),
             enabled=True,
             description="updated description",
             source="builtin",
@@ -93,6 +118,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(server.id),
             source="mcp",
         )
         await registry.upsert_tool(
@@ -101,6 +127,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(server.id),
             source="builtin",
         )
         await registry.delete_target_tools_by_source(
@@ -113,6 +140,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
         assert remaining == ["tool.two"]
     finally:
         await registry.close()
+        await server_registry.close()
 
 
 @pytest.mark.anyio
@@ -120,13 +148,21 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'rebind.db'}"
     await _create_schema(database_url)
     registry = ToolRegistry(database_url)
+    server_registry = McpServerRegistry(database_url)
     try:
+        first_server = await _create_server(
+            server_registry, server_name="server-a", server_url="http://server-a"
+        )
+        second_server = await _create_server(
+            server_registry, server_name="server-b", server_url="http://server-b"
+        )
         first = await registry.upsert_tool(
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(first_server.id),
         )
 
         second = await registry.upsert_tool(
@@ -135,6 +171,7 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(second_server.id),
         )
 
         tools = await registry.list_target_tools(
@@ -147,6 +184,7 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
         ) is None
     finally:
         await registry.close()
+        await server_registry.close()
 
 
 @pytest.mark.anyio
@@ -154,22 +192,28 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'target-type-mismatch.db'}"
     await _create_schema(database_url)
     registry = ToolRegistry(database_url)
+    server_registry = McpServerRegistry(database_url)
     try:
+        server = await _create_server(
+            server_registry, server_name="server-a", server_url="http://server-a"
+        )
         await registry.upsert_tool(
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
             target_id="cluster-a",
             target_type="kubernetes",
+            server_id=str(server.id),
         )
 
-        with pytest.raises(ValueError, match="target_type=kubernetes"):
+        with pytest.raises(ValueError, match="destination does not match"):
             await registry.upsert_tool(
                 tool_name="github.search",
                 mcp_server_url="http://server-a",
                 workspace_id="ws-1",
                 target_id="cluster-a",
                 target_type="virtual_machine",
+                server_id=str(server.id),
             )
 
         assert (
@@ -190,6 +234,7 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
         ) is None
     finally:
         await registry.close()
+        await server_registry.close()
 
 
 @pytest.mark.anyio

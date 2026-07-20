@@ -59,10 +59,11 @@ def test_normalizes_streamable_http_endpoint_and_secret_free_provenance() -> Non
             "url": "https://mcp.example.com/mcp",
             "supported": True,
             "requiresConfiguration": False,
-            "requiresPersonalAuth": True,
+            "supportedCredentialModes": ["workspace", "individual"],
+            "recommendedCredentialMode": "individual",
             "headerNames": ["Authorization", "X-Tenant"],
             "secretHeaderNames": ["Authorization"],
-            "personalAuthHeaderPrefix": None,
+            "credentialAuthHeaderPrefix": None,
             "configurationFields": [],
             "publicHeaderTemplates": [],
         }
@@ -116,7 +117,7 @@ def test_normalizes_non_secret_url_and_header_variables() -> None:
     endpoint = artifact.remote_endpoints[0]
     assert artifact.compatible is True
     assert endpoint["url"] == "https://{region}.example.com/mcp"
-    assert endpoint["personalAuthHeaderPrefix"] == "Bearer "
+    assert endpoint["credentialAuthHeaderPrefix"] == "Bearer "
     assert endpoint["publicHeaderTemplates"] == [{"name": "X-Tenant", "value": "{tenant}"}]
     assert {field["name"] for field in endpoint["configurationFields"]} == {
         "region",
@@ -152,9 +153,14 @@ def _import_payload() -> dict[str, object]:
     }
 
 
-def test_catalog_import_accepts_legacy_agent_shape() -> None:
+def test_catalog_import_requires_an_explicit_agent_destination() -> None:
+    with pytest.raises(ValueError, match="scope_type"):
+        CatalogMcpImportRequest.model_validate(
+            {**_import_payload(), "agent_id": "agent-a"}
+        )
+
     request = CatalogMcpImportRequest.model_validate(
-        {**_import_payload(), "agent_id": "agent-a"}
+        {**_import_payload(), "scope_type": "agent", "agent_id": "agent-a"}
     ).root
 
     assert request.scope_type == "agent"
@@ -185,6 +191,39 @@ def test_catalog_import_accepts_target_destination_without_agent_constraints() -
                 "target_constraints": {"target_ids": ["cluster-a"]},
             }
         )
+
+
+def test_catalog_import_rejects_malformed_nested_and_coerced_fields() -> None:
+    invalid_payloads = [
+        {
+            **_import_payload(),
+            "scope_type": "agent",
+            "agent_id": "agent-a",
+            "enabled": "true",
+        },
+        {
+            **_import_payload(),
+            "scope_type": "agent",
+            "agent_id": "agent-a",
+            "artifact": {"artifact_id": "artifact-a", "ignored": True},
+        },
+        {
+            **_import_payload(),
+            "scope_type": "agent",
+            "agent_id": "agent-a",
+            "target_constraints": {"target_types": ["unsupported"]},
+        },
+        {
+            **_import_payload(),
+            "scope_type": "agent",
+            "agent_id": "agent-a",
+            "target_constraints": {"target_ids": [""]},
+        },
+    ]
+
+    for payload in invalid_payloads:
+        with pytest.raises(ValueError):
+            CatalogMcpImportRequest.model_validate(payload)
 
 
 def test_catalog_import_metric_has_only_bounded_labels() -> None:
@@ -276,3 +315,29 @@ async def test_adapter_honors_cursor_incremental_sync_and_version_resolution() -
     assert requests[1].url.raw_path == (
         b"/v0.1/servers/io.example%2Foperations/versions/2.0.0"
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("declared_length", [True, False])
+async def test_adapter_bounds_registry_responses_before_full_buffering(
+    monkeypatch: pytest.MonkeyPatch,
+    declared_length: bool,
+) -> None:
+    monkeypatch.setattr(
+        "app.catalog.adapter.settings.CATALOG_MAX_RESPONSE_BYTES", 32
+    )
+
+    class OversizedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"servers":['
+            yield b'"' + (b"x" * 64) + b'"]}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "identity"
+        headers = {"content-length": "128"} if declared_length else {}
+        return httpx.Response(200, headers=headers, stream=OversizedStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = McpRegistryV01Adapter("https://registry.example", client=client)
+        with pytest.raises(CatalogAdapterError, match="size limit"):
+            await adapter.probe()

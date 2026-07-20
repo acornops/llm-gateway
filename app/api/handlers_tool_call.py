@@ -7,16 +7,14 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as jsonschema_validate
 
 from app.api.mcp_runtime_auth import (
-    mark_personal_connection_error,
-    personal_connection_headers,
+    connection_request_headers,
+    mark_connection_error,
 )
 from app.api.tool_call_contract import (
     ToolCallRequest,
     request_matches_claim_scope,
+    resolve_registered_tool,
     tool_ref_is_permitted,
-)
-from app.api.tool_call_contract import (
-    resolve_registered_tool as resolve_registered_tool_contract,
 )
 from app.api.tool_call_errors import (
     _mark_unknown_write_contract,
@@ -44,20 +42,6 @@ from app.target_types import KUBERNETES_TARGET_TYPE
 
 router = APIRouter()
 logger = structlog.get_logger()
-
-# Preserve the handler module's established test and integration import surface
-# while the implementation lives in the shared contract module.
-_request_matches_claim_scope = request_matches_claim_scope
-
-
-async def resolve_registered_tool(req, *, target_id: str, target_type: str):
-    """Resolve through the handler-owned registry dependency for patch compatibility."""
-    return await resolve_registered_tool_contract(
-        req,
-        target_id=target_id,
-        target_type=target_type,
-        registry=tool_registry,
-    )
 
 
 MCP_SERVER_DISABLED = "MCP server is disabled for this target"
@@ -180,7 +164,10 @@ async def execute_tool_call(
     agent_tool = None
     if claims.agent_id:
         agent_tool = await resolve_registered_tool(
-            req, target_id=claims.agent_id, target_type="agent"
+            req,
+            target_id=claims.agent_id,
+            target_type="agent",
+            registry=tool_registry,
         )
     if agent_tool is not None:
         tool = agent_tool
@@ -243,21 +230,15 @@ async def execute_tool_call(
         if is_builtin_tool:
             request_headers = {"Authorization": f"Bearer {token_context.token}"}
         else:
-            request_headers = dict(server.public_headers or {})
-            request_headers.update(
-                {
-                    "x-workspace-id": req.workspace_id,
-                    "x-agent-id": claims.agent_id,
-                    "x-run-id": req.run_id,
-                    "x-workflow-run-id": req.workflow_run_id or "",
-                }
+            platform_headers = {
+                "x-workspace-id": req.workspace_id,
+                "x-agent-id": claims.agent_id,
+                "x-run-id": req.run_id,
+                "x-workflow-run-id": req.workflow_run_id or "",
+            }
+            request_headers = await connection_request_headers(
+                server, claims, tool.tool_name, platform_headers=platform_headers
             )
-            if getattr(server, "auth_scope", "none") == "personal":
-                request_headers.update(
-                    await personal_connection_headers(server, claims, tool.tool_name)
-                )
-            elif server.auth_type in ("bearer_token", "custom_header"):
-                raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED)
 
         if not is_builtin_tool:
             require_remote_mcp_enabled()
@@ -295,9 +276,9 @@ async def execute_tool_call(
             if isinstance(mcp_response, McpToolTransportError):
                 if (
                     mcp_response.code == "MCP_AUTHENTICATION_FAILED"
-                    and getattr(server, "auth_scope", "none") == "personal"
+                    and server.credential_mode != "none"
                 ):
-                    await mark_personal_connection_error(server, claims)
+                    await mark_connection_error(server, claims)
                 return _tool_transport_error_response(mcp_response, str(tool.capability))
             return _mark_unknown_write_contract(
                 _normalize_tool_response(
@@ -333,7 +314,12 @@ async def execute_tool_call(
         )
 
     # Resolve tool from registry
-    tool = await resolve_registered_tool(req, target_id=req.target_id, target_type=req.target_type)
+    tool = await resolve_registered_tool(
+        req,
+        target_id=req.target_id,
+        target_type=req.target_type,
+        registry=tool_registry,
+    )
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool {req.tool} not found or disabled")
     if not tool_ref_is_permitted(tool, req, claims):
@@ -399,20 +385,15 @@ async def execute_tool_call(
             "Authorization": f"Bearer {token_context.token}",
         }
     else:
-        request_headers = dict(server.public_headers or {}) if server else {}
-        request_headers.update(
-            {
-                "x-workspace-id": req.workspace_id,
-                "x-target-id": req.target_id,
-                "x-target-type": req.target_type,
-                "x-run-id": req.run_id,
-            }
+        platform_headers = {
+            "x-workspace-id": req.workspace_id,
+            "x-target-id": req.target_id,
+            "x-target-type": req.target_type,
+            "x-run-id": req.run_id,
+        }
+        request_headers = await connection_request_headers(
+            server, claims, tool.tool_name, platform_headers=platform_headers
         )
-
-    if not is_builtin_tool and server and getattr(server, "auth_scope", "none") == "personal":
-        request_headers.update(await personal_connection_headers(server, claims, tool.tool_name))
-    elif not is_builtin_tool and server and server.auth_type in ("bearer_token", "custom_header"):
-        raise HTTPException(status_code=500, detail=MCP_SERVER_AUTH_NOT_CONFIGURED)
 
     if not is_builtin_tool:
         require_remote_mcp_enabled()
@@ -453,9 +434,9 @@ async def execute_tool_call(
             if (
                 mcp_response.code == "MCP_AUTHENTICATION_FAILED"
                 and server
-                and getattr(server, "auth_scope", "none") == "personal"
+                and server.credential_mode != "none"
             ):
-                await mark_personal_connection_error(server, claims)
+                await mark_connection_error(server, claims)
             return _tool_transport_error_response(mcp_response, str(tool.capability))
         return _mark_unknown_write_contract(
             _normalize_tool_response(

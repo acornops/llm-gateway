@@ -7,13 +7,13 @@ from fastapi import HTTPException
 
 from app.api.mcp_admin_schemas import (
     McpServerResponse,
-    ToolConfigPatchRequest,
     ToolConfigRequest,
     ToolConfigResponse,
+    ToolConfigUpdateRequest,
 )
 from app.config.settings import settings
 from app.internal_model_tools import is_reserved_internal_tool_name
-from app.mcp.header_policy import validate_auth_header_value
+from app.mcp.header_policy import build_mcp_request_headers
 from app.mcp.logging import loggable_mcp_server_origin
 from app.mcp.registry.models import McpServer, Tool
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -26,7 +26,6 @@ from app.mcp.tool_metadata import (
     sanitize_discovered_text,
 )
 from app.mcp.transports.http_transport import mcp_transport
-from app.secrets.store import secret_store
 
 logger = structlog.get_logger()
 
@@ -73,12 +72,12 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         server_url=server.server_url,
         enabled=bool(server.enabled),
         auth_type=server.auth_type,
-        auth_scope=(
-            getattr(server, "auth_scope", "none")
-            if getattr(server, "auth_scope", "none") in ("none", "personal")
+        credential_mode=(
+            getattr(server, "credential_mode", "none")
+            if getattr(server, "credential_mode", "none")
+            in ("none", "workspace", "individual")
             else "none"
         ),
-        credential_configured=bool(server.auth_secret_name),
         auth_header_name=server.auth_header_name,
         auth_header_prefix=server.auth_header_prefix,
         public_headers=server.public_headers,
@@ -131,30 +130,6 @@ async def _resolve_tools_for_server(
     return [tool for tool in tools if str(tool.server_id) == resolved_server_id]
 
 
-async def _persist_server_secret(
-    workspace_id: str,
-    target_id: str,
-    target_type: str,
-    server_name: str,
-    secret_name: str | None,
-    secret_value: str,
-) -> str:
-    resolved_name = (
-        secret_name
-        or f"mcp_server::{workspace_id}::{target_type}::{target_id}::{server_name}"
-    )
-    await secret_store.put_secret(
-        resolved_name,
-        secret_value,
-        {
-            "workspace_id": workspace_id,
-            "target_id": target_id,
-            "target_type": target_type,
-        },
-    )
-    return resolved_name
-
-
 def _auth_header_name_for(auth_type: str, header_name: str | None) -> str | None:
     if auth_type == "none":
         return None
@@ -174,41 +149,21 @@ def _auth_header_prefix_for(auth_type: str, header_prefix: str | None) -> str | 
 async def _build_server_request_headers(
     workspace_id: str, target_id: str, server: McpServer
 ) -> dict[str, str]:
-    headers: dict[str, str] = dict(server.public_headers or {})
-    headers.update({
-        "x-workspace-id": workspace_id,
-        "x-target-id": target_id,
-        "x-target-type": server.target_type,
-    })
-    if server.auth_type in ("bearer_token", "custom_header"):
-        if not server.auth_secret_name:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Server auth misconfigured for {server.server_name}:"
-                    " missing auth_secret_name"
-                ),
-            )
-        secret_value = await secret_store.get_secret(
-            server.auth_secret_name,
-            {
-                "workspace_id": workspace_id,
-                "target_id": target_id,
-                "target_type": server.target_type,
+    try:
+        return build_mcp_request_headers(
+            server,
+            None,
+            platform_headers={
+                "x-workspace-id": workspace_id,
+                "x-target-id": target_id,
+                "x-target-type": server.target_type,
             },
         )
-        header_name = server.auth_header_name or "Authorization"
-        prefix = server.auth_header_prefix or ""
-        header_value = f"{prefix}{secret_value}"
-        try:
-            validate_auth_header_value(header_value)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Server auth misconfigured for {server.server_name}: {exc}",
-            ) from exc
-        headers[header_name] = header_value
-    return headers
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Authenticated MCP discovery requires a verified connection.",
+        ) from exc
 
 
 def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigRequest]:
@@ -351,7 +306,7 @@ async def _record_discovery_status(
 
 
 def _effective_patch_value(
-    tool: ToolConfigPatchRequest,
+    tool: ToolConfigUpdateRequest,
     existing_tool: Tool | None,
     provided_fields: set[str],
     field: str,
@@ -368,7 +323,7 @@ async def _apply_tools_for_server(
     workspace_id: str,
     target_id: str,
     server_url: str,
-    tools: list[ToolConfigRequest | ToolConfigPatchRequest],
+    tools: list[ToolConfigRequest | ToolConfigUpdateRequest],
     *,
     target_type: str,
     server_id: str | None = None,
@@ -390,7 +345,7 @@ async def _apply_tools_for_server(
         provided_fields = getattr(tool, "model_fields_set", {"capability"})
         capability_provided = "capability" in provided_fields
         existing_tool = None
-        if isinstance(tool, ToolConfigPatchRequest) or not capability_provided:
+        if isinstance(tool, ToolConfigUpdateRequest) or not capability_provided:
             existing_tool = await tool_registry.get_tool(
                 workspace_id,
                 target_id,
@@ -400,7 +355,7 @@ async def _apply_tools_for_server(
                 server_id=resolved_server_id,
             )
 
-        if isinstance(tool, ToolConfigPatchRequest):
+        if isinstance(tool, ToolConfigUpdateRequest):
             effective = partial(
                 _effective_patch_value, tool, existing_tool, provided_fields
             )

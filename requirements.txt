@@ -20,4 +20,5 @@ opentelemetry-instrumentation-fastapi
 tenacity
 jsonschema
 python-dotenv
+rfc8785==0.1.4
 aiosqlite
