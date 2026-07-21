@@ -201,7 +201,7 @@ jobs:
           export INTEGRATION_MCP_URL=https://localhost:8002/mcp
           export MCP_EGRESS_ALLOWED_HOSTS=localhost
           export ADDITIONAL_CA_BUNDLE_FILE="$PWD/.integration-certs/mock-mcp-cert.pem"
-          pytest test/
+          pytest test/integration/
 
   image-supply-chain:
     needs: [changes, integration-tests]

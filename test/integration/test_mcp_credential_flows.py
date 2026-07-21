@@ -82,18 +82,19 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
                     json={
                         "workspace_id": workspace_id,
-                        "user_id": user_id,
+                        "owner_type": "user",
+                        "owner_id": user_id,
                         "credential": installation["credential"],
                         "consent_granted": True,
                     },
                 )
                 assert connected.status_code == 200, connected.text
-                assert connected.json() == {
-                    "server_id": server["id"],
-                    "status": "connected",
-                    "auth_type": installation["auth_type"],
-                    "action": None,
-                }
+                connected_body = connected.json()
+                assert connected_body["server_id"] == server["id"]
+                assert connected_body["credential_mode"] == "individual"
+                assert connected_body["status"] == "connected"
+                assert connected_body["auth_type"] == installation["auth_type"]
+                assert connected_body["action"] is None
 
             for server, installation in zip(created, installations, strict=True):
                 is_agent = installation["scope_type"] == "agent"
@@ -192,7 +193,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
 
                     connection = await ac.get(
                         f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
-                        params={"workspace_id": workspace_id},
+                        params={"workspace_id": workspace_id, "owner_type": "user"},
                     )
                     assert connection.status_code == 200, connection.text
                     assert connection.json()["status"] == "error"
@@ -212,7 +213,8 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                 f"/api/v1/internal/mcp/servers/{created[0]['id']}/connections/{user_id}",
                 json={
                     "workspace_id": workspace_id,
-                    "user_id": user_id,
+                    "owner_type": "user",
+                    "owner_id": user_id,
                     "credential": "revoked-credential",
                     "consent_granted": True,
                 },
@@ -223,7 +225,11 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
 
             retry = await ac.post(
                 f"/api/v1/internal/mcp/servers/{created[0]['id']}/connections/{user_id}/verify",
-                json={"workspace_id": workspace_id, "user_id": user_id},
+                json={
+                    "workspace_id": workspace_id,
+                    "owner_type": "user",
+                    "owner_id": user_id,
+                },
             )
             assert retry.status_code == 200, retry.text
             assert retry.json()["status"] == "error"
@@ -232,7 +238,8 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                 f"/api/v1/internal/mcp/servers/{created[0]['id']}/connections/{user_id}",
                 json={
                     "workspace_id": workspace_id,
-                    "user_id": user_id,
+                    "owner_type": "user",
+                    "owner_id": user_id,
                     "credential": "bearer-credential",
                     "consent_granted": True,
                 },
@@ -244,7 +251,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                 is_agent = installation["scope_type"] == "agent"
                 await ac.delete(
                     f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
-                    params={"workspace_id": workspace_id},
+                    params={"workspace_id": workspace_id, "owner_type": "user"},
                 )
                 await ac.delete(
                     f"/api/v1/internal/mcp/servers/{server['id']}",
