@@ -9,10 +9,7 @@ from app.auth.claims import Permissions
 from app.mcp.canonical_json import canonical_json
 
 VECTOR = json.loads(
-    (
-        Path(__file__).resolve().parents[2]
-        / "contracts/resource-binding-digest-conformance.json"
-    ).read_text()
+    (Path(__file__).parent / "fixtures/resource-binding-digest-conformance.json").read_text()
 )
 
 
