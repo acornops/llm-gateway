@@ -190,7 +190,6 @@ jobs:
           export AUTH_AUDIENCE=execution-gateway
           export SECRETS_KEK_BASE64=SglIGBscu1EgQ+AlpqJLADNN9QmCzS9d1ZvK3oT/e5s=
           alembic upgrade head
-          python scripts/seed_db.py
       - name: Run integration tests
         run: |
           export PYTHONPATH=$PYTHONPATH:.
