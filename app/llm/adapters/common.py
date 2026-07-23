@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.llm.service import NativeToolSpec, ToolSpec
@@ -132,6 +133,35 @@ def build_openai_response_tools(
             web_search["filters"] = filters
         declarations.append(web_search)
     return declarations
+
+
+def build_openai_chat_completion_tools(
+    tools: list[ToolSpec],
+) -> list[dict[str, Any]]:
+    """Builds OpenAI Chat Completions function tool declarations."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or f"Execute tool '{tool.name}'.",
+                "parameters": tool.input_schema
+                or {"type": "object", "additionalProperties": True},
+            },
+        }
+        for tool in tools
+    ]
+
+
+def parse_openai_tool_arguments(value: str) -> dict[str, Any] | None:
+    """Parses provider tool arguments, returning None for unsafe shapes."""
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def build_anthropic_tools(

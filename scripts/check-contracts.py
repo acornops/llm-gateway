@@ -290,6 +290,7 @@ for needle in (
     "AUTH_AUDIENCE",
     "ADMIN_API_TOKEN",
     "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
+    "LLM_PROVIDER_OPENAI_API_SURFACE",
 ):
     expect_in(SETTINGS_SOURCE, needle, "Gateway settings")
     expect_in(DOC, needle, "Documented gateway setting")

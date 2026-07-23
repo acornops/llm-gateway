@@ -1,0 +1,176 @@
+[
+  {
+    "name": "text-usage-and-reasoning-tokens",
+    "model": "gpt-5",
+    "chunks": [
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "Hello"
+            },
+            "finish_reason": null
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": " world"
+            },
+            "finish_reason": null
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "completion_tokens_details": {
+            "reasoning_tokens": 1
+          }
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "delta",
+        "text": "Hello"
+      },
+      {
+        "type": "delta",
+        "text": " world"
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 2,
+          "tool_calls": 0,
+          "reasoning_tokens": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "parallel-fragmented-tool-calls",
+    "model": "gpt-4o-mini",
+    "chunks": [
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "call_lookup",
+                  "function": {
+                    "name": "lookup_",
+                    "arguments": "{\"id\":"
+                  }
+                },
+                {
+                  "index": 1,
+                  "id": "call_restart",
+                  "function": {
+                    "name": "restart_",
+                    "arguments": "{\"name\":\"api"
+                  }
+                }
+              ]
+            },
+            "finish_reason": null
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "function": {
+                    "name": "pod",
+                    "arguments": "42}"
+                  }
+                },
+                {
+                  "index": 1,
+                  "function": {
+                    "name": "service",
+                    "arguments": "\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": null
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {},
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 20,
+          "completion_tokens": 8
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "tool_call",
+        "call_id": "call_lookup",
+        "tool": "lookup_pod",
+        "arguments": {
+          "id": 42
+        }
+      },
+      {
+        "type": "tool_call",
+        "call_id": "call_restart",
+        "tool": "restart_service",
+        "arguments": {
+          "name": "api"
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 20,
+          "output_tokens": 8,
+          "tool_calls": 2
+        }
+      }
+    ]
+  }
+]

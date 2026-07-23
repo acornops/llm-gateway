@@ -31,23 +31,37 @@ can redirect all workspaces to API-compatible endpoints with these optional
 environment variables:
 
 - `LLM_PROVIDER_OPENAI_BASE_URL`
+- `LLM_PROVIDER_OPENAI_API_SURFACE=responses|chat_completions`
 - `LLM_PROVIDER_ANTHROPIC_BASE_URL`
 - `LLM_PROVIDER_GEMINI_BASE_URL`
 
 Set each value to the fully qualified API base URL expected by that provider's
-SDK. The endpoint must implement the native API used by the gateway: OpenAI
-Responses, Anthropic Messages, or Google GenAI GenerateContent. An endpoint that
-only implements OpenAI Chat Completions is not sufficient. API keys remain
-workspace-scoped; endpoint overrides apply to the entire gateway deployment.
-These `LLM_PROVIDER_*_BASE_URL` names are the only supported AcornOps endpoint
+SDK. Anthropic endpoints must implement Messages and Gemini endpoints must
+implement Google GenAI GenerateContent. OpenAI uses the Responses API by default;
+set `LLM_PROVIDER_OPENAI_API_SURFACE=chat_completions` only when the selected
+endpoint implements Chat Completions. API keys remain workspace-scoped, while
+endpoint and OpenAI API-surface overrides apply to the entire gateway deployment.
+These `LLM_PROVIDER_*_BASE_URL` names and
+`LLM_PROVIDER_OPENAI_API_SURFACE` are the only supported AcornOps provider-route
 configuration. The gateway passes an explicit URL to each SDK, so ambient SDK
 variables such as `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and
 `GOOGLE_GEMINI_BASE_URL` do not silently alter provider routing.
 
+OpenAI API-surface selection is explicit. The gateway does not probe or
+automatically fall back between `/responses` and `/chat/completions`. Both
+surfaces normalize text streaming, custom function calls, usage, retries, and
+provider failures into the same AcornOps events. Chat Completions rejects the
+AcornOps native-tool contract before provider dispatch and reports requested
+reasoning summaries as unavailable. Restore `responses` to roll back the
+alternate API surface. Chat Completions requires the current
+`max_completion_tokens` and streamed-usage contract; deprecated or partial
+endpoint behavior is not silently accepted.
+
 Provider attempts that fail emit `provider_stream_failed` with the provider,
 model, run and workspace identifiers, sanitized base URL, attempt counters,
-base URL source, additional-CA state, outer exception type, root-cause type,
-HTTP status when available, and one of these bounded `error_category` values.
+base URL source, the OpenAI API surface when applicable, additional-CA state,
+outer exception type, root-cause type, HTTP status when available, and one of
+these bounded `error_category` values.
 Logged URLs exclude user information, query strings, and fragments. The
 `base_url_source` field distinguishes an AcornOps setting from the provider
 default. Error categories are:

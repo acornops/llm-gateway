@@ -61,6 +61,18 @@ def test_internal_transport_tls_defaults_disabled():
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is False
     assert settings.BUILTIN_TARGET_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
     assert settings.ADDITIONAL_CA_BUNDLE_FILE == ""
+    assert settings.LLM_PROVIDER_OPENAI_API_SURFACE == "responses"
+
+
+def test_openai_api_surface_accepts_only_supported_values():
+    assert (
+        Settings(LLM_PROVIDER_OPENAI_API_SURFACE="chat_completions")
+        .LLM_PROVIDER_OPENAI_API_SURFACE
+        == "chat_completions"
+    )
+
+    with pytest.raises(ValidationError):
+        Settings(LLM_PROVIDER_OPENAI_API_SURFACE="auto")
 
 
 def test_additional_ca_bundle_must_be_readable(tmp_path: Path):

@@ -1,5 +1,6 @@
 import base64
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote, urlparse
 
 from pydantic import Field, model_validator
@@ -118,6 +119,9 @@ class Settings(BaseSettings):
     LLM_PROVIDER_ANTHROPIC_ENABLED: bool = True
     LLM_PROVIDER_GEMINI_ENABLED: bool = True
     LLM_PROVIDER_OPENAI_BASE_URL: str | None = None
+    LLM_PROVIDER_OPENAI_API_SURFACE: Literal[
+        "responses", "chat_completions"
+    ] = "responses"
     LLM_PROVIDER_ANTHROPIC_BASE_URL: str | None = None
     LLM_PROVIDER_GEMINI_BASE_URL: str | None = None
     LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES: bool = False

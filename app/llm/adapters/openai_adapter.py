@@ -1,5 +1,4 @@
 import asyncio
-import json
 from collections.abc import AsyncIterator
 
 import structlog
@@ -8,9 +7,13 @@ from openai import AsyncOpenAI, BadRequestError
 from app.config.settings import settings
 from app.llm.adapters.common import (
     build_openai_response_tools,
+    parse_openai_tool_arguments,
     should_retry_openai_without_reasoning,
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
+)
+from app.llm.adapters.openai_chat_completions_adapter import (
+    OpenAIChatCompletionsAdapter,
 )
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
@@ -35,7 +38,7 @@ logger = structlog.get_logger()
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
 
 
-class OpenAIAdapter(LLMAdapter):
+class OpenAIResponsesAdapter(LLMAdapter):
     """
     Adapter for OpenAI's Responses API.
     Handles streaming responses, tool call accumulation, and usage reporting.
@@ -222,12 +225,23 @@ class OpenAIAdapter(LLMAdapter):
                             if event_type == "response.output_item.done":
                                 tc = tool_calls_map.get(item_id)
                                 if tc and tc["name"] and not tc.get("yielded"):
-                                    arguments = {}
-                                    if tc["arguments"]:
-                                        try:
-                                            arguments = json.loads(tc["arguments"])
-                                        except json.JSONDecodeError:
-                                            arguments = {}
+                                    arguments = parse_openai_tool_arguments(
+                                        tc["arguments"]
+                                    )
+                                    if arguments is None:
+                                        await dependency_circuit_breaker.record_success(
+                                            dependency_key
+                                        )
+                                        emitted_event = True
+                                        yield StreamEvent(
+                                            type="error",
+                                            code="OPENAI_TOOL_ARGUMENTS_INVALID",
+                                            message=(
+                                                "Provider returned invalid tool arguments"
+                                            ),
+                                            retryable=False,
+                                        )
+                                        return
                                     tool_calls_count += 1
                                     emitted_event = True
                                     yield StreamEvent(
@@ -280,7 +294,12 @@ class OpenAIAdapter(LLMAdapter):
                 await dependency_circuit_breaker.record_success(dependency_key)
                 return
             except CircuitOpenError as exc:
-                logger.warning("provider_circuit_open", provider="openai", error=str(exc))
+                logger.warning(
+                    "provider_circuit_open",
+                    provider="openai",
+                    api_surface="responses",
+                    error=str(exc),
+                )
                 yield StreamEvent(
                     type="error",
                     code="OPENAI_ERROR",
@@ -324,3 +343,23 @@ class OpenAIAdapter(LLMAdapter):
                     retryable=retryable,
                 )
                 return
+
+
+class OpenAIAdapter(LLMAdapter):
+    """Routes normalized OpenAI requests to the configured outbound API surface."""
+
+    async def stream(
+        self,
+        req: NormalizedLLMRequest,
+        api_key: str,
+    ) -> AsyncIterator[StreamEvent]:
+        api_surface = settings.LLM_PROVIDER_OPENAI_API_SURFACE
+        if api_surface == "responses":
+            adapter: LLMAdapter = OpenAIResponsesAdapter()
+        elif api_surface == "chat_completions":
+            adapter = OpenAIChatCompletionsAdapter()
+        else:
+            raise ValueError(f"Unsupported OpenAI API surface: {api_surface}")
+
+        async for event in adapter.stream(req, api_key):
+            yield event

@@ -45,6 +45,17 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Callable function names must match `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`; the
   gateway rejects unsafe names before provider dispatch, while provider-safe
   platform aliases remain unchanged across OpenAI, Anthropic, and Gemini.
+- OpenAI API-surface selection uses
+  `LLM_PROVIDER_OPENAI_API_SURFACE=responses|chat_completions` as a deployment
+  contract, not a request field. `responses` is the default;
+  `chat_completions` preserves normalized text and custom function calls but
+  rejects the AcornOps native-tool contract before dispatch and reports
+  reasoning summaries as unavailable. The gateway never probes or falls back
+  between surfaces.
+- Malformed OpenAI function arguments fail closed with
+  `OPENAI_TOOL_ARGUMENTS_INVALID`; incomplete Chat Completions tool calls fail
+  with `OPENAI_TOOL_CALL_INVALID`. Neither case is silently dropped or coerced
+  into an empty object.
 - Provider failure events may use `MODEL_UNAVAILABLE`, `PROVIDER_AUTH_INVALID`,
   `PROVIDER_RATE_LIMITED`, or `PROVIDER_UNAVAILABLE`. `MODEL_UNAVAILABLE`
   requires an explicit structured provider code; ambiguous provider responses

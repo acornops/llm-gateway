@@ -38,6 +38,9 @@ PROVIDER_CREDENTIAL_BACKEND_UNAVAILABLE = "Provider credential backend unavailab
 PROVIDER_CREDENTIALS_NOT_CONFIGURED = "Provider credentials are not configured"
 PROVIDER_NOT_SUPPORTED = "Provider is not supported"
 LIVE_TOOL_RESULTS_MARKER = "Live tool results:"
+OPENAI_CHAT_COMPLETIONS_NATIVE_TOOLS_UNSUPPORTED = (
+    "OpenAI native tools require the Responses API surface"
+)
 
 
 def _is_missing_secret_error(exc: Exception) -> bool:
@@ -128,6 +131,15 @@ def _validate_native_tools(req: NormalizedLLMRequest, claims: TokenClaims) -> No
         raise HTTPException(
             status_code=403,
             detail=f"Native tool(s) not allowed for this run: {', '.join(disallowed)}",
+        )
+
+    if (
+        req.provider == "openai"
+        and settings.LLM_PROVIDER_OPENAI_API_SURFACE == "chat_completions"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=OPENAI_CHAT_COMPLETIONS_NATIVE_TOOLS_UNSUPPORTED,
         )
 
     if req.provider == "gemini":
@@ -230,6 +242,11 @@ async def stream_generation(
     claims: TokenClaims = Depends(get_current_claims),
 ):
     # Audit log: request received
+    api_surface = (
+        settings.LLM_PROVIDER_OPENAI_API_SURFACE
+        if req.provider == "openai"
+        else None
+    )
     summaries_enabled = reasoning_summaries_enabled(req)
     model_reasoning_requested = model_reasoning_enabled(req)
     logger.info(
@@ -237,6 +254,7 @@ async def stream_generation(
         run_id=req.run_id,
         workspace_id=req.workspace_id,
         provider=req.provider,
+        api_surface=api_surface,
         model=req.model,
         reasoning_summary_mode=req.reasoning.summary_mode,
         reasoning_effort=req.reasoning.effort,
@@ -250,6 +268,7 @@ async def stream_generation(
             run_id=req.run_id,
             workspace_id=req.workspace_id,
             provider=req.provider,
+            api_surface=api_surface,
             model=req.model,
             reasoning_summary_mode=req.reasoning.summary_mode,
             reasoning_effort=req.reasoning.effort,
@@ -358,6 +377,7 @@ async def stream_generation(
             agent_version=req.agent_version,
             trigger_id=req.trigger_id,
             provider=req.provider,
+            api_surface=api_surface,
             model=req.model,
         )
         return StreamingResponse(
@@ -471,6 +491,7 @@ async def stream_generation(
                 run_id=req.run_id,
                 workspace_id=req.workspace_id,
                 provider=req.provider,
+                api_surface=api_surface,
                 model=req.model,
                 status="error" if saw_error else "success",
                 duration_ms=(time.time() - start_time) * 1000,

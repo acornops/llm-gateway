@@ -114,18 +114,10 @@
     ],
     "expected_events": [
       {
-        "type": "tool_call",
-        "call_id": "call_2",
-        "tool": "lookup_weather",
-        "arguments": {}
-      },
-      {
-        "type": "final",
-        "usage": {
-          "input_tokens": 2,
-          "output_tokens": 1,
-          "tool_calls": 1
-        }
+        "type": "error",
+        "code": "OPENAI_TOOL_ARGUMENTS_INVALID",
+        "message": "Provider returned invalid tool arguments",
+        "retryable": false
       }
     ]
   }

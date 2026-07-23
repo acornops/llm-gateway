@@ -387,6 +387,51 @@ async def test_llm_stream_allows_native_web_search_when_claim_matches():
 
 
 @pytest.mark.anyio
+async def test_llm_stream_rejects_native_tools_for_chat_completions_surface(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    native_tools = [{"id": "web_search", "config": {}}]
+    mock_claims = build_token_claims(
+        permissions={"allowed_native_tools": deepcopy(native_tools)}
+    )
+    monkeypatch.setattr(
+        "app.api.handlers_llm_stream.settings.LLM_PROVIDER_OPENAI_API_SURFACE",
+        "chat_completions",
+    )
+
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+
+    async def override_validate():
+        return TokenClaims(**mock_claims)
+
+    app.dependency_overrides[validator.validate] = override_validate
+
+    try:
+        with patch(
+            "app.api.handlers_llm_stream.secret_store.get_secret",
+            new_callable=AsyncMock,
+        ) as mock_get_secret:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=build_llm_stream_payload(native_tools=native_tools),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "OpenAI native tools require the Responses API surface"
+        )
+        mock_get_secret.assert_not_awaited()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("claims_native_tools", "request_native_tools", "expected_status", "expected_detail"),
     [

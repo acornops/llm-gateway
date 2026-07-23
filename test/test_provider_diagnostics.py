@@ -42,6 +42,7 @@ def test_route_fields_report_sanitized_configured_endpoint(
         "provider_base_url": "https://openai.abc.org/v1",
         "custom_base_url": True,
         "base_url_source": "acornops_setting",
+        "api_surface": "responses",
     }
 
 
@@ -56,6 +57,20 @@ def test_route_ignores_sdk_environment_override(
     assert provider_diagnostics.provider_base_url("openai") == "https://api.openai.com/v1/"
     assert fields["provider_base_url"] == "https://api.openai.com/v1/"
     assert fields["base_url_source"] == "default"
+
+
+def test_openai_route_fields_report_configured_api_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_diagnostics.settings,
+        "LLM_PROVIDER_OPENAI_API_SURFACE",
+        "chat_completions",
+    )
+
+    fields = provider_diagnostics.provider_route_log_fields("openai")
+
+    assert fields["api_surface"] == "chat_completions"
 
 
 def test_wrapped_sdk_certificate_error_exposes_safe_root_cause(

@@ -13,6 +13,9 @@ from app.llm.adapters.common import (
     supports_openai_custom_temperature,
 )
 from app.llm.adapters.openai_adapter import OpenAIAdapter
+from app.llm.adapters.openai_chat_completions_adapter import (
+    OpenAIChatCompletionsAdapter,
+)
 from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
@@ -703,3 +706,25 @@ async def test_openai_adapter_retries_without_temperature_when_rejected(
     assert len(calls) == 2
     assert "temperature" in calls[0]
     assert "temperature" not in calls[1]
+
+
+@pytest.mark.anyio
+async def test_openai_adapter_routes_to_chat_completions_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_chat_stream(self, req, api_key):
+        del self, req, api_key
+        yield SimpleNamespace(type="delta", text="chat")
+
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_adapter.settings.LLM_PROVIDER_OPENAI_API_SURFACE",
+        "chat_completions",
+    )
+    monkeypatch.setattr(OpenAIChatCompletionsAdapter, "stream", fake_chat_stream)
+
+    events = [
+        event
+        async for event in OpenAIAdapter().stream(_build_request("gpt-4o-mini"), "key")
+    ]
+
+    assert [(event.type, event.text) for event in events] == [("delta", "chat")]

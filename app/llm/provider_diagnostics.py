@@ -98,6 +98,8 @@ def provider_route_log_fields(
         "custom_base_url": source != "default",
         "base_url_source": source,
     }
+    if normalized == "openai":
+        fields["api_surface"] = settings.LLM_PROVIDER_OPENAI_API_SURFACE
     return fields
 
 
