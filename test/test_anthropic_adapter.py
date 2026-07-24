@@ -98,7 +98,11 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
         [
             FakeStreamContext(
                 events=[
-                    SimpleNamespace(type="text", text="Hello"),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=0,
+                        delta=SimpleNamespace(type="text_delta", text="Hello"),
+                    ),
                     SimpleNamespace(
                         type="content_block_start",
                         index=0,
@@ -175,6 +179,63 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
         },
     ]
     record_success.assert_awaited_once_with("provider:anthropic")
+
+
+@pytest.mark.anyio
+async def test_anthropic_adapter_ignores_derived_text_event_after_raw_delta(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=0,
+                        delta=SimpleNamespace(type="text_delta", text="Hello"),
+                    ),
+                    SimpleNamespace(type="text", text="Hello"),
+                    SimpleNamespace(
+                        type="message_delta",
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                    ),
+                ]
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, api_key: str, **_kwargs):
+            self.api_key = api_key
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "before_call",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in AnthropicAdapter().stream(
+            _request(include_tools=False),
+            "anthropic-key",
+        )
+    ]
+
+    assert events == [
+        {"type": "delta", "text": "Hello"},
+        {
+            "type": "final",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+        },
+    ]
 
 
 @pytest.mark.anyio

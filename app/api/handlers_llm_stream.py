@@ -448,11 +448,16 @@ async def stream_generation(
     async def event_generator():
         GATEWAY_STREAM_SESSIONS_ACTIVE.inc()
         saw_error = False
+        text_delta_count = 0
+        text_delta_chars = 0
         try:
             async for event in adapter.stream(req, api_key):
                 if event.type == "error":
                     saw_error = True
-                if event.type == "reasoning_summary_delta":
+                if event.type == "delta":
+                    text_delta_count += 1
+                    text_delta_chars += len(event.text or "")
+                elif event.type == "reasoning_summary_delta":
                     GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
                         provider=event.provider or req.provider,
                         model=req.model,
@@ -499,6 +504,8 @@ async def stream_generation(
                 model=req.model,
                 status="error" if saw_error else "success",
                 duration_ms=(time.time() - start_time) * 1000,
+                text_delta_count=text_delta_count,
+                text_delta_chars=text_delta_chars,
             )
             GATEWAY_LLM_PROVIDER_REQUESTS_TOTAL.labels(
                 provider=req.provider,

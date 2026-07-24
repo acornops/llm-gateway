@@ -131,9 +131,10 @@ class AnthropicAdapter(LLMAdapter):
                 async with client.messages.stream(**stream_kwargs) as stream:
                     async for event in stream:
                         if event.type == "text":
-                            emitted_event = True
-                            yield StreamEvent(type="delta", text=event.text)
-                        elif event.type == "content_block_start":
+                            # The SDK derives this convenience event from the raw
+                            # content_block_delta event yielded immediately before it.
+                            continue
+                        if event.type == "content_block_start":
                             if event.content_block.type == "tool_use":
                                 tool_calls_map[event.index] = {
                                     "id": event.content_block.id,

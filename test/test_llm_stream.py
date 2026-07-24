@@ -88,7 +88,10 @@ async def test_llm_stream_contract():
 
         try:
             # Mock OpenAI adapter
-            with patch("app.llm.adapters.openai_adapter.OpenAIAdapter.stream") as mock_stream:
+            with (
+                patch("app.llm.adapters.openai_adapter.OpenAIAdapter.stream") as mock_stream,
+                patch("app.api.handlers_llm_stream.logger.info") as mock_log_info,
+            ):
 
                 async def mock_generator(*args, **kwargs):
                     yield StreamEvent(type="delta", text="Hello")
@@ -121,6 +124,14 @@ async def test_llm_stream_contract():
                 assert chunks[1]["text"] == " world"
                 assert chunks[2]["type"] == "final"
                 assert chunks[2]["usage"]["input_tokens"] == 10
+
+                completed_log = next(
+                    call
+                    for call in mock_log_info.call_args_list
+                    if call.args == ("llm_stream_completed",)
+                )
+                assert completed_log.kwargs["text_delta_count"] == 2
+                assert completed_log.kwargs["text_delta_chars"] == 11
         finally:
             app.dependency_overrides.clear()
 
