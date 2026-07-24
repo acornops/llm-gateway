@@ -129,8 +129,9 @@ def build_workflow_tool_call_payload(**overrides):
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "scope": {"type": "workspace"},
         "workflow_id": "workspace-tool-exposure-audit",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-execution-1",
         "workflow_session_id": "workflow-session-1",
+        "executor_role": "specialist",
         "agent_id": "agent-1",
         "agent_version": 1,
         "tool": "mcp.tools.list",
@@ -738,8 +739,9 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         target_id=None,
         target_type=None,
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-1",
         agent_version=1,
         permissions={
@@ -850,8 +852,9 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         target_id=None,
         target_type=None,
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-1",
         agent_version=1,
         permissions={
@@ -933,7 +936,7 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
             mock_builtin_call.assert_not_awaited()
             headers = mock_call_tool.await_args.args[4]
             assert headers["x-workspace-id"] == EXAMPLE_WORKSPACE_ID
-            assert headers["x-workflow-run-id"] == "workflow-run-1"
+            assert headers["x-workflow-execution-id"] == "workflow-execution-1"
         finally:
             app.dependency_overrides.clear()
 
@@ -945,8 +948,9 @@ async def test_workspace_workflow_tool_call_rejects_internal_model_only_tool_bef
         target_id=None,
         target_type=None,
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-1",
         agent_version=1,
         permissions={"allowed_tools": ["*"]},

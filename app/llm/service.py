@@ -74,8 +74,9 @@ class NormalizedLLMRequest(BaseModel):
     target_id: str | None = Field(default=None, examples=[EXAMPLE_TARGET_ID])
     target_type: TargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflow_id: str | None = None
-    workflow_run_id: str | None = None
+    execution_id: str | None = None
     workflow_session_id: str | None = None
+    executor_role: Literal["coordinator", "specialist"] | None = None
     agent_id: str | None = None
     agent_version: int | None = None
     trigger_id: str | None = None
@@ -96,18 +97,13 @@ class NormalizedLLMRequest(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
-        if self.agent_id and not self.workflow_id:
-            if (self.target_id and not self.target_type) or (
-                self.target_type and not self.target_id
-            ):
-                raise ValueError("agent target binding requires both target_id and target_type")
-            return self
         missing = [
             name
             for name, value in (
                 ("workflow_id", self.workflow_id),
-                ("workflow_run_id", self.workflow_run_id),
+                ("execution_id", self.execution_id),
                 ("workflow_session_id", self.workflow_session_id),
+                ("executor_role", self.executor_role),
             )
             if not value
         ]
@@ -117,6 +113,14 @@ class NormalizedLLMRequest(BaseModel):
             )
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
+        if self.executor_role == "coordinator" and (
+            self.agent_id or self.agent_version is not None
+        ):
+            raise ValueError("coordinator workflow requests forbid agent identity")
+        if self.executor_role == "specialist" and (
+            not self.agent_id or self.agent_version is None
+        ):
+            raise ValueError("specialist workflow requests require agent identity and version")
         return self
 
     @field_validator("provider", mode="before")

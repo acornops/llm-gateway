@@ -52,8 +52,9 @@ def _workflow_payload() -> dict:
         "workspace_id": "ws-1",
         "scope": {"type": "workspace"},
         "workflow_id": "workflow-1",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-execution-1",
         "workflow_session_id": "workflow-session-1",
+        "executor_role": "coordinator",
         "session_id": "workflow-session-1",
         "permissions": {
             "allowed_providers": ["openai"],
@@ -113,7 +114,8 @@ async def test_jwt_validator_returns_workspace_workflow_claims(monkeypatch: pyte
 
     assert claims.scope.type == "workspace"
     assert claims.workflow_id == "workflow-1"
-    assert claims.workflow_run_id == "workflow-run-1"
+    assert claims.execution_id == "workflow-execution-1"
+    assert claims.executor_role == "coordinator"
     assert claims.workflow_session_id == "workflow-session-1"
     assert claims.target_id is None
     assert claims.target_type is None

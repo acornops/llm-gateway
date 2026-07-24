@@ -234,7 +234,7 @@ async def execute_tool_call(
                 "x-workspace-id": req.workspace_id,
                 "x-agent-id": claims.agent_id,
                 "x-run-id": req.run_id,
-                "x-workflow-run-id": req.workflow_run_id or "",
+                "x-workflow-execution-id": req.execution_id or "",
             }
             request_headers = await connection_request_headers(
                 server, claims, tool.tool_name, platform_headers=platform_headers
@@ -301,7 +301,8 @@ async def execute_tool_call(
                 "workflow_tool_call_execution_failed",
                 workspace_id=req.workspace_id,
                 workflow_id=req.workflow_id,
-                workflow_run_id=req.workflow_run_id,
+                execution_id=req.execution_id,
+                executor_role=req.executor_role,
                 tool=req.tool,
                 server_name=server.server_name,
             )

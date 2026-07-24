@@ -91,8 +91,9 @@ def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims)
     if claims.scope.type == "workspace":
         return (
             req.workflow_id == claims.workflow_id
-            and req.workflow_run_id == claims.workflow_run_id
+            and req.execution_id == claims.execution_id
             and req.workflow_session_id == claims.workflow_session_id
+            and req.executor_role == claims.executor_role
             and req.agent_id == claims.agent_id
             and req.agent_version == claims.agent_version
             and req.trigger_id == claims.trigger_id
@@ -295,7 +296,8 @@ async def stream_generation(
             session_id=req.session_id,
             scope_type=req.scope.type,
             workflow_id=req.workflow_id,
-            workflow_run_id=req.workflow_run_id,
+            execution_id=req.execution_id,
+            executor_role=req.executor_role,
             workflow_session_id=req.workflow_session_id,
             agent_id=req.agent_id,
             agent_version=req.agent_version,
@@ -307,7 +309,8 @@ async def stream_generation(
             claims_session_id=claims.session_id,
             claims_scope_type=claims.scope.type,
             claims_workflow_id=claims.workflow_id,
-            claims_workflow_run_id=claims.workflow_run_id,
+            claims_execution_id=claims.execution_id,
+            claims_executor_role=claims.executor_role,
             claims_workflow_session_id=claims.workflow_session_id,
             claims_agent_id=claims.agent_id,
             claims_agent_version=claims.agent_version,
@@ -372,7 +375,8 @@ async def stream_generation(
             target_type=req.target_type,
             scope_type=req.scope.type,
             workflow_id=req.workflow_id,
-            workflow_run_id=req.workflow_run_id,
+            execution_id=req.execution_id,
+            executor_role=req.executor_role,
             agent_id=req.agent_id,
             agent_version=req.agent_version,
             trigger_id=req.trigger_id,

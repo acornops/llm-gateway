@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.api.handlers_llm_stream import (
     _request_matches_claim_scope as llm_request_matches_claim_scope,
 )
@@ -23,8 +26,9 @@ def workspace_agent_claims() -> TokenClaims:
         workspace_id="ws-1",
         scope={"type": "workspace"},
         workflow_id="workflow-1",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -39,8 +43,9 @@ def llm_request(**overrides) -> NormalizedLLMRequest:
         "workspace_id": "ws-1",
         "scope": {"type": "workspace"},
         "workflow_id": "workflow-1",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-execution-1",
         "workflow_session_id": "workflow-session-1",
+        "executor_role": "specialist",
         "agent_id": "agent-cluster-triage",
         "agent_version": 4,
         "trigger_id": "trigger-manual-1",
@@ -59,8 +64,9 @@ def tool_request(**overrides) -> ToolCallRequest:
         "workspace_id": "ws-1",
         "scope": {"type": "workspace"},
         "workflow_id": "workflow-1",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-execution-1",
         "workflow_session_id": "workflow-session-1",
+        "executor_role": "specialist",
         "agent_id": "agent-cluster-triage",
         "agent_version": 4,
         "trigger_id": "trigger-manual-1",
@@ -85,3 +91,45 @@ def test_tool_workspace_scope_requires_matching_agent_claims():
         tool_request(agent_id="agent-release-coordinator"),
         workspace_agent_claims(),
     )
+
+
+def test_workspace_scope_rejects_agent_without_workflow():
+    with pytest.raises(ValidationError, match="workspace workflow scope missing required fields"):
+        TokenClaims(
+            iss="issuer",
+            aud="audience",
+            iat=1,
+            exp=999,
+            sub="run:run-1",
+            run_id="run-1",
+            workspace_id="ws-1",
+            scope={"type": "workspace"},
+            agent_id="agent-cluster-triage",
+            agent_version=4,
+            session_id="session-1",
+            principal={"type": "user", "id": "user-1"},
+            permissions=Permissions(),
+        )
+
+
+def test_coordinator_scope_rejects_agent_identity():
+    with pytest.raises(ValidationError, match="coordinator workflow tokens forbid agent identity"):
+        TokenClaims(
+            iss="issuer",
+            aud="audience",
+            iat=1,
+            exp=999,
+            sub="run:run-1",
+            run_id="run-1",
+            workspace_id="ws-1",
+            scope={"type": "workspace"},
+            workflow_id="workflow-1",
+            execution_id="execution-1",
+            workflow_session_id="workflow-session-1",
+            executor_role="coordinator",
+            agent_id="agent-cluster-triage",
+            agent_version=4,
+            session_id="workflow-session-1",
+            principal={"type": "user", "id": "user-1"},
+            permissions=Permissions(),
+        )
