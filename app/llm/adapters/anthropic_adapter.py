@@ -28,20 +28,25 @@ from app.resilience.outbound import (
 logger = structlog.get_logger()
 
 PROVIDER_TEMPORARILY_UNAVAILABLE = "Provider temporarily unavailable"
+MIN_MANUAL_THINKING_BUDGET = 1024
 
 
 def _thinking_budget(max_tokens: int, effort: str) -> int:
     requested = {
-        "off": 1024,
-        "low": 1024,
+        "off": MIN_MANUAL_THINKING_BUDGET,
+        "low": MIN_MANUAL_THINKING_BUDGET,
         "medium": 4096,
         "high": 8192,
     }.get(effort, 2048)
-    return max(1, min(requested, max_tokens - 1))
+    return min(requested, max_tokens - 1)
 
 
-def _can_request_thinking(max_tokens: int) -> bool:
+def _can_request_adaptive_thinking(max_tokens: int) -> bool:
     return max_tokens > 1
+
+
+def _can_request_manual_thinking(max_tokens: int) -> bool:
+    return max_tokens > MIN_MANUAL_THINKING_BUDGET
 
 
 def _uses_adaptive_thinking(model: str) -> bool:
@@ -53,6 +58,10 @@ def _uses_adaptive_thinking(model: str) -> bool:
         or "4-6" in normalized
         or "4.6" in normalized
     )
+
+
+def _uses_always_on_adaptive_thinking(model: str) -> bool:
+    return "fable-5" in model.lower()
 
 
 class AnthropicAdapter(LLMAdapter):
@@ -89,27 +98,41 @@ class AnthropicAdapter(LLMAdapter):
             "system": next((m.content for m in req.messages if m.role == "system"), None),
             # Anthropic requires max_tokens in request payload.
             "max_tokens": max_tokens,
-            "temperature": req.temperature,
         }
         if anthropic_tools:
             stream_kwargs["tools"] = anthropic_tools
-        if model_reasoning_enabled(req) and _can_request_thinking(max_tokens):
-            if _uses_adaptive_thinking(req.model):
-                thinking: dict[str, object] = {
-                    "type": "adaptive",
-                }
-                if summary_requested:
-                    thinking["display"] = "summarized"
+
+        reasoning_requested = model_reasoning_enabled(req)
+        thinking_active = False
+        if _uses_adaptive_thinking(req.model):
+            always_on = _uses_always_on_adaptive_thinking(req.model)
+            if (always_on or reasoning_requested) and (
+                always_on or _can_request_adaptive_thinking(max_tokens)
+            ):
+                thinking_active = True
+                if not always_on or summary_requested:
+                    thinking: dict[str, object] = {
+                        "type": "adaptive",
+                    }
+                    if summary_requested:
+                        thinking["display"] = "summarized"
+                    stream_kwargs["thinking"] = thinking
                 if req.reasoning.effort != "off":
-                    thinking["effort"] = req.reasoning.effort
-            else:
-                thinking = {
-                    "type": "enabled",
-                    "budget_tokens": _thinking_budget(max_tokens, req.reasoning.effort),
-                }
-                if summary_requested:
-                    thinking["display"] = "summarized"
+                    stream_kwargs["output_config"] = {
+                        "effort": req.reasoning.effort,
+                    }
+        elif reasoning_requested and _can_request_manual_thinking(max_tokens):
+            thinking_active = True
+            thinking = {
+                "type": "enabled",
+                "budget_tokens": _thinking_budget(max_tokens, req.reasoning.effort),
+            }
+            if summary_requested:
+                thinking["display"] = "summarized"
             stream_kwargs["thinking"] = thinking
+
+        if not thinking_active:
+            stream_kwargs["temperature"] = req.temperature
 
         dependency_key = "provider:anthropic"
         attempts = max(1, settings.PROVIDER_RETRY_ATTEMPTS)
