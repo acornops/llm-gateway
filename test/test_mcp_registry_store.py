@@ -144,6 +144,71 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'server-url-rotation.db'}"
+    await _create_schema(database_url)
+    registry = ToolRegistry(database_url)
+    server_registry = McpServerRegistry(database_url)
+    try:
+        old_url = "https://control-plane.acornops.svc:8443/internal/v1/mcp"
+        new_url = "http://control-plane:8081/internal/v1/mcp"
+        server = await _create_server(
+            server_registry,
+            server_name="acornops-target-agent",
+            server_url=old_url,
+        )
+        await registry.upsert_tool(
+            tool_name="list_resources",
+            mcp_server_url=old_url,
+            workspace_id="ws-1",
+            target_id="cluster-a",
+            target_type="kubernetes",
+            server_id=str(server.id),
+            source="builtin",
+        )
+        cached = await registry.get_tool(
+            "ws-1",
+            "cluster-a",
+            "list_resources",
+            target_type="kubernetes",
+        )
+        assert cached is not None
+        assert cached.mcp_server_url == old_url
+
+        rotated = await server_registry.update_server(
+            "ws-1",
+            "cluster-a",
+            str(server.id),
+            {"server_url": new_url},
+            target_type="kubernetes",
+        )
+        assert rotated is not None
+
+        updated = await registry.upsert_tool(
+            tool_name="list_resources",
+            mcp_server_url=new_url,
+            workspace_id="ws-1",
+            target_id="cluster-a",
+            target_type="kubernetes",
+            server_id=str(server.id),
+            source="builtin",
+        )
+        assert updated.mcp_server_url == new_url
+
+        refreshed = await registry.get_tool(
+            "ws-1",
+            "cluster-a",
+            "list_resources",
+            target_type="kubernetes",
+        )
+        assert refreshed is not None
+        assert refreshed.mcp_server_url == new_url
+    finally:
+        await registry.close()
+        await server_registry.close()
+
+
+@pytest.mark.anyio
 async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'rebind.db'}"
     await _create_schema(database_url)

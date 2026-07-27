@@ -182,6 +182,7 @@ class ToolRegistry:
                         f"cannot update through target_type={target_type}"
                     )
                 existing.server_id = server.id
+                existing.mcp_server_url = mcp_server_url
                 existing.timeout_ms = timeout_ms
                 existing.target_type = target_type
                 existing.input_schema = input_schema
