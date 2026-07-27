@@ -846,6 +846,320 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("executor_role", "agent_id", "agent_version"),
+    [
+        ("specialist", "agent-1", 1),
+        ("coordinator", None, None),
+    ],
+)
+async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
+    executor_role: str,
+    agent_id: str | None,
+    agent_version: int | None,
+):
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        workflow_id="target-diagnostics",
+        execution_id="workflow-execution-1",
+        workflow_session_id="workflow-session-1",
+        executor_role=executor_role,
+        agent_id=agent_id,
+        agent_version=agent_version,
+        permissions={
+            "allowed_tools": ["get_weather"],
+            "allowed_tool_refs": [
+                {"server_id": EXAMPLE_SERVER_ID, "tool_name": "get_weather"}
+            ],
+            "allowed_tool_operations": {"get_weather": "read"},
+            "context_grants": ["target_inventory"],
+        },
+    )
+    mock_tool = reviewed_tool(
+        source="builtin",
+        mcp_server_url="http://control-plane:8081/internal/v1/mcp",
+    )
+    mock_server = enabled_server(
+        server_name="acornops-target-agent",
+        server_url="http://control-plane:8081/internal/v1/mcp",
+        provenance_type="builtin",
+    )
+    registry_results = [None, mock_tool] if agent_id else [mock_tool]
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new_callable=AsyncMock,
+            side_effect=registry_results,
+        ) as mock_get_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new_callable=AsyncMock,
+            return_value=mock_server,
+        ) as mock_get_server,
+        patch(
+            "app.api.handlers_tool_call.post_builtin_mcp_tool",
+            new_callable=AsyncMock,
+            return_value={"content": [{"type": "text", "text": "Sunny"}], "isError": False},
+        ) as mock_builtin_call,
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+        ) as mock_call_tool,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(
+                        target_id=EXAMPLE_TARGET_ID,
+                        target_type="kubernetes",
+                        workflow_id="target-diagnostics",
+                        executor_role=executor_role,
+                        agent_id=agent_id,
+                        agent_version=agent_version,
+                        tool=EXAMPLE_TOOL_ALIAS,
+                        tool_ref={
+                            "server_id": EXAMPLE_SERVER_ID,
+                            "tool_name": "get_weather",
+                        },
+                        arguments={"location": "SF"},
+                    ),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 200
+            if agent_id:
+                assert mock_get_tool.await_args_list[0].kwargs == {
+                    "target_type": "agent",
+                    "server_id": EXAMPLE_SERVER_ID,
+                }
+                assert mock_get_tool.await_args_list[0].args == (
+                    EXAMPLE_WORKSPACE_ID,
+                    agent_id,
+                    "get_weather",
+                )
+            assert mock_get_tool.await_args_list[-1].kwargs == {
+                "target_type": "kubernetes",
+                "server_id": EXAMPLE_SERVER_ID,
+            }
+            assert mock_get_tool.await_args_list[-1].args == (
+                EXAMPLE_WORKSPACE_ID,
+                EXAMPLE_TARGET_ID,
+                "get_weather",
+            )
+            mock_get_server.assert_awaited_once_with(
+                EXAMPLE_WORKSPACE_ID,
+                EXAMPLE_TARGET_ID,
+                EXAMPLE_SERVER_ID,
+                target_type="kubernetes",
+            )
+            mock_call_tool.assert_not_awaited()
+            assert mock_builtin_call.await_args.args[4] == {
+                "Authorization": "Bearer workflow-run-jwt",
+            }
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_target_bound_workspace_workflow_routes_reviewed_remote_target_tool():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        workflow_id="target-diagnostics",
+        execution_id="workflow-execution-1",
+        workflow_session_id="workflow-session-1",
+        executor_role="coordinator",
+        agent_id=None,
+        agent_version=None,
+        permissions={
+            "allowed_tools": ["records.list"],
+            "allowed_tool_refs": [
+                {"server_id": EXAMPLE_SERVER_ID, "tool_name": "records.list"}
+            ],
+            "allowed_tool_operations": {"records.list": "read"},
+        },
+    )
+    mock_tool = reviewed_tool(
+        tool_name="records.list",
+        source="mcp",
+        mcp_server_url="https://mcp.example.com/v1",
+    )
+    mock_server = enabled_server(
+        server_name="target-records",
+        server_url="https://mcp.example.com/v1",
+        provenance_type="manual",
+    )
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new_callable=AsyncMock,
+            return_value=mock_tool,
+        ) as mock_get_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new_callable=AsyncMock,
+            return_value=mock_server,
+        ),
+        patch(
+            "app.api.handlers_tool_call.connection_request_headers",
+            new_callable=AsyncMock,
+            return_value={"Authorization": "Bearer connected-credential"},
+        ) as mock_connection_headers,
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+            return_value={"content": [{"type": "text", "text": "ok"}], "isError": False},
+        ) as mock_call_tool,
+        patch(
+            "app.api.handlers_tool_call.post_builtin_mcp_tool",
+            new_callable=AsyncMock,
+        ) as mock_builtin_call,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(
+                        target_id=EXAMPLE_TARGET_ID,
+                        target_type="kubernetes",
+                        workflow_id="target-diagnostics",
+                        executor_role="coordinator",
+                        agent_id=None,
+                        agent_version=None,
+                        tool=model_tool_alias(EXAMPLE_SERVER_ID, "records.list"),
+                        tool_ref={
+                            "server_id": EXAMPLE_SERVER_ID,
+                            "tool_name": "records.list",
+                        },
+                    ),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 200
+            mock_get_tool.assert_awaited_once_with(
+                EXAMPLE_WORKSPACE_ID,
+                EXAMPLE_TARGET_ID,
+                "records.list",
+                target_type="kubernetes",
+                server_id=EXAMPLE_SERVER_ID,
+            )
+            platform_headers = mock_connection_headers.await_args.kwargs[
+                "platform_headers"
+            ]
+            assert platform_headers == {
+                "x-workspace-id": EXAMPLE_WORKSPACE_ID,
+                "x-target-id": EXAMPLE_TARGET_ID,
+                "x-target-type": "kubernetes",
+                "x-run-id": EXAMPLE_RUN_ID,
+            }
+            mock_call_tool.assert_awaited_once()
+            mock_builtin_call.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_workspace_only_workflow_does_not_fall_through_to_target_registry():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        target_id=None,
+        target_type=None,
+        workflow_id="workspace-audit",
+        execution_id="workflow-execution-1",
+        workflow_session_id="workflow-session-1",
+        executor_role="specialist",
+        agent_id="agent-1",
+        agent_version=1,
+        permissions={
+            "allowed_tools": ["records.list"],
+            "allowed_tool_refs": [
+                {"server_id": EXAMPLE_SERVER_ID, "tool_name": "records.list"}
+            ],
+        },
+    )
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_get_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new_callable=AsyncMock,
+        ) as mock_get_server,
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+        ) as mock_call_tool,
+        patch(
+            "app.api.handlers_tool_call.post_builtin_mcp_tool",
+            new_callable=AsyncMock,
+        ) as mock_builtin_call,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(
+                        target_id=None,
+                        target_type=None,
+                        workflow_id="workspace-audit",
+                        tool=model_tool_alias(EXAMPLE_SERVER_ID, "records.list"),
+                        tool_ref={
+                            "server_id": EXAMPLE_SERVER_ID,
+                            "tool_name": "records.list",
+                        },
+                    ),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 404
+            mock_get_tool.assert_awaited_once_with(
+                EXAMPLE_WORKSPACE_ID,
+                "agent-1",
+                "records.list",
+                target_type="agent",
+                server_id=EXAMPLE_SERVER_ID,
+            )
+            mock_get_server.assert_not_awaited()
+            mock_call_tool.assert_not_awaited()
+            mock_builtin_call.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
 async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_tool():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},

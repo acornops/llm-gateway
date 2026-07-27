@@ -308,7 +308,11 @@ async def execute_tool_call(
             )
             return _tool_execution_error_response(exc, str(tool.capability))
 
-    if claims.scope.type == "workspace":
+    # A workspace Workflow may resolve a target tool only when the signed run
+    # claims carry the exact target binding already checked against the request.
+    if claims.scope.type == "workspace" and not (
+        claims.target_id and claims.target_type
+    ):
         raise HTTPException(
             status_code=404,
             detail=f"Agent MCP tool {req.tool} not found or disabled",

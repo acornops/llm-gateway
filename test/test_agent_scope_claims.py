@@ -93,6 +93,29 @@ def test_tool_workspace_scope_requires_matching_agent_claims():
     )
 
 
+def test_tool_workspace_scope_requires_matching_target_binding():
+    claims = TokenClaims(
+        **{
+            **workspace_agent_claims().model_dump(),
+            "target_id": "cluster-1",
+            "target_type": "kubernetes",
+        }
+    )
+
+    assert tool_request_matches_claim_scope(
+        tool_request(target_id="cluster-1", target_type="kubernetes"),
+        claims,
+    )
+    assert not tool_request_matches_claim_scope(
+        tool_request(target_id="cluster-2", target_type="kubernetes"),
+        claims,
+    )
+    assert not tool_request_matches_claim_scope(
+        tool_request(target_id="cluster-1", target_type="virtual_machine"),
+        claims,
+    )
+
+
 def test_workspace_scope_rejects_agent_without_workflow():
     with pytest.raises(ValidationError, match="workspace workflow scope missing required fields"):
         TokenClaims(
