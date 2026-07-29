@@ -122,6 +122,25 @@ not block the platform-owned built-in MCP bridge. Remote MCP reachability is
 not a `/ready` dependency. Use `MCP_CONNECTION_RATE_LIMIT_PER_WINDOW` to set the
 shared connect/verify attempt budget for each credential owner and installation.
 
+Individual-user MCP OAuth is enabled by default and can be disabled with
+`MCP_OAUTH_ENABLED=false`. Configure `MCP_OAUTH_PUBLIC_CONSOLE_URL` with the
+canonical public HTTPS origin that serves the console and its same-origin
+`/api` proxy. OAuth callbacks and CIMD metadata use that origin so host-only
+browser session cookies remain available without being shared across
+subdomains. Provide both `REDIS_URL` and the normal encrypted secret backend.
+Production readiness fails closed when OAuth is enabled without Redis.
+Authorization servers are never readiness dependencies.
+
+OAuth discovery, registration, token, refresh, and revocation requests use the
+same MCP egress allowlists, private-address restrictions, DNS pinning, and
+custom CA policy as remote MCP traffic. Each endpoint is validated
+independently. Requests do not follow redirects, accept compression, reuse
+cookies, or carry credentials from another request. Response buffering is
+bounded by `MCP_OAUTH_MAX_RESPONSE_BYTES`; request timeout is controlled by
+`MCP_OAUTH_HTTP_TIMEOUT_MS`. Flow state defaults to 600 seconds via
+`MCP_OAUTH_FLOW_TTL_SECONDS`, and refresh starts inside the
+`MCP_OAUTH_REFRESH_SAFETY_SECONDS` window.
+
 ## Migration Operations
 
 Run the greenfield baseline before starting application code:
@@ -142,9 +161,9 @@ Release in a maintenance window:
 1. Stop new run admission and automation schedulers, then drain active runs.
 2. Set `REMOTE_MCP_ENABLED=false` and confirm built-in tools still work.
 3. Back up the gateway database and secret namespace.
-4. Deploy the gateway migration and application, then the control plane,
+4. Deploy the gateway baseline and application, then the control plane,
    management console, deployment configuration, and documentation.
-5. Smoke test target and Agent workspace/individual credential
+5. Smoke test target and Agent workspace/individual credential and OAuth
    connect/verify/disconnect, exact-tool
    readiness, and built-in tools before setting `REMOTE_MCP_ENABLED=true`.
 

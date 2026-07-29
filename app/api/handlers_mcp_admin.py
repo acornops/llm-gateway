@@ -172,7 +172,7 @@ async def create_mcp_server(
         if not is_builtin_bridge:
             require_remote_mcp_enabled()
         try:
-            tools_to_apply, discovery_error = await _discover_server_tools(
+            tools_to_apply, discovery_error, _discovery_error_code = await _discover_server_tools(
                 request.workspace_id, request.target_id, server
             )
         except HTTPException as exc:
@@ -254,7 +254,7 @@ async def update_mcp_server(
             next_auth_header_name = server.auth_header_name
         else:
             next_auth_header_name = None
-    elif next_auth_type == "bearer_token":
+    elif next_auth_type in ("bearer_token", "oauth"):
         next_auth_header_name = "Authorization"
     else:
         next_auth_header_name = None
@@ -265,7 +265,7 @@ async def update_mcp_server(
             if request.auth_header_prefix is not None
             else server.auth_header_prefix
         )
-    elif next_auth_type == "bearer_token":
+    elif next_auth_type in ("bearer_token", "oauth"):
         next_auth_header_prefix = "Bearer "
     else:
         next_auth_header_prefix = None
@@ -287,6 +287,11 @@ async def update_mcp_server(
             status_code=400,
             detail="auth_header_name is required for custom_header auth",
         )
+    if next_auth_type == "oauth" and request_has_auth_fields:
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth MCP installations do not accept auth header fields",
+        )
     next_credential_mode = (
         request.credential_mode if request.credential_mode is not None else server.credential_mode
     )
@@ -299,6 +304,11 @@ async def update_mcp_server(
         raise HTTPException(
             status_code=400,
             detail="authenticated MCP installations require a credential mode",
+        )
+    if next_auth_type == "oauth" and next_credential_mode != "individual":
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth MCP installations require individual credentials",
         )
     patch: dict[str, Any] = {}
     if request.server_url is not None:
@@ -323,7 +333,7 @@ async def update_mcp_server(
         patch["auth_header_name"] = next_auth_header_name
         patch["auth_header_prefix"] = next_auth_header_prefix
     else:
-        if next_auth_type == "bearer_token" and request_has_auth_fields:
+        if next_auth_type in ("bearer_token", "oauth") and request_has_auth_fields:
             patch["auth_header_name"] = next_auth_header_name
             patch["auth_header_prefix"] = next_auth_header_prefix
         elif next_auth_type == "custom_header":
@@ -445,9 +455,11 @@ async def update_mcp_server(
                 require_remote_mcp_enabled()
             discovery_error: str | None = None
             try:
-                discovered_tools, discovery_error = await _discover_server_tools(
-                    workspace_id, target_id, server
-                )
+                (
+                    discovered_tools,
+                    discovery_error,
+                    _discovery_error_code,
+                ) = await _discover_server_tools(workspace_id, target_id, server)
                 if len(discovered_tools) > 0:
                     await _apply_tools_for_server(
                         workspace_id,
@@ -537,7 +549,7 @@ async def test_mcp_server_connection(
     discovered_tools: list[ToolConfigRequest] = []
     discovery_error: str | None = None
     try:
-        discovered_tools, discovery_error = await _discover_server_tools(
+        discovered_tools, discovery_error, _discovery_error_code = await _discover_server_tools(
             workspace_id, target_id, server
         )
     except HTTPException as exc:

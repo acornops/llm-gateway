@@ -29,6 +29,7 @@ def production_settings(**overrides):
         "SECRETS_CACHE_TTL_SEC": 0,
         "SECRETS_BACKEND": "database",
         "REDIS_URL": "redis://gateway-redis:6379/0",
+        "MCP_OAUTH_PUBLIC_CONSOLE_URL": "https://console.example.com",
     }
     values.update(overrides)
     return Settings(**values)
@@ -40,6 +41,21 @@ def test_production_settings_accept_generated_secrets():
     assert settings.APP_ENV == "production"
     assert settings.ADMIN_API_TOKEN.startswith("gateway_admin_token")
     assert settings.SECRETS_CACHE_TTL_SEC == 0
+    assert settings.MCP_OAUTH_ENABLED is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user@console.example.com",
+        "https://console.example.com/acornops",
+        "https://console.example.com?tenant=one",
+        "https://console.example.com#fragment",
+    ],
+)
+def test_mcp_oauth_public_console_url_must_be_a_canonical_origin(url: str):
+    with pytest.raises(ValidationError, match="MCP_OAUTH_PUBLIC_CONSOLE_URL"):
+        Settings(MCP_OAUTH_PUBLIC_CONSOLE_URL=url)
 
 
 def test_production_settings_accept_release_qualified_control_plane_jwks_url():
@@ -59,6 +75,7 @@ def test_internal_transport_tls_defaults_disabled():
     settings = Settings()
 
     assert settings.INTERNAL_TRANSPORT_TLS_ENABLED is False
+    assert settings.MCP_OAUTH_ENABLED is True
     assert settings.BUILTIN_TARGET_MCP_SERVER_URL == "http://control-plane:8081/internal/v1/mcp"
     assert settings.ADDITIONAL_CA_BUNDLE_FILE == ""
     assert settings.LLM_PROVIDER_OPENAI_API_SURFACE == "responses"

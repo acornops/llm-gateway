@@ -166,7 +166,7 @@ class McpServerCreateRequest(BaseModel):
     server_name: str = Field(min_length=1, examples=["operations-catalog"])
     server_url: str = Field(min_length=1, examples=["https://mcp.example.com/v1/"])
     enabled: bool = True
-    auth_type: Literal["none", "bearer_token", "custom_header"] = "none"
+    auth_type: Literal["none", "bearer_token", "custom_header", "oauth"] = "none"
     credential_mode: Literal["none", "workspace", "individual"] = "none"
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
@@ -202,7 +202,7 @@ class McpServerCreateRequest(BaseModel):
             self.target_type = "agent"
         elif not self.target_id or self.target_type in (None, "agent"):
             raise ValueError("target scope requires target_id and a concrete target_type")
-        external_authenticated = self.auth_type in ("bearer_token", "custom_header")
+        external_authenticated = self.auth_type in ("bearer_token", "custom_header", "oauth")
         if external_authenticated and self.credential_mode == "none":
             raise ValueError("authenticated MCP installations require a credential mode")
         if not external_authenticated and self.credential_mode != "none":
@@ -216,6 +216,11 @@ class McpServerCreateRequest(BaseModel):
             raise ValueError("auth fields are not allowed when auth_type is none")
         if self.auth_type == "custom_header" and not self.auth_header_name:
             raise ValueError("auth_header_name is required for custom_header auth")
+        if self.auth_type == "oauth":
+            if self.credential_mode != "individual":
+                raise ValueError("OAuth MCP installations require individual credentials")
+            if self.auth_header_name or self.auth_header_prefix:
+                raise ValueError("OAuth MCP installations do not accept auth header fields")
         return self
 
     model_config = ConfigDict(
@@ -249,7 +254,7 @@ class McpServerUpdateRequest(BaseModel):
     server_url: str | None = Field(default=None, min_length=1)
     server_name: str | None = None
     enabled: bool | None = None
-    auth_type: Literal["none", "bearer_token", "custom_header"] | None = None
+    auth_type: Literal["none", "bearer_token", "custom_header", "oauth"] | None = None
     credential_mode: Literal["none", "workspace", "individual"] | None = None
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
@@ -372,10 +377,27 @@ class McpConnectionUpsertRequest(BaseModel):
 class McpConnectionResponse(BaseModel):
     server_id: str
     credential_mode: Literal["workspace", "individual"]
-    status: Literal["missing", "connected", "error"]
-    auth_type: Literal["bearer_token", "custom_header"]
-    action: Literal["connect_mcp_server", "verify_mcp_server"] | None = None
+    status: Literal[
+        "missing",
+        "pending_authorization",
+        "connected",
+        "reauthorization_required",
+        "error",
+    ]
+    auth_type: Literal["bearer_token", "custom_header", "oauth"]
+    action: Literal[
+        "connect_mcp_server",
+        "authorize_mcp_server",
+        "select_authorization_server",
+        "reauthorize_mcp_server",
+        "verify_mcp_server",
+    ] | None = None
     error_code: str | None = None
+    issuer_origin: str | None = None
+    registration_method: Literal["cimd", "dcr"] | None = None
+    scopes: list[str] = Field(default_factory=list)
+    token_expires_at: datetime | None = None
+    refresh_capable: bool = False
     verified_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -424,9 +446,78 @@ class McpReadinessFailure(BaseModel):
     server_id: str
     tool_name: str
     code: McpReadinessFailureCode
-    action: Literal["connect_mcp_server", "verify_mcp_server"] | None = None
+    action: Literal[
+        "connect_mcp_server",
+        "authorize_mcp_server",
+        "reauthorize_mcp_server",
+        "verify_mcp_server",
+    ] | None = None
 
 
 class McpReadinessResponse(BaseModel):
     ready: bool
     failures: list[McpReadinessFailure]
+
+
+class McpOAuthIssuerCandidateResponse(BaseModel):
+    issuer: str
+    issuer_origin: str
+    registration_method: Literal["cimd", "dcr"]
+    scopes: list[str]
+    offline_access_requested: bool
+
+
+class McpOAuthPrepareRequest(BaseModel):
+    workspace_id: str = Field(min_length=1, max_length=256)
+    owner_id: str = Field(min_length=1, max_length=256)
+    browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    return_path: str = Field(min_length=1, max_length=2048)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpOAuthPrepareResponse(BaseModel):
+    preparation_handle: str
+    resource_origin: str
+    candidates: list[McpOAuthIssuerCandidateResponse]
+    issuer_selection_required: bool
+
+
+class McpOAuthStartRequest(BaseModel):
+    workspace_id: str = Field(min_length=1, max_length=256)
+    owner_id: str = Field(min_length=1, max_length=256)
+    browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preparation_handle: str = Field(min_length=32, max_length=256)
+    issuer: str | None = Field(default=None, max_length=2048)
+    consent_granted: Literal[True]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpOAuthStartResponse(BaseModel):
+    authorization_url: str
+    metadata_changed: bool
+
+
+class McpOAuthCompleteRequest(BaseModel):
+    code: str | None = Field(default=None, max_length=8192)
+    state: str = Field(min_length=32, max_length=256)
+    issuer: str | None = Field(default=None, max_length=2048)
+    provider_error: str | None = Field(default=None, max_length=256)
+    owner_id: str = Field(min_length=1, max_length=256)
+    browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _require_one_callback_outcome(self) -> Self:
+        if (self.code is None) == (self.provider_error is None):
+            raise ValueError("exactly one OAuth callback outcome is required")
+        return self
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpOAuthCompleteResponse(BaseModel):
+    connection: McpConnectionResponse
+    return_path: str
+    workspace_id: str
+    server_id: str

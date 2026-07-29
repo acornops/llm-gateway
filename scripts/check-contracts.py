@@ -24,9 +24,16 @@ INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = (
     read("app/api/handlers_mcp_admin.py")
     + read("app/api/handlers_mcp_connections.py")
+    + read("app/api/handlers_mcp_oauth.py")
     + read("app/api/mcp_admin_schemas.py")
 )
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
+MCP_OAUTH_SOURCE = (
+    read("app/mcp/oauth/discovery.py")
+    + read("app/mcp/oauth/registration.py")
+    + read("app/mcp/oauth/service.py")
+    + read("app/mcp/oauth/tokens.py")
+)
 CATALOG_SCHEMA_SOURCE = read("app/catalog/schemas.py")
 CATALOG_HANDLER_SOURCE = read("app/api/handlers_catalog_admin.py")
 METRICS_SOURCE = read("app/observability/metrics.py")
@@ -219,17 +226,23 @@ for route in (
 ):
     expect_in(MCP_ADMIN_SOURCE, route, "MCP credential connection route")
 
-for removed in (
+for oauth_surface in (
+    "/oauth/prepare",
     "/oauth/start",
     "/oauth/complete",
-    "/oauth/client-credentials",
-    "MCP_OAUTH_",
+    "MCP_OAUTH_ENABLED",
+    "MCP_OAUTH_AUTOMATIC_REGISTRATION_UNSUPPORTED",
+    'Literal["none", "bearer_token", "custom_header", "oauth"]',
 ):
-    expect(
-        removed not in MCP_ADMIN_SOURCE + SETTINGS_SOURCE + MANIFEST_TEXT,
-        f"Removed MCP OAuth surface remains: {removed}",
+    expect_in(
+        MCP_ADMIN_SOURCE + MCP_OAUTH_SOURCE + SETTINGS_SOURCE + MANIFEST_TEXT,
+        oauth_surface,
+        "MCP OAuth contract surface",
     )
-expect(not (ROOT / "app/mcp/oauth.py").exists(), "Removed MCP OAuth module remains")
+expect(
+    not (ROOT / "app/mcp/oauth.py").exists(),
+    "MCP OAuth must remain a modular package rather than a monolithic module",
+)
 
 for documented in (
     EXECUTION_ENGINE_CONTRACT["streamPath"],

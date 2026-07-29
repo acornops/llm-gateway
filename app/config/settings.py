@@ -64,6 +64,26 @@ def _unsafe_url(value: str, *, allow_internal_http_hosts: set[str] | None = None
     )
 
 
+def _is_canonical_public_origin(value: str) -> bool:
+    if len(value) > 2048 or any(ord(character) > 0x7F for character in value):
+        return False
+    try:
+        parsed = urlparse(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in {"", "/"}
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
 class Settings(BaseSettings):
     APP_ENV: str = "development"
     NODE_ENV: str | None = None
@@ -146,6 +166,16 @@ class Settings(BaseSettings):
     MCP_EGRESS_DNS_CACHE_TTL_SEC: int = 300
     REMOTE_MCP_ENABLED: bool = True
     MCP_CONNECTION_RATE_LIMIT_PER_WINDOW: int = Field(default=10, ge=1, le=1000)
+    MCP_OAUTH_ENABLED: bool = True
+    MCP_OAUTH_PUBLIC_CONSOLE_URL: str = "http://localhost:3000"
+    MCP_OAUTH_FLOW_TTL_SECONDS: int = Field(default=600, ge=60, le=600)
+    MCP_OAUTH_REFRESH_SAFETY_SECONDS: int = Field(default=60, ge=0, le=600)
+    MCP_OAUTH_HTTP_TIMEOUT_MS: int = Field(default=10000, ge=1000, le=120000)
+    MCP_OAUTH_MAX_RESPONSE_BYTES: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
     TOOL_REGISTRY_CACHE_TTL_SEC: int = 300
     # Catalog registry discovery
     CATALOG_OFFICIAL_REGISTRY_ENABLED: bool = False
@@ -188,6 +218,13 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "ADDITIONAL_CA_BUNDLE_FILE must point to a readable file"
                 ) from error
+        if self.MCP_OAUTH_ENABLED and not _is_canonical_public_origin(
+            self.MCP_OAUTH_PUBLIC_CONSOLE_URL
+        ):
+            raise ValueError(
+                "MCP_OAUTH_PUBLIC_CONSOLE_URL must be a canonical HTTP(S) origin "
+                "without credentials, a path, query, or fragment"
+            )
         if runtime_env != "production":
             return self
 
@@ -238,6 +275,12 @@ class Settings(BaseSettings):
             errors.append(
                 "REDIS_URL is required in production when rate limits are configured to fail closed"
             )
+        if self.MCP_OAUTH_ENABLED:
+            if not self.REDIS_URL:
+                errors.append("REDIS_URL is required in production when MCP OAuth is enabled")
+            for field_name in ("MCP_OAUTH_PUBLIC_CONSOLE_URL",):
+                if _unsafe_url(getattr(self, field_name)):
+                    errors.append(f"{field_name} must be a production HTTPS URL")
         if self.LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES:
             errors.append("LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES must be false in production")
 

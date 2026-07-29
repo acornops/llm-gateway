@@ -226,6 +226,8 @@ async def execute_tool_call(
         ):
             raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
 
+        await _authorize_tool_dispatch(tool, server, req, claims)
+
         request_headers: dict[str, str]
         if is_builtin_tool:
             request_headers = {"Authorization": f"Bearer {token_context.token}"}
@@ -242,8 +244,6 @@ async def execute_tool_call(
 
         if not is_builtin_tool:
             require_remote_mcp_enabled()
-
-        await _authorize_tool_dispatch(tool, server, req, claims)
 
         try:
             if is_builtin_tool:
@@ -278,7 +278,22 @@ async def execute_tool_call(
                     mcp_response.code == "MCP_AUTHENTICATION_FAILED"
                     and server.credential_mode != "none"
                 ):
-                    await mark_connection_error(server, claims)
+                    await mark_connection_error(
+                        server,
+                        claims,
+                        auth_error=mcp_response.auth_error,
+                        required_scopes=mcp_response.required_scopes,
+                        expected_connection_id=getattr(
+                            request_headers,
+                            "connection_id",
+                            None,
+                        ),
+                        expected_credential_fingerprint=getattr(
+                            request_headers,
+                            "credential_fingerprint",
+                            None,
+                        ),
+                    )
                 return _tool_transport_error_response(mcp_response, str(tool.capability))
             return _mark_unknown_write_contract(
                 _normalize_tool_response(
@@ -385,6 +400,8 @@ async def execute_tool_call(
         )
         raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
 
+    await _authorize_tool_dispatch(tool, server, req, claims)
+
     if is_builtin_tool:
         request_headers: dict[str, str] = {
             "Authorization": f"Bearer {token_context.token}",
@@ -402,8 +419,6 @@ async def execute_tool_call(
 
     if not is_builtin_tool:
         require_remote_mcp_enabled()
-
-    await _authorize_tool_dispatch(tool, server, req, claims)
 
     # Execute tool call
     try:
@@ -441,7 +456,22 @@ async def execute_tool_call(
                 and server
                 and server.credential_mode != "none"
             ):
-                await mark_connection_error(server, claims)
+                await mark_connection_error(
+                    server,
+                    claims,
+                    auth_error=mcp_response.auth_error,
+                    required_scopes=mcp_response.required_scopes,
+                    expected_connection_id=getattr(
+                        request_headers,
+                        "connection_id",
+                        None,
+                    ),
+                    expected_credential_fingerprint=getattr(
+                        request_headers,
+                        "credential_fingerprint",
+                        None,
+                    ),
+                )
             return _tool_transport_error_response(mcp_response, str(tool.capability))
         return _mark_unknown_write_contract(
             _normalize_tool_response(

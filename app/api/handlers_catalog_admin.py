@@ -381,7 +381,7 @@ async def import_catalog_mcp_server(
         discovery_error = "A credential connection is required before tool discovery."
     else:
         try:
-            tools, discovery_error = await _discover_server_tools(
+            tools, discovery_error, _discovery_error_code = await _discover_server_tools(
                 request.workspace_id, destination_id, server
             )
         except Exception:

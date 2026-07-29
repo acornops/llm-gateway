@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.mcp.egress_policy import ValidatedMcpRequestTarget
+from app.mcp.transports.http_response_limits import McpResponseEncodingError
 from app.mcp.transports.http_transport import (
     McpAuthenticationError,
     McpHttpTransport,
@@ -26,16 +27,19 @@ class StrictStreamableMcpServer:
         use_sse: bool = False,
         protocol_version: str = "2025-11-25",
         issue_session: bool = True,
+        termination_status_code: int = 204,
     ) -> None:
         self.use_sse = use_sse
         self.protocol_version = protocol_version
         self.issue_session = issue_session
+        self.termination_status_code = termination_status_code
         self.requests: list[httpx.Request] = []
         self.initialized_sessions: set[str] = set()
         self.terminated_sessions: set[str] = set()
         self.session_counter = 0
         self.expire_next_operation = False
         self.expire_method: str | None = None
+        self.always_expire_method: str | None = None
 
     @staticmethod
     def _body(request: httpx.Request) -> dict[str, object]:
@@ -69,7 +73,7 @@ class StrictStreamableMcpServer:
             session_id = request.headers.get("mcp-session-id")
             if session_id:
                 self.terminated_sessions.add(session_id)
-            return httpx.Response(204)
+            return httpx.Response(self.termination_status_code)
 
         body = self._body(request)
         method = body.get("method")
@@ -80,9 +84,7 @@ class StrictStreamableMcpServer:
             assert "mcp-session-id" not in request.headers
             assert "mcp-protocol-version" not in request.headers
             self.session_counter += 1
-            session_id = (
-                f"session-{self.session_counter}" if self.issue_session else None
-            )
+            session_id = f"session-{self.session_counter}" if self.issue_session else None
             return self._jsonrpc_response(
                 body["id"],
                 {
@@ -105,7 +107,11 @@ class StrictStreamableMcpServer:
             return httpx.Response(202)
         assert session_key in self.initialized_sessions
 
-        if self.expire_next_operation or self.expire_method == method:
+        if (
+            self.expire_next_operation
+            or self.expire_method == method
+            or self.always_expire_method == method
+        ):
             self.expire_next_operation = False
             self.expire_method = None
             return httpx.Response(404)
@@ -181,6 +187,17 @@ async def test_discovers_paginated_tools_with_full_streamable_http_lifecycle() -
 
 
 @pytest.mark.anyio
+async def test_accepts_not_found_when_terminating_an_mcp_session() -> None:
+    server = StrictStreamableMcpServer(termination_status_code=404)
+
+    payload = await transport_for(server).list_tools("http://mcp.example/mcp", 1000)
+
+    assert len(payload["tools"]) == 2
+    assert server.initialized_sessions == {"session-1"}
+    assert server.terminated_sessions == {"session-1"}
+
+
+@pytest.mark.anyio
 async def test_calls_tool_and_normalizes_standard_result_aliases() -> None:
     server = StrictStreamableMcpServer()
 
@@ -247,9 +264,7 @@ async def test_supports_a_stateless_streamable_http_server() -> None:
     assert payload["isError"] is False
     assert server.initialized_sessions == {"stateless"}
     assert server.terminated_sessions == set()
-    assert all(
-        "mcp-session-id" not in request.headers for request in server.requests
-    )
+    assert all("mcp-session-id" not in request.headers for request in server.requests)
 
 
 @pytest.mark.anyio
@@ -257,9 +272,7 @@ async def test_supports_sse_initialize_discovery_and_tool_responses() -> None:
     discovery_server = StrictStreamableMcpServer(use_sse=True)
     call_server = StrictStreamableMcpServer(use_sse=True)
 
-    discovered = await transport_for(discovery_server).list_tools(
-        "http://mcp.example/mcp", 1000
-    )
+    discovered = await transport_for(discovery_server).list_tools("http://mcp.example/mcp", 1000)
     called = await transport_for(call_server).call_tool(
         "http://mcp.example/mcp", "weather.lookup", {}, 1000
     )
@@ -304,13 +317,25 @@ async def test_reinitializes_discovery_once_after_explicit_session_termination()
     server = StrictStreamableMcpServer()
     server.expire_next_operation = True
 
-    payload = await transport_for(server).list_tools(
-        "http://mcp.example/mcp", 1000
-    )
+    payload = await transport_for(server).list_tools("http://mcp.example/mcp", 1000)
 
     assert len(payload["tools"]) == 2
     assert server.session_counter == 2
     assert server.initialized_sessions == {"session-1", "session-2"}
+
+
+@pytest.mark.anyio
+async def test_classifies_repeated_not_found_after_a_fresh_session() -> None:
+    server = StrictStreamableMcpServer()
+    server.always_expire_method = "tools/list"
+
+    payload = await transport_for(server).list_tools("http://mcp.example/mcp", 1000)
+
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.code == "MCP_ENDPOINT_NOT_FOUND"
+    assert payload.dispatch_outcome == "not_started"
+    assert payload.retryable is False
+    assert server.session_counter == 2
 
 
 @pytest.mark.anyio
@@ -340,12 +365,8 @@ async def test_concurrent_operations_never_share_mcp_sessions() -> None:
     transport = transport_for(server)
 
     first, second = await asyncio.gather(
-        transport.call_tool(
-            "http://mcp.example/mcp", "weather.lookup", {"request": 1}, 1000
-        ),
-        transport.call_tool(
-            "http://mcp.example/mcp", "weather.lookup", {"request": 2}, 1000
-        ),
+        transport.call_tool("http://mcp.example/mcp", "weather.lookup", {"request": 1}, 1000),
+        transport.call_tool("http://mcp.example/mcp", "weather.lookup", {"request": 2}, 1000),
     )
 
     assert first["isError"] is False
@@ -377,16 +398,13 @@ async def test_uses_pinned_connection_target_and_original_host_for_all_requests(
         AsyncMock(return_value=target),
     )
 
-    payload = await transport_for(server).call_tool(
-        target.original_url, "weather.lookup", {}, 1000
-    )
+    payload = await transport_for(server).call_tool(target.original_url, "weather.lookup", {}, 1000)
 
     assert payload["isError"] is False
     assert all(request.url.host == "93.184.216.34" for request in server.requests)
     assert all(request.headers["host"] == "mcp.example" for request in server.requests)
     assert all(
-        request.extensions.get("sni_hostname") == "mcp.example"
-        for request in server.requests
+        request.extensions.get("sni_hostname") == "mcp.example" for request in server.requests
     )
 
 
@@ -464,6 +482,27 @@ async def test_bounded_transport_enforces_declared_and_streamed_response_limits(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("declared_length", ["invalid", "-1"])
+async def test_bounded_transport_rejects_invalid_content_length(
+    declared_length: str,
+) -> None:
+    transport = _BoundedAsyncTransport(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-length": declared_length},
+                stream=httpx.ByteStream(b""),
+                request=request,
+            )
+        ),
+        1024,
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(McpResponseEncodingError):
+            await client.get("https://mcp.example/test")
+
+
+@pytest.mark.anyio
 async def test_rejects_compressed_mcp_responses() -> None:
     server = StrictStreamableMcpServer()
     original_response = server._jsonrpc_response
@@ -491,7 +530,7 @@ async def test_rejects_compressed_mcp_responses() -> None:
 
 
 @pytest.mark.anyio
-async def test_logs_only_bounded_sanitized_upstream_error(
+async def test_does_not_log_provider_controlled_upstream_error_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport = McpHttpTransport()
@@ -512,9 +551,7 @@ async def test_logs_only_bounded_sanitized_upstream_error(
             "jsonrpc": "2.0",
             "error": {
                 "code": -32600,
-                "message": (
-                    "Bad Request for Bearer top-secret-token and tiny: Missing session ID"
-                ),
+                "message": ("Bad Request for Bearer top-secret-token and tiny: Missing session ID"),
             },
         },
     )
@@ -523,9 +560,8 @@ async def test_logs_only_bounded_sanitized_upstream_error(
 
     fields = log.warning.call_args.kwargs
     assert fields["status_code"] == 400
-    assert fields["upstream_error"] == (
-        "Bad Request for [REDACTED] and [REDACTED]: Missing session ID"
-    )
+    assert "upstream_error" not in fields
+    assert "Missing session ID" not in str(log.warning.call_args)
     assert "top-secret-token" not in str(log.warning.call_args)
     assert "tiny" not in str(log.warning.call_args)
 
@@ -618,15 +654,9 @@ async def test_tool_calls_open_the_circuit_after_retryable_failures(
     transport = McpHttpTransport(lambda: httpx.MockTransport(handler))
 
     try:
-        first = await transport.call_tool(
-            "http://mcp.example/mcp", "weather.lookup", {}, 1000
-        )
-        second = await transport.call_tool(
-            "http://mcp.example/mcp", "weather.lookup", {}, 1000
-        )
-        third = await transport.call_tool(
-            "http://mcp.example/mcp", "weather.lookup", {}, 1000
-        )
+        first = await transport.call_tool("http://mcp.example/mcp", "weather.lookup", {}, 1000)
+        second = await transport.call_tool("http://mcp.example/mcp", "weather.lookup", {}, 1000)
+        third = await transport.call_tool("http://mcp.example/mcp", "weather.lookup", {}, 1000)
     finally:
         await dependency_circuit_breaker.reset()
 

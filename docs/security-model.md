@@ -41,6 +41,20 @@
 - Generic remote connections pin the validated DNS address while preserving the
   original Host header and TLS server name. Redirects and compressed responses
   are rejected.
+- Automatic MCP OAuth applies that egress validation independently to protected
+  resource metadata, authorization-server metadata, DCR, token, refresh, and
+  revocation endpoints. Production requires HTTPS; cookies, cross-request
+  credentials, and unbounded bodies are not accepted.
+- OAuth uses authorization code with S256 PKCE, exact issuer validation,
+  RFC 8707 resource binding, encrypted one-time Redis state, and an initiating
+  user/browser binding. CIMD takes precedence over unauthenticated public DCR;
+  confidential clients, client secrets, initial-access tokens, and provider
+  configuration are outside the trust model.
+- Access and refresh tokens are treated as opaque and stored only as a
+  versioned encrypted per-user secret. Refresh is serialized across replicas,
+  uses the pinned endpoint, persists rotations before release, and converts
+  ambiguous outcomes or confirmed authentication failures into explicit
+  reauthorization instead of replaying a tool call.
 - MCP lifecycle headers (`MCP-Session-Id`, `MCP-Protocol-Version`, transport
   `Accept` headers, and `Last-Event-ID`) are platform-owned and cannot be
   supplied through public or secret-backed custom headers.

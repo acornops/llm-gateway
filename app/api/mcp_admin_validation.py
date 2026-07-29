@@ -18,7 +18,7 @@ _SECRET_QUERY_KEYS = {
 
 
 def validate_remote_mcp_endpoint_contract(value: str) -> None:
-    """Reject non-endpoint and credential-bearing manual MCP locations."""
+    """Validate the URL form without guessing whether its path speaks MCP."""
     try:
         parsed = urlparse(value)
         _ = parsed.port
@@ -44,19 +44,6 @@ def validate_remote_mcp_endpoint_contract(value: str) -> None:
         raise HTTPException(
             status_code=400,
             detail="MCP endpoint credentials must use the authentication fields",
-        )
-    hostname = parsed.hostname.lower()
-    path = parsed.path.lower().rstrip("/")
-    if (
-        hostname
-        in {"github.com", "gitlab.com", "npmjs.com", "www.npmjs.com", "pypi.org"}
-        or path == "/v0.1"
-        or path.startswith("/v0.1/")
-        or path.endswith(("/server.json", ".git"))
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Connect by URL accepts only a remote Streamable HTTP MCP endpoint",
         )
 
 

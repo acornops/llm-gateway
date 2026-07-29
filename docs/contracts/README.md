@@ -97,6 +97,24 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   rotating a credential persists it before authenticated tool discovery. A failed
   discovery retains an error state; the verify endpoint retries that stored
   credential without returning it.
+- OAuth installations are individual-user only and accept no provider, issuer,
+  endpoint, client ID, client secret, or token fields. Preparation validates MCP
+  protected-resource and authorization-server metadata, prefers CIMD when
+  advertised, and otherwise permits only unauthenticated public DCR. An advertised
+  but unusable CIMD capability never falls back to DCR.
+- Protected-resource parsing accepts the RFC 9728 string form and, for
+  interoperability, an unambiguous one-element string array. Empty, multi-value,
+  or non-string resource arrays remain invalid, and the normalized resource must
+  still pass the same exact or allowed-parent match.
+- OAuth authorization uses authorization code with PKCE, exact callback and issuer
+  binding, RFC 8707 `resource`, encrypted single-use Redis state, and an initiating
+  browser binding supplied by the control plane. Token bundles are opaque,
+  versioned encrypted per-user secrets. Refresh uses the pinned token endpoint
+  under a cross-replica mutation lock and never causes a tool call to be replayed.
+- OAuth status is deliberately secret-free: it may return issuer origin,
+  CIMD/DCR method, scopes, expiry, refresh capability, stable error code, and next
+  action, but never tokens, authorization codes or URLs, state, PKCE material, or
+  registration-management credentials.
 - Runtime calls fail closed for missing or erroneous connections. Upstream
   401/403 responses mark the connection erroneous. Workspace credentials support
   user and service-identity principals; individual credentials reject service
@@ -106,8 +124,8 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - The greenfield schema contains only the final installation and credential-owner
   records. In-place migration from an earlier schema epoch is unsupported.
 - Connection responses expose only the installation ID, credential mode, status,
-  installation-derived auth type, and next action. Secret values, secret
-  identifiers, and user inventories are not returned.
+  installation-derived auth type, safe OAuth metadata, and next action. Secret
+  values, secret identifiers, and user inventories are not returned.
 - Target calls resolve only the selected Cluster or VM registry tools. Agent calls resolve only the selected Agent installation. The built-in bridge is used only when the resolved tool is explicitly registered with source `builtin`.
 - Generic remote servers use the configured URL as a single MCP Streamable HTTP
   endpoint. Each operation performs `initialize`,
@@ -116,7 +134,11 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Generic remote operations accept standard JSON or SSE responses and use an
   isolated, terminated-on-close session. REST-style appended `/tools/list` and
   `/tools/call` endpoints are not part of this contract.
-- Manual MCP installation accepts only the actual absolute HTTPS Streamable HTTP endpoint. URL credentials and fragments are forbidden; non-secret query values may remain, but credentials belong in the authentication fields. Registry URLs, `server.json`, repositories, packages, containers, and stdio commands are not import mechanisms.
+- Manual MCP installation accepts an absolute HTTPS URL whose path is treated as
+  opaque. Vendor hostnames and path suffixes are never used to guess whether a
+  URL is an MCP endpoint; protocol discovery determines compatibility. URL
+  credentials and fragments are forbidden, non-secret query values may remain,
+  and credentials belong in the authentication fields.
 
 - Newly discovered remote MCP tools use an explicit, non-conflicting
   `annotations.readOnlyHint: true` as the pending `read` capability suggestion.

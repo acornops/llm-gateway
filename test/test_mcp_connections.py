@@ -1,15 +1,12 @@
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from app.api.handlers_mcp_connections import (
-    _connection_response,
     _merge_connection_discovery,
-    _mutation_lock,
     _verify_connection,
     check_mcp_connection_readiness,
 )
@@ -19,16 +16,19 @@ from app.api.mcp_admin_schemas import (
     McpPrincipalReference,
     McpReadinessRequest,
 )
-from app.api.mcp_runtime_auth import connection_request_headers
+from app.api.mcp_connection_responses import connection_response
+from app.api.mcp_runtime_auth import connection_request_headers, mark_connection_error
 from app.config.settings import settings
 from app.mcp.connections import (
     INSTALLATION_OWNER_ID,
     ConnectionOwner,
     ConnectionOwnerError,
     credential_secret_name,
+    mcp_connection_store,
     resolve_connection_owner,
 )
 from app.mcp.header_policy import build_mcp_request_headers
+from app.mcp.tool_definition_policy import McpToolDefinitionConflictError
 
 
 def _server(**overrides):
@@ -102,7 +102,7 @@ def test_common_header_builder_formats_bearer_and_custom_credentials() -> None:
 
 
 def test_connection_response_is_secret_free_and_mode_derived() -> None:
-    response = _connection_response(
+    response = connection_response(
         _server(credential_mode="workspace", auth_type="custom_header"),
         SimpleNamespace(status="error", error_code="MCP_CREDENTIAL_VERIFICATION_FAILED"),
     )
@@ -113,6 +113,11 @@ def test_connection_response_is_secret_free_and_mode_derived() -> None:
         "auth_type": "custom_header",
         "action": "verify_mcp_server",
         "error_code": "MCP_CREDENTIAL_VERIFICATION_FAILED",
+        "issuer_origin": None,
+        "registration_method": None,
+        "scopes": [],
+        "token_expires_at": None,
+        "refresh_capable": False,
         "verified_at": None,
         "updated_at": None,
     }
@@ -145,7 +150,11 @@ async def test_connection_mutations_are_serialized_per_owner() -> None:
 
     async def mutate() -> None:
         nonlocal active, max_active
-        async with _mutation_lock("ws-1", str(_server().id), owner):
+        async with mcp_connection_store.mutation_lock(
+            "ws-1",
+            str(_server().id),
+            owner,
+        ):
             active += 1
             max_active = max(max_active, active)
             await asyncio.sleep(0.01)
@@ -161,25 +170,34 @@ async def test_connection_mutations_are_serialized_per_owner() -> None:
 
 @pytest.mark.anyio
 async def test_production_mutations_use_cross_replica_owner_lock() -> None:
-    acquired: list[tuple[str, str, ConnectionOwner]] = []
     owner = ConnectionOwner("installation", INSTALLATION_OWNER_ID)
-
-    @asynccontextmanager
-    async def distributed_lock(workspace_id: str, server_id: str, lock_owner):
-        acquired.append((workspace_id, server_id, lock_owner))
-        yield
+    connection = MagicMock()
+    connection.execute = AsyncMock()
+    transaction = MagicMock()
+    connection.begin.return_value = transaction
+    connect_context = MagicMock()
+    connect_context.__aenter__ = AsyncMock(return_value=connection)
+    connect_context.__aexit__ = AsyncMock(return_value=None)
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=None)
 
     with (
         patch.object(settings, "APP_ENV", "production"),
         patch.object(settings, "NODE_ENV", None),
-        patch(
-            "app.api.handlers_mcp_connections.mcp_connection_store.mutation_lock",
-            side_effect=distributed_lock,
+        patch.object(
+            mcp_connection_store,
+            "engine",
+            SimpleNamespace(connect=MagicMock(return_value=connect_context)),
         ),
     ):
-        async with _mutation_lock("ws-1", str(_server().id), owner):
+        async with mcp_connection_store.mutation_lock(
+            "ws-1",
+            str(_server().id),
+            owner,
+        ):
             pass
-    assert acquired == [("ws-1", str(_server().id), owner)]
+    assert "pg_advisory_xact_lock" in str(connection.execute.await_args.args[0])
+    transaction.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.anyio
@@ -188,7 +206,13 @@ async def test_failed_verification_retains_bounded_error_state() -> None:
     with (
         patch(
             "app.api.handlers_mcp_connections._discover_server_tools",
-            new=AsyncMock(return_value=([], "credential rejected")),
+            new=AsyncMock(
+                return_value=(
+                    [],
+                    "MCP endpoint returned Not Found",
+                    "MCP_ENDPOINT_NOT_FOUND",
+                )
+            ),
         ),
         patch(
             "app.api.handlers_mcp_connections.mcp_connection_store.set_state",
@@ -202,9 +226,76 @@ async def test_failed_verification_retains_bounded_error_state() -> None:
             credential="bad-credential",
         )
     assert result is connection
+    set_state.assert_awaited_once_with(connection, "error", error_code="MCP_ENDPOINT_NOT_FOUND")
+
+
+@pytest.mark.anyio
+async def test_oauth_authentication_rejection_requires_reauthorization() -> None:
+    connection = SimpleNamespace(status="error")
+    server = _server()
+    server.auth_type = "oauth"
+    with (
+        patch(
+            "app.api.handlers_mcp_connections._discover_server_tools",
+            new=AsyncMock(
+                return_value=(
+                    [],
+                    "MCP server rejected the configured credential",
+                    "MCP_AUTHENTICATION_REJECTED",
+                )
+            ),
+        ),
+        patch(
+            "app.api.handlers_mcp_connections.mcp_connection_store.set_state",
+            new=AsyncMock(return_value=connection),
+        ) as set_state,
+    ):
+        result = await _verify_connection(
+            server=server,
+            connection=connection,
+            workspace_id="ws-1",
+            credential="rejected-oauth-token",
+        )
+
+    assert result is connection
     set_state.assert_awaited_once_with(
-        connection, "error", error_code="MCP_CREDENTIAL_VERIFICATION_FAILED"
+        connection,
+        "reauthorization_required",
+        error_code="MCP_AUTHENTICATION_REJECTED",
     )
+
+
+@pytest.mark.anyio
+async def test_stale_oauth_failure_does_not_invalidate_a_reauthorized_connection() -> None:
+    server = _server(auth_type="oauth")
+    connection = SimpleNamespace(
+        id="22222222-2222-4222-8222-222222222222",
+        oauth_scopes=["mcp:read"],
+    )
+    set_state = AsyncMock()
+    with (
+        patch(
+            "app.api.mcp_runtime_auth.mcp_connection_store.get",
+            new=AsyncMock(return_value=connection),
+        ),
+        patch(
+            "app.api.mcp_runtime_auth.oauth_token_service.access_token_matches",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.api.mcp_runtime_auth.mcp_connection_store.set_state",
+            new=set_state,
+        ),
+    ):
+        await mark_connection_error(
+            server,
+            _claims(),
+            auth_error="invalid_token",
+            expected_connection_id=str(connection.id),
+            expected_credential_fingerprint="f" * 64,
+        )
+
+    set_state.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -230,10 +321,68 @@ async def test_discovery_adds_only_new_tools_to_installation_catalog() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("existing", "observed"),
+    [
+        (
+            SimpleNamespace(
+                tool_name="records.list",
+                input_schema={"type": "object"},
+                output_schema=None,
+                capability="write",
+            ),
+            SimpleNamespace(
+                name="records.list",
+                input_schema={"type": "string"},
+                output_schema=None,
+                capability="write",
+            ),
+        ),
+        (
+            SimpleNamespace(
+                tool_name="records.list",
+                input_schema={"type": "object"},
+                output_schema=None,
+                capability="read",
+            ),
+            SimpleNamespace(
+                name="records.list",
+                input_schema={"type": "object"},
+                output_schema=None,
+                capability="write",
+            ),
+        ),
+    ],
+)
+async def test_user_discovery_rejects_security_relevant_shared_tool_conflicts(
+    existing: SimpleNamespace,
+    observed: SimpleNamespace,
+) -> None:
+    with (
+        patch(
+            "app.api.handlers_mcp_connections._resolve_tools_for_server",
+            new=AsyncMock(return_value=[existing]),
+        ),
+        patch(
+            "app.api.handlers_mcp_connections._apply_tools_for_server",
+            new=AsyncMock(),
+        ) as apply_tools,
+        pytest.raises(McpToolDefinitionConflictError),
+    ):
+        await _merge_connection_discovery(_server(), [observed])
+
+    apply_tools.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_workspace_mode_allows_service_identity_runtime() -> None:
     server = _server(credential_mode="workspace")
     owner = ConnectionOwner("installation", INSTALLATION_OWNER_ID)
-    connection = SimpleNamespace(status="connected", verified_tool_names=["records.list"])
+    connection = SimpleNamespace(
+        id="22222222-2222-4222-8222-222222222222",
+        status="connected",
+        verified_tool_names=["records.list"],
+    )
     with (
         patch(
             "app.api.mcp_runtime_auth.mcp_connection_store.get",

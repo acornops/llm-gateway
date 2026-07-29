@@ -131,6 +131,12 @@ GATEWAY_MCP_SECRET_CLEANUP_TOTAL = Counter(
     ["reason", "outcome"],
 )
 
+GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL = Counter(
+    "gateway_mcp_oauth_operations_total",
+    "MCP OAuth operation outcomes by bounded stage and registration method",
+    ["stage", "method", "outcome"],
+)
+
 # Outbound dependency resilience metrics
 GATEWAY_UPSTREAM_DEPENDENCY_EVENTS_TOTAL = Counter(
     "gateway_upstream_dependency_events_total",

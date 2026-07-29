@@ -161,7 +161,8 @@ class McpConnection(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "status IN ('connected', 'error')",
+            "status IN "
+            "('pending_authorization', 'connected', 'reauthorization_required', 'error')",
             name="ck_gateway_mcp_connection_status",
         ),
         CheckConstraint(
@@ -193,5 +194,61 @@ class McpConnection(Base):
     )
     verified_at = Column(DateTime(timezone=True), nullable=True)
     error_code = Column(String(64), nullable=True)
+    oauth_issuer = Column(String, nullable=True)
+    oauth_registration_method = Column(String, nullable=True)
+    oauth_resource = Column(String, nullable=True)
+    oauth_client_id = Column(String, nullable=True)
+    oauth_endpoint_snapshot = Column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    oauth_scopes = Column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list
+    )
+    oauth_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    oauth_refresh_capable = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class McpOAuthRegistration(Base):
+    """Non-secret public OAuth client registration pinned to one issuer."""
+
+    __tablename__ = "gateway_mcp_oauth_registrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "server_id",
+            "issuer",
+            name="uq_gateway_mcp_oauth_registration_server_issuer",
+        ),
+        Index(
+            "ix_gateway_mcp_oauth_registrations_workspace_server",
+            "workspace_id",
+            "server_id",
+        ),
+        ForeignKeyConstraint(
+            ["server_id", "workspace_id"],
+            ["gateway_mcp_servers.id", "gateway_mcp_servers.workspace_id"],
+            name="fk_gateway_mcp_oauth_registration_server_workspace",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "registration_method IN ('cimd', 'dcr')",
+            name="ck_gateway_mcp_oauth_registration_method",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(String, nullable=False)
+    server_id = Column(UUID(as_uuid=True), nullable=False)
+    resource = Column(String, nullable=False)
+    issuer = Column(String, nullable=False)
+    registration_method = Column(String, nullable=False)
+    client_id = Column(String, nullable=False)
+    endpoint_snapshot = Column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False, default=dict
+    )
+    metadata_fingerprint = Column(String(64), nullable=False)
+    client_metadata_fingerprint = Column(String(64), nullable=False)
+    scopes = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

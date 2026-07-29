@@ -191,6 +191,38 @@
         "mutationSerialization": "workspace_id + server_id + owner_type + owner_id",
         "runtimePrincipal": "workspace mode supports users and service identities; individual mode requires a user and returns MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED otherwise"
       },
+      "oauthConnectionContract": {
+        "featureFlag": "MCP_OAUTH_ENABLED=true by default; false disables",
+        "authenticationValues": ["none", "bearer_token", "custom_header", "oauth"],
+        "ownership": "oauth requires credential_mode=individual and owner_type=user for the current session user",
+        "agentRoutes": [
+          "POST /api/v1/workspaces/{workspaceId}/agents/{agentId}/mcp/servers/{serverId}/connection/oauth/prepare",
+          "POST /api/v1/workspaces/{workspaceId}/agents/{agentId}/mcp/servers/{serverId}/connection/oauth/start"
+        ],
+        "targetRoutes": [
+          "POST /api/v1/workspaces/{workspaceId}/targets/{targetId}/mcp/servers/{serverId}/connection/oauth/prepare",
+          "POST /api/v1/workspaces/{workspaceId}/targets/{targetId}/mcp/servers/{serverId}/connection/oauth/start"
+        ],
+        "publicRoutes": [
+          "GET|HEAD /api/v1/mcp/oauth/client-metadata",
+          "GET /api/v1/mcp/oauth/callback"
+        ],
+        "internalRoutes": [
+          "POST /api/v1/internal/mcp/servers/{server_id}/connections/{owner_id}/oauth/prepare",
+          "POST /api/v1/internal/mcp/servers/{server_id}/connections/{owner_id}/oauth/start",
+          "POST /api/v1/internal/mcp/oauth/complete"
+        ],
+        "registrationPrecedence": ["cimd", "public_dcr"],
+        "connectionStates": ["missing", "pending_authorization", "connected", "reauthorization_required", "error"],
+        "actions": ["authorize_mcp_server", "select_authorization_server", "reauthorize_mcp_server", "verify_mcp_server"],
+        "safeResponseFields": ["issuer_origin", "registration_method", "scopes", "token_expires_at", "refresh_capable", "error_code"],
+        "browserBinding": "__Host-acornops-mcp-oauth-binding in production; Secure, HttpOnly, SameSite=Lax, Path=/, ten-minute rolling lifetime",
+        "callback": "requires initiating user session and browser binding; forwards only code,state,iss,error; redirects only to canonical console plus a validated local path",
+        "secretExclusions": ["access_token", "refresh_token", "authorization_code", "state", "code_verifier", "dcr_management_credentials", "authorization_url_from_status"],
+        "flowState": "encrypted Redis records, ten-minute default TTL, atomic consume, browser/user/workspace/server binding",
+        "tokenStorage": "versioned encrypted per-workspace, per-installation, per-user secret",
+        "endpointPolicy": "validated and DNS-pinned per request; pinned token endpoint for refresh; no redirects or compression"
+      },
       "readinessContract": {
         "path": "POST /api/v1/internal/mcp/connections/readiness",
         "input": ["workspace_id", "principal.{type,id}", "tool_refs[].{server_id,tool_name}"],

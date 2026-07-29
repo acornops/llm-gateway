@@ -140,7 +140,7 @@ def build_mcp_request_headers(
     if credential is None:
         raise ValueError("authenticated MCP installations require a credential")
     validate_auth_header_value(credential)
-    if auth_type == "bearer_token":
+    if auth_type in ("bearer_token", "oauth"):
         header_name = "Authorization"
         prefix = "Bearer "
     elif auth_type == "custom_header":

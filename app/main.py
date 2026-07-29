@@ -21,6 +21,8 @@ from app.errors.codes import ErrorCode
 from app.errors.envelope import ErrorEnvelope
 from app.mcp.approval_receipts import approval_receipt_cleanup_loop, approval_receipt_store
 from app.mcp.connections import mcp_connection_store
+from app.mcp.oauth.flow_store import oauth_flow_store
+from app.mcp.oauth.registration_store import oauth_registration_store
 from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.observability.metrics import (
     GATEWAY_HTTP_REQUEST_DURATION_MS,
@@ -134,6 +136,8 @@ async def lifespan(app: FastAPI):
     await tool_registry.close()
     await mcp_server_registry.close()
     await mcp_connection_store.close()
+    await oauth_registration_store.close()
+    await oauth_flow_store.close()
     await approval_receipt_store.close()
     await catalog_store.close()
     await jwks_manager.close()
@@ -263,6 +267,12 @@ async def _check_database_ready() -> dict[str, object]:
 
 async def _check_redis_ready() -> dict[str, object]:
     if not settings.REDIS_URL or rate_limiter is None:
+        if settings.MCP_OAUTH_ENABLED:
+            return {
+                "ok": False,
+                "required": True,
+                "detail": "Redis is required when MCP OAuth is enabled.",
+            }
         return {
             "ok": True,
             "required": False,

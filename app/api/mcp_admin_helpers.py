@@ -29,6 +29,20 @@ from app.mcp.transports.http_transport import mcp_transport
 
 logger = structlog.get_logger()
 
+_MCP_DISCOVERY_ERROR_CODES = frozenset(
+    {
+        "MCP_AUTHENTICATION_REJECTED",
+        "MCP_DISCOVERY_INVALID_RESPONSE",
+        "MCP_DISCOVERY_RESPONSE_TOO_LARGE",
+        "MCP_DISCOVERY_TIMEOUT",
+        "MCP_EGRESS_BLOCKED",
+        "MCP_ENDPOINT_NOT_FOUND",
+        "MCP_ENDPOINT_UNAVAILABLE",
+        "MCP_PROTOCOL_ERROR",
+        "MCP_TOOL_DISCOVERY_FAILED",
+    }
+)
+
 
 def _build_tool_response(tool: Tool) -> ToolConfigResponse:
     capability = tool.capability if tool.capability in ("read", "write") else "write"
@@ -63,9 +77,7 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         agent_id=server.agent_id if getattr(server, "scope_type", "target") == "agent" else None,
         target_id=server.target_id if getattr(server, "scope_type", "target") == "target" else None,
         target_type=(
-            server.target_type
-            if getattr(server, "scope_type", "target") == "target"
-            else None
+            server.target_type if getattr(server, "scope_type", "target") == "target" else None
         ),
         target_constraints=getattr(server, "target_constraints", {}) or {},
         server_name=server.server_name,
@@ -74,8 +86,7 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         auth_type=server.auth_type,
         credential_mode=(
             getattr(server, "credential_mode", "none")
-            if getattr(server, "credential_mode", "none")
-            in ("none", "workspace", "individual")
+            if getattr(server, "credential_mode", "none") in ("none", "workspace", "individual")
             else "none"
         ),
         auth_header_name=server.auth_header_name,
@@ -86,9 +97,7 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         else "unknown",
         last_discovery_at=server.last_discovery_at,
         last_discovery_error=server.last_discovery_error,
-        catalog_source_id=(
-            str(catalog_source_id) if catalog_source_id else None
-        ),
+        catalog_source_id=(str(catalog_source_id) if catalog_source_id else None),
         catalog_artifact_name=getattr(server, "catalog_artifact_name", None),
         catalog_version=getattr(server, "catalog_version", None),
         catalog_digest=getattr(server, "catalog_digest", None),
@@ -133,7 +142,7 @@ async def _resolve_tools_for_server(
 def _auth_header_name_for(auth_type: str, header_name: str | None) -> str | None:
     if auth_type == "none":
         return None
-    if auth_type == "bearer_token":
+    if auth_type in ("bearer_token", "oauth"):
         return "Authorization"
     return header_name
 
@@ -141,7 +150,7 @@ def _auth_header_name_for(auth_type: str, header_name: str | None) -> str | None
 def _auth_header_prefix_for(auth_type: str, header_prefix: str | None) -> str | None:
     if auth_type == "none":
         return None
-    if auth_type == "bearer_token":
+    if auth_type in ("bearer_token", "oauth"):
         return "Bearer "
     return header_prefix
 
@@ -170,10 +179,7 @@ def _capability_from_annotations(raw_tool: dict[str, Any]) -> str:
     annotations = raw_tool.get("annotations")
     if not isinstance(annotations, dict):
         return "write"
-    if (
-        annotations.get("readOnlyHint") is True
-        and annotations.get("destructiveHint") is not True
-    ):
+    if annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True:
         return "read"
     return "write"
 
@@ -256,7 +262,7 @@ async def _discover_server_tools(
     server: McpServer,
     *,
     request_headers: dict[str, str] | None = None,
-) -> tuple[list[ToolConfigRequest], str | None]:
+) -> tuple[list[ToolConfigRequest], str | None, str | None]:
     headers = request_headers or await _build_server_request_headers(
         workspace_id, target_id, server
     )
@@ -271,19 +277,29 @@ async def _discover_server_tools(
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
         )
-        return [], "Invalid response payload from MCP server tools/list."
+        return (
+            [],
+            "Invalid response payload from MCP server tools/list.",
+            "MCP_DISCOVERY_INVALID_RESPONSE",
+        )
 
     discovery_error = _extract_discovery_error(discovery_response)
     if discovery_error:
+        candidate_error_code = getattr(discovery_response, "code", None)
+        discovery_error_code = (
+            candidate_error_code
+            if candidate_error_code in _MCP_DISCOVERY_ERROR_CODES
+            else "MCP_TOOL_DISCOVERY_FAILED"
+        )
         logger.warning(
             "mcp_tool_discovery_error",
             workspace_id=workspace_id,
             target_id=target_id,
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
-            error_code="MCP_DISCOVERY_UPSTREAM_ERROR",
+            error_code=discovery_error_code,
         )
-        return [], discovery_error
+        return [], discovery_error, discovery_error_code
 
     discovered = _normalize_discovered_tools(discovery_response)
     if len(discovered) == 0:
@@ -294,7 +310,7 @@ async def _discover_server_tools(
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
         )
-    return discovered, None
+    return discovered, None, None
 
 
 async def _record_discovery_status(
@@ -368,9 +384,7 @@ async def _apply_tools_for_server(
             )
 
         if isinstance(tool, ToolConfigUpdateRequest):
-            effective = partial(
-                _effective_patch_value, tool, existing_tool, provided_fields
-            )
+            effective = partial(_effective_patch_value, tool, existing_tool, provided_fields)
             enabled = bool(effective("enabled", True))
             source = effective("source", "mcp")
             capability = effective("capability", "write")

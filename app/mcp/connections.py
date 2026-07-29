@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from collections.abc import AsyncIterator
@@ -70,6 +71,11 @@ class McpConnectionStore:
         database_url, connect_args = sqlalchemy_connection_config(database_url)
         self.engine = create_async_engine(database_url, connect_args=connect_args)
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
+        self._mutation_locks: dict[
+            tuple[str, str, str, str],
+            tuple[asyncio.Lock, int],
+        ] = {}
+        self._mutation_locks_guard = asyncio.Lock()
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -82,25 +88,40 @@ class McpConnectionStore:
         owner: ConnectionOwner,
     ) -> AsyncIterator[None]:
         """Serialize one connection owner across gateway replicas."""
-        lock_material = (
-            f"{workspace_id}\0{server_id}\0{owner.owner_type}\0{owner.owner_id}"
-        ).encode()
-        lock_key = int.from_bytes(
-            hashlib.blake2b(lock_material, digest_size=8).digest(),
-            byteorder="big",
-            signed=True,
-        )
-        async with self.engine.connect() as connection:
-            await connection.execute(
-                text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": lock_key}
-            )
-            try:
-                yield
-            finally:
-                await connection.execute(
-                    text("SELECT pg_advisory_unlock(:lock_key)"),
-                    {"lock_key": lock_key},
+        key = (workspace_id, server_id, owner.owner_type, owner.owner_id)
+        async with self._mutation_locks_guard:
+            lock, users = self._mutation_locks.get(key, (asyncio.Lock(), 0))
+            self._mutation_locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                runtime_env = (settings.NODE_ENV or settings.APP_ENV).strip().lower()
+                if runtime_env != "production":
+                    yield
+                    return
+                lock_material = "\0".join(key).encode()
+                lock_key = int.from_bytes(
+                    hashlib.blake2b(lock_material, digest_size=8).digest(),
+                    byteorder="big",
+                    signed=True,
                 )
+                async with (
+                    self.engine.connect() as connection,
+                    connection.begin(),
+                ):
+                    await connection.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                        {"lock_key": lock_key},
+                    )
+                    yield
+        finally:
+            async with self._mutation_locks_guard:
+                current = self._mutation_locks.get(key)
+                if current is not None and current[0] is lock:
+                    remaining = current[1] - 1
+                    if remaining == 0:
+                        self._mutation_locks.pop(key, None)
+                    else:
+                        self._mutation_locks[key] = (lock, remaining)
 
     @staticmethod
     def _server_uuid(server_id: str) -> uuid.UUID | None:
@@ -136,6 +157,14 @@ class McpConnectionStore:
         status: str,
         verified_tool_names: list[str] | None = None,
         error_code: str | None = None,
+        oauth_issuer: str | None = None,
+        oauth_registration_method: str | None = None,
+        oauth_resource: str | None = None,
+        oauth_client_id: str | None = None,
+        oauth_endpoint_snapshot: dict[str, object] | None = None,
+        oauth_scopes: list[str] | None = None,
+        oauth_token_expires_at: datetime | None = None,
+        oauth_refresh_capable: bool = False,
     ) -> McpConnection | None:
         normalized = self._server_uuid(server_id)
         if normalized is None:
@@ -181,7 +210,15 @@ class McpConnectionStore:
             connection.status = status
             connection.verified_tool_names = sorted(set(verified_tool_names or []))
             connection.verified_at = datetime.now(UTC) if status == "connected" else None
-            connection.error_code = error_code if status == "error" else None
+            connection.error_code = error_code if status != "connected" else None
+            connection.oauth_issuer = oauth_issuer
+            connection.oauth_registration_method = oauth_registration_method
+            connection.oauth_resource = oauth_resource
+            connection.oauth_client_id = oauth_client_id
+            connection.oauth_endpoint_snapshot = oauth_endpoint_snapshot
+            connection.oauth_scopes = sorted(set(oauth_scopes or []))
+            connection.oauth_token_expires_at = oauth_token_expires_at
+            connection.oauth_refresh_capable = oauth_refresh_capable
             await session.commit()
             await session.refresh(connection)
             return connection
@@ -193,6 +230,14 @@ class McpConnectionStore:
         *,
         verified_tool_names: list[str] | None = None,
         error_code: str | None = None,
+        oauth_issuer: str | None = None,
+        oauth_registration_method: str | None = None,
+        oauth_resource: str | None = None,
+        oauth_client_id: str | None = None,
+        oauth_endpoint_snapshot: dict[str, object] | None = None,
+        oauth_scopes: list[str] | None = None,
+        oauth_token_expires_at: datetime | None = None,
+        oauth_refresh_capable: bool | None = None,
     ) -> McpConnection | None:
         async with self.async_session() as session:
             persisted = await session.get(McpConnection, connection.id)
@@ -201,7 +246,23 @@ class McpConnectionStore:
             persisted.status = status
             persisted.verified_tool_names = sorted(set(verified_tool_names or []))
             persisted.verified_at = datetime.now(UTC) if status == "connected" else None
-            persisted.error_code = error_code if status == "error" else None
+            persisted.error_code = error_code if status != "connected" else None
+            if oauth_issuer is not None:
+                persisted.oauth_issuer = oauth_issuer
+            if oauth_registration_method is not None:
+                persisted.oauth_registration_method = oauth_registration_method
+            if oauth_resource is not None:
+                persisted.oauth_resource = oauth_resource
+            if oauth_client_id is not None:
+                persisted.oauth_client_id = oauth_client_id
+            if oauth_endpoint_snapshot is not None:
+                persisted.oauth_endpoint_snapshot = oauth_endpoint_snapshot
+            if oauth_scopes is not None:
+                persisted.oauth_scopes = sorted(set(oauth_scopes))
+            if oauth_token_expires_at is not None or status != "connected":
+                persisted.oauth_token_expires_at = oauth_token_expires_at
+            if oauth_refresh_capable is not None:
+                persisted.oauth_refresh_capable = oauth_refresh_capable
             await session.commit()
             await session.refresh(persisted)
             return persisted
