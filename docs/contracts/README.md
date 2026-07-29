@@ -32,6 +32,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, target, workflow, and context scope.
 - Requested body scope must match token scope; the gateway must not infer missing scope from UI state or registry state.
 - Provider credentials, admin tokens, run JWTs, MCP secret headers, raw reasoning state, and chain-of-thought must not be emitted in responses.
+- Provider credentials resolve as exact workspace override, then platform
+  default. Internal status responses expose only `configured`, `enabled`, and
+  `source=workspace|platform_default|none`; default-key operations use the same
+  service token and never return key material.
 - MCP results normalize to `full_result`, `model_context`, `context_meta`,
   `artifact_eligible`, and `is_error`. Trusted AgentK envelopes must validate as
   `acornops.model-context.v1` plus `acornops.full-tool-result.v1`; untrusted MCP
@@ -68,7 +72,8 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 ## Control-Plane Boundary Notes
 
 - Config must keep `AUTH_ISSUER` and `AUTH_AUDIENCE` aligned with the control-plane run-token issuer and audience.
-- `ADMIN_API_TOKEN` gates internal MCP and provider-credential administration.
+- `ADMIN_API_TOKEN` gates internal MCP, workspace provider-credential, and
+  platform-default provider-credential administration.
 - Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after an enabled workspace registry entry identifies the tool as built-in.
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - Target adapters register their live built-in tools against the configured internal bridge URL (the local deployment default is `http://control-plane:8081/internal/v1/mcp`). The server identity comes from the registered target, not a seeded workspace integration.

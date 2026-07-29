@@ -10,6 +10,10 @@
 ## Secrets
 
 - Never log provider API keys, MCP auth secrets, or bearer tokens.
+- LLM provider keys resolve only through the dedicated provider path: an exact
+  workspace override first, then the encrypted platform default. The fallback
+  never applies to MCP or other secret families, and status APIs expose only a
+  bounded source enum.
 - MCP credentials are write-only and encrypted by the configured secret backend.
   Workspace-managed credentials are isolated by installation; individual
   credentials are isolated by workspace user plus installation. They are never

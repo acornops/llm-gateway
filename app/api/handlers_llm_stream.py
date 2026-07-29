@@ -389,33 +389,43 @@ async def stream_generation(
             media_type="application/x-ndjson",
         )
 
-    # Resolve workspace-owned provider credentials. Target-scoped secrets are
-    # reserved for MCP/tool auth, not LLM provider keys.
-    secret_scope = {
-        "workspace_id": req.workspace_id,
-    }
+    # Resolve an exact workspace override before the platform default.
+    # Target-scoped secrets are reserved for MCP/tool auth, not LLM provider keys.
+    secret_scopes = [
+        ("workspace", {"workspace_id": req.workspace_id}),
+        ("platform_default", {}),
+    ]
     secret_names = [f"{req.provider}_api_key"]
 
     api_key = None
+    credential_source = None
     last_secret_error: Exception | None = None
-    for secret_name in secret_names:
-        try:
-            resolved_api_key = await secret_store.get_secret(secret_name, secret_scope)
-            if resolved_api_key and resolved_api_key.strip():
-                api_key = resolved_api_key.strip()
+    for source, secret_scope in secret_scopes:
+        for secret_name in secret_names:
+            try:
+                resolved_api_key = await secret_store.get_secret(
+                    secret_name, secret_scope
+                )
+                if resolved_api_key and resolved_api_key.strip():
+                    api_key = resolved_api_key.strip()
+                    credential_source = source
+                    break
+            except Exception as e:
+                if _is_missing_secret_error(e):
+                    continue
+                last_secret_error = e
+                logger.warning(
+                    "provider_secret_lookup_failed",
+                    workspace_id=req.workspace_id,
+                    target_id=req.target_id,
+                    provider=req.provider,
+                    credential_source=source,
+                    secret_name=secret_name,
+                    error=str(e),
+                )
                 break
-        except Exception as e:
-            if _is_missing_secret_error(e):
-                continue
-            last_secret_error = e
-            logger.warning(
-                "provider_secret_lookup_failed",
-                workspace_id=req.workspace_id,
-                target_id=req.target_id,
-                provider=req.provider,
-                secret_name=secret_name,
-                error=str(e),
-            )
+        if api_key or last_secret_error:
+            break
 
     if not api_key:
         if last_secret_error:
@@ -434,6 +444,14 @@ async def stream_generation(
             status_code=500,
             detail=PROVIDER_CREDENTIALS_NOT_CONFIGURED,
         )
+
+    logger.info(
+        "provider_secret_resolved",
+        workspace_id=req.workspace_id,
+        target_id=req.target_id,
+        provider=req.provider,
+        credential_source=credential_source,
+    )
 
     try:
         adapter = get_adapter(req.provider)
