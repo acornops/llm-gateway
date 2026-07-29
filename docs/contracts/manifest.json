@@ -78,14 +78,16 @@
       "toolCallResponseMaxBytes": 5242880
     },
     "control-plane": {
-      "providerCredentialScope": "workspace-only AI provider secret_name={provider}_api_key and tenant_scope={workspace_id}; runtime MCP credentials use exact workspace or individual installation connections, while the built-in bridge uses run tokens",
+      "providerCredentialScope": "AI provider secret_name={provider}_api_key resolves an exact tenant_scope={workspace_id} override before tenant_scope={} platform default; runtime MCP credentials never use this fallback and continue to use exact workspace or individual installation connections, while the built-in bridge uses run tokens",
       "providerCredentialScopeFields": [
         "workspace_id"
       ],
+      "providerDefaultCredentialScopeFields": [],
       "providerCredentialStatusFields": [
         "provider",
         "configured",
-        "enabled"
+        "enabled",
+        "source=workspace|platform_default|none"
       ],
       "mcpRegistryScopeFields": [
         "workspace_id",

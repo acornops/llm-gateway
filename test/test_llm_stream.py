@@ -1,6 +1,6 @@
 import json
 from copy import deepcopy
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -132,6 +132,58 @@ async def test_llm_stream_contract():
                 )
                 assert completed_log.kwargs["text_delta_count"] == 2
                 assert completed_log.kwargs["text_delta_chars"] == 11
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_uses_platform_default_after_workspace_credential_miss():
+    mock_claims = build_token_claims()
+
+    async def get_secret(_secret_name, tenant_scope):
+        if tenant_scope == {"workspace_id": EXAMPLE_WORKSPACE_ID}:
+            from app.secrets.errors import SecretNotFoundError
+
+            raise SecretNotFoundError("missing workspace override")
+        assert tenant_scope == {}
+        return "platform-default-key"
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret",
+        new_callable=AsyncMock,
+        side_effect=get_secret,
+    ) as mock_get_secret:
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            with patch(
+                "app.llm.adapters.openai_adapter.OpenAIAdapter.stream"
+            ) as mock_stream:
+
+                async def mock_generator(_request, api_key):
+                    assert api_key == "platform-default-key"
+                    yield StreamEvent(type="final", usage={})
+
+                mock_stream.side_effect = mock_generator
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as ac:
+                    response = await ac.post(
+                        "/api/v1/llm/generations:stream",
+                        json=build_llm_stream_payload(),
+                        headers={"Authorization": "Bearer fake-token"},
+                    )
+
+            assert response.status_code == 200
+            assert mock_get_secret.await_args_list == [
+                call("openai_api_key", {"workspace_id": EXAMPLE_WORKSPACE_ID}),
+                call("openai_api_key", {}),
+            ]
         finally:
             app.dependency_overrides.clear()
 
@@ -821,10 +873,10 @@ async def test_llm_stream_missing_provider_credentials_are_sanitized():
             assert response.status_code == 500
             assert response.json()["detail"] == "Provider credentials are not configured"
             assert "openai_api_key" not in response.json()["detail"]
-            mock_get_secret.assert_awaited_with(
-                "openai_api_key",
-                {"workspace_id": EXAMPLE_WORKSPACE_ID},
-            )
+            assert mock_get_secret.await_args_list == [
+                call("openai_api_key", {"workspace_id": EXAMPLE_WORKSPACE_ID}),
+                call("openai_api_key", {}),
+            ]
         finally:
             app.dependency_overrides.clear()
 
@@ -858,9 +910,9 @@ async def test_llm_stream_treats_blank_provider_credentials_as_missing():
 
             assert response.status_code == 500
             assert response.json()["detail"] == "Provider credentials are not configured"
-            mock_get_secret.assert_awaited_with(
-                "openai_api_key",
-                {"workspace_id": EXAMPLE_WORKSPACE_ID},
-            )
+            assert mock_get_secret.await_args_list == [
+                call("openai_api_key", {"workspace_id": EXAMPLE_WORKSPACE_ID}),
+                call("openai_api_key", {}),
+            ]
         finally:
             app.dependency_overrides.clear()
