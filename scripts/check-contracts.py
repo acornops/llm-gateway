@@ -189,13 +189,13 @@ for needle in (
 for needle in ('capability: Literal["read", "write"] = "write"',):
     expect_in(MCP_ADMIN_SOURCE, needle, "MCP tool capability conservative default")
 
-for needle in ('capability="write"',):
-    expect_in(MCP_ADMIN_HELPER_SOURCE, needle, "MCP discovery capability conservative default")
+for needle in ("_capability_from_annotations(raw_tool)",):
+    expect_in(MCP_ADMIN_HELPER_SOURCE, needle, "MCP discovery annotation capability classification")
 
 expect_in(
     DOC,
-    "Missing, malformed, or newly\ndiscovered remote MCP tool capabilities default to `write`",
-    "Documented MCP tool capability conservative default",
+    "Missing, malformed, false, or conflicting hints default to `write`",
+    "Documented MCP tool annotation capability fallback",
 )
 expect_in(
     MCP_ADMIN_SOURCE + MCP_ADMIN_HELPER_SOURCE,

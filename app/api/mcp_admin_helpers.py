@@ -166,6 +166,18 @@ async def _build_server_request_headers(
         ) from exc
 
 
+def _capability_from_annotations(raw_tool: dict[str, Any]) -> str:
+    annotations = raw_tool.get("annotations")
+    if not isinstance(annotations, dict):
+        return "write"
+    if (
+        annotations.get("readOnlyHint") is True
+        and annotations.get("destructiveHint") is not True
+    ):
+        return "read"
+    return "write"
+
+
 def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigRequest]:
     if payload.get("isError"):
         return []
@@ -226,7 +238,7 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
                 name=tool_name,
                 timeout_ms=settings.MCP_CALL_DEFAULT_TIMEOUT_MS,
                 description=description,
-                capability="write",
+                capability=_capability_from_annotations(raw_tool),
                 version=version,
                 source="mcp",
                 input_schema=input_schema,

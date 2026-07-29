@@ -118,8 +118,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   `/tools/call` endpoints are not part of this contract.
 - Manual MCP installation accepts only the actual absolute HTTPS Streamable HTTP endpoint. URL credentials and fragments are forbidden; non-secret query values may remain, but credentials belong in the authentication fields. Registry URLs, `server.json`, repositories, packages, containers, and stdio commands are not import mechanisms.
 
-- Missing, malformed, or newly
-discovered remote MCP tool capabilities default to `write` until an admin reviews and enables a narrower read classification.
+- Newly discovered remote MCP tools use an explicit, non-conflicting
+  `annotations.readOnlyHint: true` as the pending `read` capability suggestion.
+  Missing, malformed, false, or conflicting hints default to `write`. Discovered
+  tools remain disabled until an admin reviews their capability and enables them.
 - Remote MCP metadata is untrusted. Store discovered tools disabled, sanitize descriptions and schemas, and require capability review before enabling.
 - Built-in control-plane bridge calls do not forward configurable public headers or secret-store auth headers.
 - Public headers cannot override platform scope headers or credential headers.

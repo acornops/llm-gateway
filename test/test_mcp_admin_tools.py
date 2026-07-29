@@ -259,7 +259,7 @@ def test_normalize_discovered_tools_handles_alt_schema_keys_and_dedupes():
                         "name": "github.search",
                         "description": "Search",
                         "parameters": {"type": "object"},
-                        "annotations": {"readOnlyHint": False},
+                        "annotations": {"readOnlyHint": True},
                         "version": "2026-01",
                     },
                     {
@@ -275,11 +275,39 @@ def test_normalize_discovered_tools_handles_alt_schema_keys_and_dedupes():
     )
 
     assert [tool.name for tool in discovered] == ["github.search", "github.readme"]
-    assert discovered[0].capability == "write"
+    assert discovered[0].capability == "read"
     assert discovered[0].input_schema == {"type": "object"}
     assert discovered[0].version == "2026-01"
     assert discovered[0].enabled is False
+    assert discovered[1].capability == "write"
     assert discovered[1].version == "v1"
+
+
+@pytest.mark.parametrize(
+    ("annotations", "expected_capability"),
+    [
+        ({"readOnlyHint": True}, "read"),
+        ({"readOnlyHint": True, "destructiveHint": False}, "read"),
+        ({"readOnlyHint": False}, "write"),
+        ({"readOnlyHint": True, "destructiveHint": True}, "write"),
+        ({"readOnlyHint": "true"}, "write"),
+        ({}, "write"),
+        (None, "write"),
+    ],
+)
+def test_normalize_discovered_tools_uses_conservative_annotation_defaults(
+    annotations,
+    expected_capability,
+):
+    raw_tool = {"name": "records.lookup"}
+    if annotations is not None:
+        raw_tool["annotations"] = annotations
+
+    discovered = _normalize_discovered_tools({"tools": [raw_tool]})
+
+    assert len(discovered) == 1
+    assert discovered[0].capability == expected_capability
+    assert discovered[0].enabled is False
 
 
 def test_normalize_discovered_tools_sanitizes_prompt_injection_metadata():
