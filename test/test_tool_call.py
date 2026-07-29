@@ -670,6 +670,7 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
         source="builtin",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
@@ -727,7 +728,9 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer run-scoped-jwt",
             }
-            assert mock_builtin_call.await_args.args[5] == "call-1"
+            assert mock_builtin_call.await_args.kwargs["tool_call_id"] == "call-1"
+            assert mock_builtin_call.await_args.kwargs["tool_alias"] == EXAMPLE_TOOL_ALIAS
+            assert mock_builtin_call.await_args.kwargs["server_id"] == EXAMPLE_SERVER_ID
         finally:
             app.dependency_overrides.clear()
 
@@ -766,6 +769,7 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         capability="read",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
@@ -841,6 +845,8 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer workflow-run-jwt",
             }
+            assert mock_builtin_call.await_args.kwargs["tool_alias"] == "mcp.tools.list"
+            assert mock_builtin_call.await_args.kwargs["server_id"] == EXAMPLE_SERVER_ID
         finally:
             app.dependency_overrides.clear()
 

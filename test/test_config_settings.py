@@ -260,6 +260,8 @@ async def test_builtin_transport_forwards_tool_call_id(monkeypatch: pytest.Monke
             "name": "restart_workload",
             "arguments": {"namespace": "default"},
             "toolCallId": "call-1",
+            "toolAlias": "server_restart_workload",
+            "serverId": "server-1",
         }
         return httpx.Response(200, json={"content": [], "isError": False}, request=request)
 
@@ -276,7 +278,9 @@ async def test_builtin_transport_forwards_tool_call_id(monkeypatch: pytest.Monke
         {"namespace": "default"},
         1000,
         {"Authorization": "Bearer token"},
-        "call-1",
+        tool_alias="server_restart_workload",
+        server_id="server-1",
+        tool_call_id="call-1",
     )
     assert result == {"content": [], "isError": False}
 
@@ -298,7 +302,13 @@ async def test_builtin_transport_rejects_oversized_results(monkeypatch: pytest.M
     )
     with pytest.raises(ValueError, match="3 MiB"):
         await internal_transport_module.post_builtin_mcp_tool(
-            "http://control-plane/internal/v1/mcp", "get_resource", {}, 1000, {}
+            "http://control-plane/internal/v1/mcp",
+            "get_resource",
+            {},
+            1000,
+            {},
+            tool_alias="get_resource",
+            server_id="server-1",
         )
 
 
@@ -328,7 +338,13 @@ async def test_builtin_transport_preserves_structured_agent_unavailable_error(
     )
 
     result = await internal_transport_module.post_builtin_mcp_tool(
-        "http://control-plane/internal/v1/mcp", "get_resource", {}, 1000, {}
+        "http://control-plane/internal/v1/mcp",
+        "get_resource",
+        {},
+        1000,
+        {},
+        tool_alias="get_resource",
+        server_id="server-1",
     )
     assert result.code == "TARGET_AGENT_UNAVAILABLE"
     assert result.dispatch_outcome == "not_started"

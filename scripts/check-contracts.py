@@ -324,6 +324,16 @@ expect_in(
     '"toolCallId": tool_call_id',
     "Built-in tool call id forwarding",
 )
+expect_in(
+    INTERNAL_TRANSPORT_SOURCE,
+    '"toolAlias": tool_alias',
+    "Built-in tool alias forwarding",
+)
+expect_in(
+    INTERNAL_TRANSPORT_SOURCE,
+    '"serverId": server_id',
+    "Built-in tool server identity forwarding",
+)
 
 for token in (
     CONTROL_PLANE_CONTRACT["builtinBridge"]["serverUrl"],

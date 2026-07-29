@@ -282,7 +282,23 @@
         "egressException": "Allowed internal HTTP only for configured builtin server registrations with source=builtin tools, auth type none, and no public headers",
         "authHeader": "Authorization: Bearer <run-scoped-jwt>",
         "scopeSource": "run-scoped-jwt-claims",
-        "callPath": "POST /internal/v1/mcp/tools/call"
+        "callPath": "POST /internal/v1/mcp/tools/call",
+        "requestFields": [
+          "name (canonical tool name)",
+          "toolAlias (model-facing allowed-tools name)",
+          "serverId (exact registry server identity)",
+          "arguments",
+          "toolCallId?"
+        ],
+        "authorization": "The bridge independently matches toolAlias against allowed_tools and serverId+name against allowed_tool_refs and the pinned run capability snapshot.",
+        "agentTargetsServer": "one platform-managed, toggleable builtin server per Agent; connection fields, deletion, and individual tool mutations are denied",
+        "agentTargetsTools": [
+          "list_targets",
+          "get_target",
+          "list_target_issues"
+        ],
+        "agentTargetsScope": "registration constraints mirror Agent targetScope and execution rechecks the pinned Agent snapshot before every read; the server remains available without a pre-bound run target",
+        "deploymentOrder": "Deploy llm-gateway before control-plane so alias and exact registry server identity are forwarded before the control plane requires them."
       }
     }
   }

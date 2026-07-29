@@ -78,7 +78,9 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - Target adapters register their live built-in tools against the configured internal bridge URL (the local deployment default is `http://control-plane:8081/internal/v1/mcp`). The server identity comes from the registered target, not a seeded workspace integration.
 - Connection readiness accepts enabled tools only when their server and tool identities match. Trusted built-in tools do not require remote MCP review or a credential connection snapshot; remote tools remain review-gated, and the exact resolved credential must include the tool in its verified snapshot.
-- Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
+- Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`. Calls carry the canonical tool name, model-facing alias, and exact registry server ID so the control plane can enforce both allowed-tool and allowed-reference grants.
+- Agent-scoped built-ins include one platform-managed Targets MCP server with the fixed read-only catalog `list_targets`, `get_target`, and `list_target_issues`. The gateway preserves the Agent installation and target constraints; the control plane remains responsible for rechecking the pinned Agent target scope at execution. The server remains available without a pre-bound target so the Agent can discover targets inside that scope.
+- For rolling deployments of this bridge contract, deploy `llm-gateway` before `control-plane`; the gateway begins sending the alias and registry server identity before the control plane requires them.
 - Optional `tool_call_id` values are forwarded as `toolCallId` only on this
   trusted built-in bridge, preserving AgentK idempotency while keeping generic
   MCP request bodies unchanged.

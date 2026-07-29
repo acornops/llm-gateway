@@ -253,7 +253,9 @@ async def execute_tool_call(
                     tool_arguments,
                     tool.timeout_ms,
                     request_headers,
-                    req.tool_call_id,
+                    tool_alias=req.tool,
+                    server_id=str(server.id),
+                    tool_call_id=req.tool_call_id,
                 )
             else:
                 mcp_response = await mcp_transport.call_tool(
@@ -429,7 +431,9 @@ async def execute_tool_call(
                 req.arguments,
                 tool.timeout_ms,
                 request_headers,
-                req.tool_call_id,
+                tool_alias=req.tool,
+                server_id=str(server.id),
+                tool_call_id=req.tool_call_id,
             )
         else:
             mcp_response = await mcp_transport.call_tool(
