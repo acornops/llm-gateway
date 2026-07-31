@@ -1,0 +1,186 @@
+[
+  {
+    "name": "thinking-signature-tool-call",
+    "events": [
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "Checking."
+        }
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "thinking",
+          "thinking": "opaque provider block",
+          "signature": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "signature_delta",
+          "signature": "opaque-signature"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 1
+      },
+      {
+        "type": "content_block_start",
+        "index": 2,
+        "content_block": {
+          "type": "tool_use",
+          "id": "anthropic-call-1",
+          "name": "get_weather"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"location\":\"SF\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 2
+      },
+      {
+        "type": "message_delta",
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 7
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "delta",
+        "text": "Checking."
+      },
+      {
+        "type": "tool_call",
+        "call_id": "anthropic-call-1",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "SF"
+        },
+        "provider_state": {
+          "provider": "anthropic",
+          "data": {
+            "blocks": [
+              {
+                "type": "thinking",
+                "thinking": "opaque provider block",
+                "signature": "opaque-signature"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 7,
+          "tool_calls": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "parallel-fragmented-tool-calls",
+    "events": [
+      {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "anthropic-call-a",
+          "name": "get_weather"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"location\":"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"SF\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 0
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "anthropic-call-b",
+          "name": "get_weather"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"location\":\"NYC\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 1
+      },
+      {
+        "type": "message_delta",
+        "usage": {
+          "input_tokens": 8,
+          "output_tokens": 9
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "tool_call",
+        "call_id": "anthropic-call-a",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "SF"
+        }
+      },
+      {
+        "type": "tool_call",
+        "call_id": "anthropic-call-b",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "NYC"
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 8,
+          "output_tokens": 9,
+          "tool_calls": 2
+        }
+      }
+    ]
+  }
+]

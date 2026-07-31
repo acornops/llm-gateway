@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import inspect
 from collections.abc import AsyncIterator
 from typing import Any
@@ -11,6 +12,7 @@ from app.config.settings import settings
 from app.llm.adapters.common import build_gemini_tools
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
+from app.llm.renderers import render_gemini_contents
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -41,19 +43,24 @@ async def _close_client(client: genai.Client) -> None:
         await result
 
 
-def _extract_function_calls(chunk: Any) -> list[Any]:
-    function_calls = getattr(chunk, "function_calls", None)
-    if function_calls:
-        return list(function_calls)
-
-    calls: list[Any] = []
+def _extract_function_call_parts(chunk: Any) -> list[tuple[Any | None, Any]]:
+    calls: list[tuple[Any | None, Any]] = []
     for candidate in getattr(chunk, "candidates", None) or []:
         content = getattr(candidate, "content", None)
         for part in getattr(content, "parts", None) or []:
             function_call = getattr(part, "function_call", None)
             if function_call:
-                calls.append(function_call)
+                calls.append((part, function_call))
+    if calls:
+        return calls
+    function_calls = getattr(chunk, "function_calls", None)
+    if function_calls:
+        return [(None, function_call) for function_call in function_calls]
     return calls
+
+
+def _extract_function_calls(chunk: Any) -> list[Any]:
+    return [function_call for _, function_call in _extract_function_call_parts(chunk)]
 
 
 def _function_call_args(function_call: Any) -> dict[str, Any]:
@@ -114,21 +121,10 @@ class GeminiAdapter(LLMAdapter):
         tool_call_seq = 0
         summary_requested = reasoning_summaries_enabled(req)
 
-        system_instruction = "\n\n".join(
-            m.content for m in req.messages if m.role == "system"
-        ).strip()
-
-        # Convert messages to Gemini format
-        contents = []
-        for m in req.messages:
-            if m.role == "system":
-                continue
-            role = "user" if m.role == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": m.content}]})
+        contents = render_gemini_contents(req)
 
         generation_config_kwargs = {"temperature": req.temperature}
-        if system_instruction:
-            generation_config_kwargs["system_instruction"] = system_instruction
+        generation_config_kwargs["system_instruction"] = req.runtime_instruction
         if req.max_output_tokens is not None:
             generation_config_kwargs["max_output_tokens"] = req.max_output_tokens
         gemini_tools: list[Any] = []
@@ -198,15 +194,37 @@ class GeminiAdapter(LLMAdapter):
                                 # The SDK raises when a chunk contains only function calls.
                                 pass
 
-                        for fn in _extract_function_calls(chunk):
+                        for part, fn in _extract_function_call_parts(chunk):
                             tool_calls_count += 1
                             tool_call_seq += 1
                             emitted_event = True
+                            provider_call_id = str(getattr(fn, "id", "") or "")
+                            call_id = (
+                                provider_call_id
+                                or f"gemini_call_{tool_call_seq}"
+                            )
+                            thought_signature = (
+                                getattr(part, "thought_signature", None)
+                                if part is not None
+                                else None
+                            )
                             yield StreamEvent(
                                 type="tool_call",
-                                call_id=f"gemini_call_{tool_call_seq}",
+                                call_id=call_id,
                                 tool=fn.name,
                                 arguments=_function_call_args(fn),
+                                provider_state=(
+                                    {
+                                        "provider": "gemini",
+                                        "data": {
+                                            "thought_signature": base64.b64encode(
+                                                thought_signature
+                                            ).decode("ascii")
+                                        },
+                                    }
+                                    if thought_signature
+                                    else None
+                                ),
                             )
 
                     if summary_requested:

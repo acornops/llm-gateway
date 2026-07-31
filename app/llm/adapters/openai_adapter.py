@@ -17,6 +17,7 @@ from app.llm.adapters.openai_chat_completions_adapter import (
 )
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
+from app.llm.renderers import render_openai_responses_input
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -65,7 +66,8 @@ class OpenAIResponsesAdapter(LLMAdapter):
         def build_request_kwargs(include_temp: bool, include_reasoning: bool) -> dict:
             request_kwargs = {
                 "model": req.model,
-                "input": [m.model_dump() for m in req.messages],
+                "instructions": req.runtime_instruction,
+                "input": render_openai_responses_input(req),
                 "stream": True,
             }
             if req.max_output_tokens is not None:
@@ -83,6 +85,7 @@ class OpenAIResponsesAdapter(LLMAdapter):
                     reasoning["effort"] = req.reasoning.effort
                 if reasoning:
                     request_kwargs["reasoning"] = reasoning
+                    request_kwargs["include"] = ["reasoning.encrypted_content"]
             return request_kwargs
 
         dependency_key = "provider:openai"
@@ -93,6 +96,8 @@ class OpenAIResponsesAdapter(LLMAdapter):
             tool_calls_map: dict[str, dict[str, str]] = {}
             tool_calls_count = 0
             completed_summary_keys: set[tuple[str, int, int]] = set()
+            continuation_items: list[dict[str, object]] = []
+            continuation_attached = False
             emitted_event = False
             try:
                 await dependency_circuit_breaker.before_call(dependency_key, "provider", "openai")
@@ -214,6 +219,37 @@ class OpenAIResponsesAdapter(LLMAdapter):
 
                     if event_type in {"response.output_item.added", "response.output_item.done"}:
                         item = getattr(chunk, "item", None)
+                        if (
+                            event_type == "response.output_item.done"
+                            and getattr(item, "type", None) == "reasoning"
+                        ):
+                            serialized = (
+                                item.model_dump(exclude={"content"})
+                                if callable(getattr(item, "model_dump", None))
+                                else {
+                                    "type": "reasoning",
+                                    "id": str(getattr(item, "id", "") or ""),
+                                    "summary": [
+                                        {
+                                            "type": str(
+                                                getattr(summary, "type", "") or ""
+                                            ),
+                                            "text": str(
+                                                getattr(summary, "text", "") or ""
+                                            ),
+                                        }
+                                        for summary in (
+                                            getattr(item, "summary", None) or []
+                                        )
+                                    ],
+                                    "encrypted_content": getattr(
+                                        item, "encrypted_content", None
+                                    ),
+                                    "status": getattr(item, "status", None),
+                                }
+                            )
+                            serialized.pop("content", None)
+                            continuation_items.append(serialized)
                         if getattr(item, "type", None) == "function_call":
                             item_id = str(getattr(item, "id", "") or getattr(item, "call_id", ""))
                             if item_id:
@@ -249,7 +285,24 @@ class OpenAIResponsesAdapter(LLMAdapter):
                                         call_id=tc["id"],
                                         tool=tc["name"],
                                         arguments=arguments,
+                                        provider_state=(
+                                            {
+                                                "provider": "openai",
+                                                "data": {
+                                                    "surface": "responses",
+                                                    "items": continuation_items,
+                                                },
+                                            }
+                                            if (
+                                                continuation_items
+                                                and not continuation_attached
+                                            )
+                                            else None
+                                        ),
                                     )
+                                    continuation_attached = bool(
+                                        continuation_items
+                                    ) or continuation_attached
                                     tc["yielded"] = "true"
                         continue
 

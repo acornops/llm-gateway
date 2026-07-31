@@ -1,0 +1,134 @@
+[
+  {
+    "name": "provider-id-and-thought-signature",
+    "chunks": [
+      {
+        "text": "Checking.",
+        "function_calls": [],
+        "usage_metadata": {
+          "prompt_token_count": 5,
+          "candidates_token_count": 2
+        }
+      },
+      {
+        "text": null,
+        "function_calls": [],
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "function_call": {
+                    "id": "gemini-provider-call",
+                    "name": "get_weather",
+                    "args": {
+                      "location": "SF"
+                    }
+                  },
+                  "thought_signature": {
+                    "__bytes_b64__": "b3BhcXVlLXNpZ25hdHVyZQ=="
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "usage_metadata": {
+          "prompt_token_count": 5,
+          "candidates_token_count": 4
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "delta",
+        "text": "Checking."
+      },
+      {
+        "type": "tool_call",
+        "call_id": "gemini-provider-call",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "SF"
+        },
+        "provider_state": {
+          "provider": "gemini",
+          "data": {
+            "thought_signature": "b3BhcXVlLXNpZ25hdHVyZQ=="
+          }
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 4,
+          "tool_calls": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "parallel-generated-stable-ids",
+    "chunks": [
+      {
+        "text": null,
+        "function_calls": [],
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "function_call": {
+                    "name": "get_weather",
+                    "args": {
+                      "location": "SF"
+                    }
+                  }
+                },
+                {
+                  "function_call": {
+                    "name": "get_weather",
+                    "args": {
+                      "location": "NYC"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "usage_metadata": {
+          "prompt_token_count": 7,
+          "candidates_token_count": 5
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "tool_call",
+        "call_id": "gemini_call_1",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "SF"
+        }
+      },
+      {
+        "type": "tool_call",
+        "call_id": "gemini_call_2",
+        "tool": "get_weather",
+        "arguments": {
+          "location": "NYC"
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 7,
+          "output_tokens": 5,
+          "tool_calls": 2
+        }
+      }
+    ]
+  }
+]

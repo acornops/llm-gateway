@@ -9,6 +9,7 @@ from app.config.settings import settings
 from app.llm.adapters.common import build_anthropic_tools
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
+from app.llm.renderers import render_anthropic_messages
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -90,12 +91,8 @@ class AnthropicAdapter(LLMAdapter):
 
         stream_kwargs = {
             "model": req.model,
-            "messages": [
-                {"role": m.role, "content": m.content}
-                for m in req.messages
-                if m.role != "system"
-            ],
-            "system": next((m.content for m in req.messages if m.role == "system"), None),
+            "messages": render_anthropic_messages(req),
+            "system": req.runtime_instruction,
             # Anthropic requires max_tokens in request payload.
             "max_tokens": max_tokens,
         }
@@ -140,6 +137,9 @@ class AnthropicAdapter(LLMAdapter):
 
         while attempt <= attempts:
             tool_calls_map = {}
+            continuation_blocks: list[dict[str, object]] = []
+            active_continuation_blocks: dict[int, dict[str, object]] = {}
+            continuation_attached = False
             emitted_event = False
             thinking_text = ""
             thinking_summary_emitted = False
@@ -165,6 +165,17 @@ class AnthropicAdapter(LLMAdapter):
                                     "input": "",
                                 }
                             elif event.content_block.type == "thinking":
+                                active_continuation_blocks[event.index] = {
+                                    "type": "thinking",
+                                    "thinking": str(
+                                        getattr(event.content_block, "thinking", "")
+                                        or ""
+                                    ),
+                                    "signature": str(
+                                        getattr(event.content_block, "signature", "")
+                                        or ""
+                                    ),
+                                }
                                 block_text = str(getattr(event.content_block, "thinking", "") or "")
                                 if block_text and summary_requested:
                                     thinking_text += block_text
@@ -174,12 +185,25 @@ class AnthropicAdapter(LLMAdapter):
                                         text=block_text,
                                         provider="anthropic",
                                     )
+                            elif event.content_block.type == "redacted_thinking":
+                                active_continuation_blocks[event.index] = {
+                                    "type": "redacted_thinking",
+                                    "data": str(
+                                        getattr(event.content_block, "data", "")
+                                        or ""
+                                    ),
+                                }
                         elif event.type == "content_block_delta":
                             if event.delta.type == "text_delta":
                                 emitted_event = True
                                 yield StreamEvent(type="delta", text=event.delta.text)
                             elif event.delta.type == "thinking_delta":
                                 delta_text = str(getattr(event.delta, "thinking", "") or "")
+                                block = active_continuation_blocks.get(event.index)
+                                if block is not None:
+                                    block["thinking"] = (
+                                        str(block.get("thinking") or "") + delta_text
+                                    )
                                 if delta_text and summary_requested:
                                     thinking_text += delta_text
                                     emitted_event = True
@@ -188,12 +212,28 @@ class AnthropicAdapter(LLMAdapter):
                                         text=delta_text,
                                         provider="anthropic",
                                     )
+                            elif event.delta.type == "signature_delta":
+                                block = active_continuation_blocks.get(event.index)
+                                if block is not None:
+                                    block["signature"] = (
+                                        str(block.get("signature") or "")
+                                        + str(
+                                            getattr(event.delta, "signature", "")
+                                            or ""
+                                        )
+                                    )
                             elif (
                                 event.delta.type == "input_json_delta"
                                 and event.index in tool_calls_map
                             ):
                                 tool_calls_map[event.index]["input"] += event.delta.partial_json
                         elif event.type == "content_block_stop":
+                            continuation_block = active_continuation_blocks.pop(
+                                event.index,
+                                None,
+                            )
+                            if continuation_block is not None:
+                                continuation_blocks.append(continuation_block)
                             if event.index in tool_calls_map:
                                 tc = tool_calls_map[event.index]
                                 emitted_event = True
@@ -202,7 +242,23 @@ class AnthropicAdapter(LLMAdapter):
                                     call_id=tc["id"],
                                     tool=tc["name"],
                                     arguments=json.loads(tc["input"]) if tc["input"] else {},
+                                    provider_state=(
+                                        {
+                                            "provider": "anthropic",
+                                            "data": {
+                                                "blocks": continuation_blocks,
+                                            },
+                                        }
+                                        if (
+                                            continuation_blocks
+                                            and not continuation_attached
+                                        )
+                                        else None
+                                    ),
                                 )
+                                continuation_attached = bool(
+                                    continuation_blocks
+                                ) or continuation_attached
                             elif summary_requested and thinking_text:
                                 emitted_event = True
                                 yield StreamEvent(

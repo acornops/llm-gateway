@@ -2,7 +2,7 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.examples import (
     EXAMPLE_RUN_ID,
@@ -10,14 +10,12 @@ from app.examples import (
     EXAMPLE_TARGET_ID,
     EXAMPLE_WORKSPACE_ID,
 )
+from app.llm.transcript import (
+    ProviderContinuationState,
+    TranscriptTurn,
+    validate_transcript_sequence,
+)
 from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, TargetType
-
-
-class Message(BaseModel):
-    role: str = Field(examples=["user"])
-    content: str = Field(
-        examples=["Investigate CrashLoopBackOff for payments-api in prod namespace."]
-    )
 
 
 class ToolSpec(BaseModel):
@@ -83,7 +81,8 @@ class NormalizedLLMRequest(BaseModel):
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     provider: Literal["openai", "anthropic", "gemini"] = Field(examples=["gemini"])
     model: str = Field(examples=["gemini-2.0-flash"])
-    messages: list[Message]
+    runtime_instruction: str = Field(min_length=1, max_length=65536)
+    transcript: list[TranscriptTurn] = Field(min_length=1)
     tools: list[ToolSpec] = []
     native_tools: list[NativeToolSpec] = []
     temperature: float = 0.7
@@ -123,6 +122,13 @@ class NormalizedLLMRequest(BaseModel):
             raise ValueError("specialist workflow requests require agent identity and version")
         return self
 
+    @model_validator(mode="after")
+    def validate_canonical_transcript(self):
+        if not self.runtime_instruction.strip():
+            raise ValueError("runtime_instruction must not be blank")
+        validate_transcript_sequence(self.transcript, self.provider)
+        return self
+
     @field_validator("provider", mode="before")
     @classmethod
     def normalize_provider(cls, value: object) -> str:
@@ -136,8 +142,9 @@ class NormalizedLLMRequest(BaseModel):
             )
         return normalized
 
-    model_config = {
-        "json_schema_extra": {
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
             "example": {
                 "run_id": EXAMPLE_RUN_ID,
                 "workspace_id": EXAMPLE_WORKSPACE_ID,
@@ -146,13 +153,12 @@ class NormalizedLLMRequest(BaseModel):
                 "session_id": EXAMPLE_SESSION_ID,
                 "provider": "gemini",
                 "model": "gemini-2.0-flash",
-                "messages": [
+                "runtime_instruction": (
+                    "You are AcornOps. Use live tools when target evidence is needed."
+                ),
+                "transcript": [
                     {
-                        "role": "system",
-                        "content": "You are AcornOps, a Kubernetes troubleshooting assistant.",
-                    },
-                    {
-                        "role": "user",
+                        "type": "user",
                         "content": "Check why payments-api pods are restarting every few minutes.",
                     },
                 ],
@@ -170,9 +176,9 @@ class NormalizedLLMRequest(BaseModel):
                 "temperature": 0.2,
                 "max_output_tokens": 4000,
                 "reasoning": {"summary_mode": "off", "effort": "off"},
-            }
-        }
-    }
+            },
+        },
+    )
 
 
 class StreamEvent(BaseModel):
@@ -188,6 +194,7 @@ class StreamEvent(BaseModel):
     call_id: str | None = None
     tool: str | None = None
     arguments: dict[str, Any] | None = None
+    provider_state: ProviderContinuationState | None = None
     usage: dict[str, int] | None = None
     code: str | None = None
     message: str | None = None

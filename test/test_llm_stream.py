@@ -53,7 +53,8 @@ def build_llm_stream_payload(**overrides):
         "session_id": EXAMPLE_SESSION_ID,
         "provider": "openai",
         "model": "gpt-4",
-        "messages": [{"role": "user", "content": "hi"}],
+        "runtime_instruction": "You are AcornOps.",
+        "transcript": [{"type": "user", "content": "hi"}],
         "temperature": 0.7,
         "max_output_tokens": 1000,
     }
@@ -759,7 +760,31 @@ async def test_llm_stream_deterministic_dev_response_summarizes_tool_feedback(
                     "/api/v1/llm/generations:stream",
                     json=build_llm_stream_payload(
                         target_type="virtual_machine",
-                        messages=[{"role": "user", "content": "Live tool results:\n{}"}],
+                        transcript=[
+                            {"type": "user", "content": "Inspect the host."},
+                            {
+                                "type": "assistant",
+                                "content": [
+                                    {
+                                        "type": "tool_call",
+                                        "call_id": "call-1",
+                                        "name": "get_host_summary",
+                                        "arguments": {},
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "tool_results",
+                                "results": [
+                                    {
+                                        "call_id": "call-1",
+                                        "name": "get_host_summary",
+                                        "result": {},
+                                        "is_error": False,
+                                    }
+                                ],
+                            },
+                        ],
                         tools=[{"name": "get_host_summary"}],
                     ),
                     headers={"Authorization": "Bearer fake-token"},

@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "name": "llm-gateway-provider-native-transcript",
+  "minimum_scenarios": 50,
+  "suites": [
+    {
+      "id": "openai-responses-rendering",
+      "category": "provider_rendering",
+      "nodeid": "test/test_provider_renderers.py::test_openai_responses_exact_payloads",
+      "min_cases": 7
+    },
+    {
+      "id": "openai-chat-rendering",
+      "category": "provider_rendering",
+      "nodeid": "test/test_provider_renderers.py::test_openai_chat_completions_exact_payloads",
+      "min_cases": 7
+    },
+    {
+      "id": "anthropic-rendering",
+      "category": "provider_rendering",
+      "nodeid": "test/test_provider_renderers.py::test_anthropic_exact_payloads",
+      "min_cases": 7
+    },
+    {
+      "id": "gemini-rendering",
+      "category": "provider_rendering",
+      "nodeid": "test/test_provider_renderers.py::test_gemini_exact_payloads",
+      "min_cases": 7
+    },
+    {
+      "id": "provider-state-boundary",
+      "category": "provider_rendering",
+      "nodeid": "test/test_provider_renderers.py::test_provider_continuation_state_renders_only_at_native_boundary",
+      "min_cases": 1
+    },
+    {
+      "id": "openai-responses-stream-replays",
+      "category": "stream_replay",
+      "nodeid": "test/test_openai_adapter.py::test_openai_adapter_replays_stream_contract_fixtures",
+      "min_cases": 2
+    },
+    {
+      "id": "openai-chat-stream-replays",
+      "category": "stream_replay",
+      "nodeid": "test/test_openai_chat_completions_adapter.py::test_chat_completions_adapter_replays_stream_contract_fixtures",
+      "min_cases": 2
+    },
+    {
+      "id": "anthropic-stream-replays",
+      "category": "stream_replay",
+      "nodeid": "test/test_anthropic_adapter.py::test_anthropic_adapter_replays_stream_contract_fixtures",
+      "min_cases": 2
+    },
+    {
+      "id": "gemini-stream-replays",
+      "category": "stream_replay",
+      "nodeid": "test/test_gemini_adapter.py::test_gemini_adapter_replays_stream_contract_fixtures",
+      "min_cases": 2
+    },
+    {
+      "id": "replay-sdk-lock",
+      "category": "fixture_integrity",
+      "nodeid": "test/test_provider_stream_replay_manifest.py::test_provider_stream_replay_manifest_covers_all_surfaces_and_locked_sdks",
+      "min_cases": 1
+    },
+    {
+      "id": "replay-credential-scan",
+      "category": "fixture_integrity",
+      "nodeid": "test/test_provider_stream_replay_manifest.py::test_provider_stream_replays_contain_no_credential_shaped_data",
+      "min_cases": 1
+    },
+    {
+      "id": "transcript-round-trip",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_valid_transcript_round_trips_stably",
+      "min_cases": 1
+    },
+    {
+      "id": "invalid-sequences",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_invalid_sequences_fail_precisely",
+      "min_cases": 3
+    },
+    {
+      "id": "duplicate-calls-results",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_duplicate_calls_and_results_fail",
+      "min_cases": 1
+    },
+    {
+      "id": "provider-state-safety",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_provider_state_is_bounded_provider_bound_and_private",
+      "min_cases": 1
+    },
+    {
+      "id": "unknown-system-turns",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_unknown_or_system_like_turns_are_rejected",
+      "min_cases": 3
+    },
+    {
+      "id": "argument-and-name-safety",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_arguments_must_be_an_object_and_names_are_safe",
+      "min_cases": 1
+    },
+    {
+      "id": "legacy-request-rejection",
+      "category": "transcript_contract",
+      "nodeid": "test/test_transcript_contract.py::test_legacy_messages_request_is_rejected",
+      "min_cases": 1
+    }
+  ]
+}

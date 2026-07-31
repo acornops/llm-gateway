@@ -36,7 +36,17 @@ task lint
 task contracts:check
 task harness:check
 task unit-test
+task keyless-eval
 ```
+
+`task keyless-eval` runs exact provider-native payload cases and sanitized
+stream replays with provider credential variables removed and TCP connections
+blocked. It prints machine-readable totals and per-category results, and fails
+when a case fails, skips, no longer collects, or falls outside the manifest.
+Replay fixtures are locked to the repository's OpenAI, Anthropic, and Gemini
+SDK versions and are scanned for credential-shaped content. This measurement
+checks serialization and normalization fidelity; it does not measure
+live-provider availability or model answer quality.
 
 For full-stack local development:
 

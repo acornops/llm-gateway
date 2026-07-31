@@ -4,7 +4,7 @@ from app.api.handlers_llm_stream import stream_generation
 from app.api.handlers_tool_call import ToolCallRequest, execute_tool_call
 from app.auth.claims import Permissions, TokenClaims
 from app.auth.jwt_validator import TokenContext
-from app.llm.service import Message, NormalizedLLMRequest
+from app.llm.service import NormalizedLLMRequest
 
 
 class FakeRateLimiter:
@@ -48,7 +48,8 @@ async def test_llm_rate_limit_uses_configured_values(monkeypatch: pytest.MonkeyP
         session_id="session-1",
         provider="openai",
         model="gpt-4.1-mini",
-        messages=[Message(role="user", content="hello")],
+        runtime_instruction="You are AcornOps.",
+        transcript=[{"type": "user", "content": "hello"}],
     )
 
     with pytest.raises(RuntimeError, match="stop after rate-limit check"):

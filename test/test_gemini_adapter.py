@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from provider_replay_fixtures import load_replay_cases, to_namespace
 
 from app.examples import (
     EXAMPLE_RUN_ID,
@@ -21,6 +22,8 @@ from app.llm.adapters.gemini_adapter import (
 from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
+GEMINI_STREAM_REPLAY_FIXTURES = load_replay_cases("gemini_stream_replays.json")
+
 
 def _request() -> NormalizedLLMRequest:
     return NormalizedLLMRequest(
@@ -31,7 +34,8 @@ def _request() -> NormalizedLLMRequest:
         session_id=EXAMPLE_SESSION_ID,
         provider="gemini",
         model="gemini-2.0-flash",
-        messages=[{"role": "user", "content": "hello"}],
+        runtime_instruction="You are AcornOps.",
+        transcript=[{"type": "user", "content": "hello"}],
         tools=[
             {
                 "name": "get_weather",
@@ -54,12 +58,13 @@ def test_gemini_preserves_platform_function_alias() -> None:
     assert tools[0]["function_declarations"][0]["name"] == "acornops_generate_pdf_report"
 
 
-def _request_with_system_messages() -> NormalizedLLMRequest:
+def _request_with_runtime_instruction() -> NormalizedLLMRequest:
     payload = _request().model_dump()
-    payload["messages"] = [
-        {"role": "system", "content": "Use read-only tools only."},
-        {"role": "system", "content": "Explain blocked write actions clearly."},
-        {"role": "user", "content": "restart the workload"},
+    payload["runtime_instruction"] = (
+        "Use read-only tools only.\n\nExplain blocked write actions clearly."
+    )
+    payload["transcript"] = [
+        {"type": "user", "content": "restart the workload"}
     ]
     return NormalizedLLMRequest(**payload)
 
@@ -72,9 +77,70 @@ async def _chunk_stream():
     )
     yield SimpleNamespace(
         text=None,
-        function_calls=[SimpleNamespace(name="get_weather", args={"location": "SF"})],
+        function_calls=[],
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(
+                            function_call=SimpleNamespace(
+                                id="provider-call-1",
+                                name="get_weather",
+                                args={"location": "SF"},
+                            ),
+                            thought_signature=b"opaque-signature",
+                        )
+                    ]
+                )
+            )
+        ],
         usage_metadata=SimpleNamespace(prompt_token_count=5, candidates_token_count=4),
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "case",
+    GEMINI_STREAM_REPLAY_FIXTURES,
+    ids=[case["name"] for case in GEMINI_STREAM_REPLAY_FIXTURES],
+)
+async def test_gemini_adapter_replays_stream_contract_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+    case: dict,
+) -> None:
+    async def replay_stream():
+        for chunk in case["chunks"]:
+            yield to_namespace(chunk)
+
+    class FakeModels:
+        async def generate_content_stream(self, **_kwargs):
+            return replay_stream()
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.aio = SimpleNamespace(models=FakeModels())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gemini_adapter.genai, "Client", FakeClient)
+    monkeypatch.setattr(
+        gemini_adapter.dependency_circuit_breaker,
+        "before_call",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        gemini_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in GeminiAdapter().stream(_request(), "fixture-key")
+    ]
+
+    assert events == case["expected_events"]
 
 
 @pytest.mark.anyio
@@ -131,7 +197,13 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
     assert [event.type for event in events] == ["delta", "tool_call", "final"]
     assert events[0].text == "Hello"
     assert events[1].tool == "get_weather"
+    assert events[1].call_id == "provider-call-1"
     assert events[1].arguments == {"location": "SF"}
+    assert events[1].provider_state is not None
+    assert events[1].provider_state.model_dump() == {
+        "provider": "gemini",
+        "data": {"thought_signature": "b3BhcXVlLXNpZ25hdHVyZQ=="},
+    }
     assert events[2].usage == {
         "input_tokens": 5,
         "output_tokens": 4,
@@ -313,7 +385,7 @@ async def test_gemini_adapter_passes_system_messages_as_system_instruction(
     monkeypatch.setattr(gemini_adapter.dependency_circuit_breaker, "record_success", AsyncMock())
 
     events = [
-        event async for event in GeminiAdapter().stream(_request_with_system_messages(), "key")
+        event async for event in GeminiAdapter().stream(_request_with_runtime_instruction(), "key")
     ]
 
     assert [event.type for event in events] == ["delta", "tool_call", "final"]

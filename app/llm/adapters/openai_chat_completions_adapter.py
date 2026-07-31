@@ -19,6 +19,7 @@ from app.llm.adapters.common import (
 )
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
+from app.llm.renderers import render_openai_chat_messages
 from app.llm.service import (
     LLMAdapter,
     NormalizedLLMRequest,
@@ -158,7 +159,7 @@ class OpenAIChatCompletionsAdapter(LLMAdapter):
         ) -> dict[str, Any]:
             request_kwargs: dict[str, Any] = {
                 "model": req.model,
-                "messages": [message.model_dump() for message in req.messages],
+                "messages": render_openai_chat_messages(req),
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }

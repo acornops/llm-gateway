@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from provider_replay_fixtures import load_replay_cases, to_namespace
 
 from app.examples import (
     EXAMPLE_RUN_ID,
@@ -15,6 +16,10 @@ from app.llm.adapters.anthropic_adapter import AnthropicAdapter
 from app.llm.adapters.common import build_anthropic_tools
 from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
+
+ANTHROPIC_STREAM_REPLAY_FIXTURES = load_replay_cases(
+    "anthropic_stream_replays.json"
+)
 
 
 def _request(*, include_tools: bool = True) -> NormalizedLLMRequest:
@@ -39,10 +44,8 @@ def _request(*, include_tools: bool = True) -> NormalizedLLMRequest:
         session_id=EXAMPLE_SESSION_ID,
         provider="anthropic",
         model="claude-3-7-sonnet",
-        messages=[
-            {"role": "system", "content": "Be concise."},
-            {"role": "user", "content": "hello"},
-        ],
+        runtime_instruction="Be concise.",
+        transcript=[{"type": "user", "content": "hello"}],
         tools=tools,
         temperature=0.2,
         max_output_tokens=128,
@@ -93,6 +96,48 @@ class FakeMessages:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "case",
+    ANTHROPIC_STREAM_REPLAY_FIXTURES,
+    ids=[case["name"] for case in ANTHROPIC_STREAM_REPLAY_FIXTURES],
+)
+async def test_anthropic_adapter_replays_stream_contract_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+    case: dict,
+) -> None:
+    messages = FakeMessages(
+        [
+            FakeStreamContext(
+                events=[to_namespace(event) for event in case["events"]],
+            )
+        ]
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.messages = messages
+
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "before_call",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        anthropic_adapter.dependency_circuit_breaker,
+        "record_success",
+        AsyncMock(),
+    )
+
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in AnthropicAdapter().stream(_request(), "fixture-key")
+    ]
+
+    assert events == case["expected_events"]
+
+
+@pytest.mark.anyio
 async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: pytest.MonkeyPatch):
     messages = FakeMessages(
         [
@@ -105,7 +150,25 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
                     ),
                     SimpleNamespace(
                         type="content_block_start",
-                        index=0,
+                        index=1,
+                        content_block=SimpleNamespace(
+                            type="thinking",
+                            thinking="opaque provider block",
+                            signature="",
+                        ),
+                    ),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=1,
+                        delta=SimpleNamespace(
+                            type="signature_delta",
+                            signature="opaque-signature",
+                        ),
+                    ),
+                    SimpleNamespace(type="content_block_stop", index=1),
+                    SimpleNamespace(
+                        type="content_block_start",
+                        index=2,
                         content_block=SimpleNamespace(
                             type="tool_use",
                             id="call-1",
@@ -114,13 +177,13 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
                     ),
                     SimpleNamespace(
                         type="content_block_delta",
-                        index=0,
+                        index=2,
                         delta=SimpleNamespace(
                             type="input_json_delta",
                             partial_json='{"location":"SF"}',
                         ),
                     ),
-                    SimpleNamespace(type="content_block_stop", index=0),
+                    SimpleNamespace(type="content_block_stop", index=2),
                     SimpleNamespace(
                         type="message_delta",
                         usage=SimpleNamespace(input_tokens=5, output_tokens=7),
@@ -172,6 +235,18 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
             "call_id": "call-1",
             "tool": "get_weather",
             "arguments": {"location": "SF"},
+            "provider_state": {
+                "provider": "anthropic",
+                "data": {
+                    "blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "opaque provider block",
+                            "signature": "opaque-signature",
+                        }
+                    ]
+                },
+            },
         },
         {
             "type": "final",

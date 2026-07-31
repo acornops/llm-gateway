@@ -11,7 +11,7 @@ from app.api.tool_call_contract import (
     request_matches_claim_scope as tool_request_matches_claim_scope,
 )
 from app.auth.claims import Permissions, TokenClaims
-from app.llm.service import Message, NormalizedLLMRequest
+from app.llm.service import NormalizedLLMRequest
 
 
 def workspace_agent_claims() -> TokenClaims:
@@ -52,7 +52,8 @@ def llm_request(**overrides) -> NormalizedLLMRequest:
         "session_id": "workflow-session-1",
         "provider": "openai",
         "model": "gpt-4.1-mini",
-        "messages": [Message(role="user", content="hello")],
+        "runtime_instruction": "You are AcornOps.",
+        "transcript": [{"type": "user", "content": "hello"}],
     }
     payload.update(overrides)
     return NormalizedLLMRequest(**payload)

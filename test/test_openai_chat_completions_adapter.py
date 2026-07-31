@@ -1,9 +1,9 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from provider_replay_fixtures import load_replay_cases, to_namespace
 
 from app.llm.adapters.common import build_openai_chat_completion_tools
 from app.llm.adapters.openai_chat_completions_adapter import (
@@ -11,23 +11,9 @@ from app.llm.adapters.openai_chat_completions_adapter import (
 )
 from app.llm.service import NativeToolSpec, NormalizedLLMRequest, ReasoningConfig, ToolSpec
 
-OPENAI_CHAT_STREAM_REPLAY_FIXTURES = json.loads(
-    (
-        Path(__file__).resolve().parent
-        / "fixtures"
-        / "openai_chat_completions_stream_replays.json"
-    ).read_text()
+OPENAI_CHAT_STREAM_REPLAY_FIXTURES = load_replay_cases(
+    "openai_chat_completions_stream_replays.json"
 )
-
-
-def _to_namespace(value):
-    if isinstance(value, dict):
-        return SimpleNamespace(
-            **{key: _to_namespace(item) for key, item in value.items()}
-        )
-    if isinstance(value, list):
-        return [_to_namespace(item) for item in value]
-    return value
 
 
 def _build_request(
@@ -45,10 +31,8 @@ def _build_request(
         session_id="44444444-4444-4444-8444-444444444444",
         provider="openai",
         model=model,
-        messages=[
-            {"role": "system", "content": "Be precise."},
-            {"role": "user", "content": "hello"},
-        ],
+        runtime_instruction="Be precise.",
+        transcript=[{"type": "user", "content": "hello"}],
         tools=tools or [],
         native_tools=native_tools or [],
         max_output_tokens=128,
@@ -99,7 +83,7 @@ async def test_chat_completions_adapter_replays_stream_contract_fixtures(
 ) -> None:
     async def stream_response():
         for chunk in case["chunks"]:
-            yield _to_namespace(chunk)
+            yield to_namespace(chunk)
 
     class FakeCompletions:
         async def create(self, **_kwargs):
@@ -618,7 +602,7 @@ async def test_chat_completions_adapter_rejects_invalid_tool_calls(
     expected_message: str,
 ) -> None:
     async def stream_response():
-        yield _to_namespace(
+        yield to_namespace(
             {
                 "choices": [
                     {

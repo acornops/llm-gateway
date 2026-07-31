@@ -21,6 +21,7 @@ from app.llm.service import (
     normalize_provider_name,
     reasoning_summaries_enabled,
 )
+from app.llm.transcript import ToolResultTurn
 from app.observability.metrics import (
     GATEWAY_LLM_PROVIDER_REQUESTS_TOTAL,
     GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL,
@@ -37,7 +38,6 @@ logger = structlog.get_logger()
 PROVIDER_CREDENTIAL_BACKEND_UNAVAILABLE = "Provider credential backend unavailable"
 PROVIDER_CREDENTIALS_NOT_CONFIGURED = "Provider credentials are not configured"
 PROVIDER_NOT_SUPPORTED = "Provider is not supported"
-LIVE_TOOL_RESULTS_MARKER = "Live tool results:"
 OPENAI_CHAT_COMPLETIONS_NATIVE_TOOLS_UNSUPPORTED = (
     "OpenAI native tools require the Responses API surface"
 )
@@ -164,7 +164,7 @@ def _validate_native_tools(req: NormalizedLLMRequest, claims: TokenClaims) -> No
 
 
 def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
-    if any(LIVE_TOOL_RESULTS_MARKER in message.content for message in req.messages):
+    if any(isinstance(turn, ToolResultTurn) for turn in req.transcript):
         return None
     preferred_tools = (
         "get_host_summary",

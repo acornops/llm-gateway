@@ -8,6 +8,16 @@
         "delta": "Hello"
       },
       {
+        "type": "response.output_item.done",
+        "item": {
+          "id": "rs_1",
+          "type": "reasoning",
+          "summary": [],
+          "encrypted_content": "opaque-reasoning-state",
+          "status": "completed"
+        }
+      },
+      {
         "type": "response.output_item.added",
         "item": {
           "id": "fc_1",
@@ -57,6 +67,21 @@
         "tool": "lookup_weather",
         "arguments": {
           "location": "SF"
+        },
+        "provider_state": {
+          "provider": "openai",
+          "data": {
+            "surface": "responses",
+            "items": [
+              {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [],
+                "encrypted_content": "opaque-reasoning-state",
+                "status": "completed"
+              }
+            ]
+          }
         }
       },
       {

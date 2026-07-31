@@ -46,6 +46,14 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 ## Execution-Engine Boundary Notes
 
 - The gateway accepts requested built-in native tool policy only through `allowed_native_tools`.
+- Model streaming accepts exactly one non-empty `runtime_instruction` plus a
+  strictly sequenced provider-neutral `transcript`; loose `messages`,
+  transcript system/developer records, orphaned results, and mismatched
+  call/result groups fail validation before provider dispatch.
+- Provider adapters serialize assistant calls and linked results into each
+  provider's native structures. Required continuation metadata is opaque,
+  same-provider-only, capped at 32 KiB, and never emitted in ordinary logs or
+  public run events.
 - Callable function names must match `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`; the
   gateway rejects unsafe names before provider dispatch, while provider-safe
   platform aliases remain unchanged across OpenAI, Anthropic, and Gemini.

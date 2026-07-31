@@ -199,7 +199,8 @@ async def test_llm_stream_integrated_openai(monkeypatch: pytest.MonkeyPatch):
                     "session_id": "sess_888",
                     "provider": "openai",
                     "model": "gpt-4",
-                    "messages": [{"role": "user", "content": "hi"}],
+                    "runtime_instruction": "You are AcornOps.",
+                    "transcript": [{"type": "user", "content": "hi"}],
                     "temperature": 0.7,
                     "max_output_tokens": 1000,
                 }

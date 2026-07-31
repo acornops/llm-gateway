@@ -58,6 +58,12 @@ tasks:
       - task python:check
       - "{{.PYTHON}} -m pytest test --ignore=test/integration"
 
+  keyless-eval:
+    desc: Measure provider-native rendering and replays without credentials or TCP connections
+    cmds:
+      - task python:check
+      - "{{.PYTHON}} scripts/run-keyless-evals.py"
+
   validate:
     desc: Run canonical local validation
     cmds:
@@ -65,3 +71,4 @@ tasks:
       - task contracts:check
       - task harness:check
       - task unit-test
+      - task keyless-eval
