@@ -17,6 +17,13 @@ class McpToolRef(BaseModel):
     tool_name: str
 
 
+class TargetToolRoutePermission(McpToolRef):
+    alias: str
+    operation: Literal["read", "write"]
+    target_id: str
+    target_type: TargetType
+
+
 class RunPrincipalRef(BaseModel):
     type: Literal["user", "service_identity"]
     id: str
@@ -45,6 +52,7 @@ class Permissions(BaseModel):
     allowed_models: list[str] = []
     allowed_tools: list[str] = []
     allowed_tool_refs: list[McpToolRef] = []
+    allowed_target_tool_routes: list[TargetToolRoutePermission] = []
     allowed_native_tools: list[NativeToolPermission] = []
     allowed_tool_operations: dict[str, Literal["read", "write"]] = {}
     context_grants: list[str] = []
@@ -54,6 +62,26 @@ class Permissions(BaseModel):
 
     @model_validator(mode="after")
     def validate_resource_bindings(self):
+        route_keys = [
+            (
+                route.alias,
+                route.server_id,
+                route.tool_name,
+                route.target_id,
+                route.target_type,
+            )
+            for route in self.allowed_target_tool_routes
+        ]
+        if len(route_keys) != len(set(route_keys)):
+            raise ValueError("target tool routes must be unique")
+        for route in self.allowed_target_tool_routes:
+            if route.alias not in self.allowed_tools:
+                raise ValueError("target tool route alias must be an allowed tool")
+            if not any(
+                ref.server_id == route.server_id and ref.tool_name == route.tool_name
+                for ref in self.allowed_tool_refs
+            ):
+                raise ValueError("target tool route must reference an allowed tool ref")
         binding_ids = [binding.binding_id for binding in self.resource_bindings]
         if len(binding_ids) != len(set(binding_ids)):
             raise ValueError("resource binding IDs must be unique")
@@ -144,6 +172,8 @@ class TokenClaims(BaseModel):
         if self.scope.type == "target":
             if not self.target_id or not self.target_type:
                 raise ValueError("target scope requires target_id and target_type")
+            if self.permissions.allowed_target_tool_routes:
+                raise ValueError("target-scoped tokens must not contain dynamic target routes")
             return self
 
         missing = [

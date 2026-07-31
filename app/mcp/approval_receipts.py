@@ -58,7 +58,9 @@ def _required_string(payload: dict, key: str) -> str:
     return value
 
 
-async def validate_and_claim_approval_receipt(receipt: str, request) -> None:
+async def validate_and_claim_approval_receipt(
+    receipt: str, request, approval_arguments: dict | None = None
+) -> None:
     try:
         header = jwt.get_unverified_header(receipt)
         if header.get("alg") != "RS256" or header.get("typ") != "acornops-approval+jwt":
@@ -102,7 +104,9 @@ async def validate_and_claim_approval_receipt(receipt: str, request) -> None:
         )
     try:
         arguments_digest = hashlib.sha256(
-            canonical_json(request.arguments).encode("utf-8")
+            canonical_json(
+                request.arguments if approval_arguments is None else approval_arguments
+            ).encode("utf-8")
         ).hexdigest()
     except (TypeError, ValueError) as exc:
         raise ApprovalReceiptError(

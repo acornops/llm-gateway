@@ -78,6 +78,29 @@ async def test_exact_approval_receipt_is_claimed_once(
 
 
 @pytest.mark.anyio
+async def test_dynamic_target_route_receipt_hashes_the_approved_routing_selector(
+    receipt_keys, monkeypatch: pytest.MonkeyPatch
+):
+    import hashlib
+
+    request = _request({"service": "api"})
+    approved_arguments = {"service": "api", "target_id": "vm-1"}
+    receipt = _receipt(
+        receipt_keys,
+        request,
+        arguments_digest=hashlib.sha256(
+            canonical_json(approved_arguments).encode()
+        ).hexdigest(),
+    )
+    claim = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.mcp.approval_receipts.approval_receipt_store.claim", claim)
+
+    await validate_and_claim_approval_receipt(receipt, request, approved_arguments)
+
+    claim.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_receipt_accepts_formerly_divergent_ieee754_arguments(
     receipt_keys, monkeypatch: pytest.MonkeyPatch
 ):

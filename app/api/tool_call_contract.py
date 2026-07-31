@@ -90,7 +90,7 @@ def request_matches_claim_scope(req: ToolCallRequest, claims: TokenClaims) -> bo
     if req.scope.type != claims.scope.type:
         return False
     if claims.scope.type == "workspace":
-        return (
+        workflow_scope_matches = (
             req.workflow_id == claims.workflow_id
             and req.execution_id == claims.execution_id
             and req.workflow_session_id == claims.workflow_session_id
@@ -98,8 +98,25 @@ def request_matches_claim_scope(req: ToolCallRequest, claims: TokenClaims) -> bo
             and req.agent_id == claims.agent_id
             and req.agent_version == claims.agent_version
             and req.trigger_id == claims.trigger_id
-            and req.target_id == claims.target_id
-            and req.target_type == claims.target_type
+        )
+        if not workflow_scope_matches:
+            return False
+        if claims.target_id or claims.target_type:
+            return (
+                req.target_id == claims.target_id
+                and req.target_type == claims.target_type
+            )
+        if not req.target_id and not req.target_type:
+            return True
+        if not req.target_id or not req.target_type or req.tool_ref is None:
+            return False
+        return any(
+            route.alias == req.tool
+            and route.server_id == req.tool_ref.server_id
+            and route.tool_name == req.tool_ref.tool_name
+            and route.target_id == req.target_id
+            and route.target_type == req.target_type
+            for route in claims.permissions.allowed_target_tool_routes
         )
     return (
         req.target_id == claims.target_id

@@ -264,6 +264,7 @@
         "allowed_tools",
         "allowed_tool_refs[].server_id",
         "allowed_tool_refs[].tool_name",
+        "allowed_target_tool_routes[].{alias,server_id,tool_name,operation,target_id,target_type}",
         "allowed_native_tools",
         "allowed_tool_operations?",
         "resource_bindings[].{binding_id,type,resource_id,provider,provider_version,workspace_id,label_snapshot,source,operations,context_mode,provider_data?}",

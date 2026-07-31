@@ -117,6 +117,49 @@ def test_tool_workspace_scope_requires_matching_target_binding():
     )
 
 
+def test_tool_workspace_scope_allows_only_signed_dynamic_target_route():
+    claims = TokenClaims(
+        **{
+            **workspace_agent_claims().model_dump(exclude={"permissions"}),
+            "permissions": {
+                "allowed_tools": ["read_target"],
+                "allowed_tool_refs": [
+                    {"server_id": "targets", "tool_name": "read"}
+                ],
+                "allowed_target_tool_routes": [
+                    {
+                        "alias": "read_target",
+                        "operation": "read",
+                        "server_id": "targets",
+                        "tool_name": "read",
+                        "target_id": "vm-1",
+                        "target_type": "virtual_machine",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert tool_request_matches_claim_scope(
+        tool_request(
+            tool="read_target",
+            tool_ref={"server_id": "targets", "tool_name": "read"},
+            target_id="vm-1",
+            target_type="virtual_machine",
+        ),
+        claims,
+    )
+    assert not tool_request_matches_claim_scope(
+        tool_request(
+            tool="read_target",
+            tool_ref={"server_id": "targets", "tool_name": "read"},
+            target_id="vm-2",
+            target_type="virtual_machine",
+        ),
+        claims,
+    )
+
+
 def test_workspace_scope_rejects_agent_without_workflow():
     with pytest.raises(ValidationError, match="workspace workflow scope missing required fields"):
         TokenClaims(

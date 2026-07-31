@@ -95,8 +95,26 @@ def _enforce_reviewed_authority(tool, server, req: ToolCallRequest, claims: Toke
 async def _authorize_tool_dispatch(tool, server, req: ToolCallRequest, claims: TokenClaims) -> None:
     if not _enforce_reviewed_authority(tool, server, req, claims):
         return
+    approval_arguments = dict(req.arguments)
+    if (
+        claims.scope.type == "workspace"
+        and not claims.target_id
+        and req.target_id
+        and req.tool_ref is not None
+        and any(
+            route.alias == req.tool
+            and route.server_id == req.tool_ref.server_id
+            and route.tool_name == req.tool_ref.tool_name
+            and route.target_id == req.target_id
+            and route.target_type == req.target_type
+            for route in claims.permissions.allowed_target_tool_routes
+        )
+    ):
+        approval_arguments["target_id"] = req.target_id
     try:
-        await validate_and_claim_approval_receipt(req.approval_receipt or "", req)
+        await validate_and_claim_approval_receipt(
+            req.approval_receipt or "", req, approval_arguments
+        )
     except ApprovalReceiptError as exc:
         raise HTTPException(
             status_code=409
@@ -323,11 +341,7 @@ async def execute_tool_call(
             )
             return _tool_execution_error_response(exc, str(tool.capability))
 
-    # A workspace Workflow may resolve a target tool only when the signed run
-    # claims carry the exact target binding already checked against the request.
-    if claims.scope.type == "workspace" and not (
-        claims.target_id and claims.target_type
-    ):
+    if claims.scope.type == "workspace" and not (req.target_id and req.target_type):
         raise HTTPException(
             status_code=404,
             detail=f"Agent MCP tool {req.tool} not found or disabled",

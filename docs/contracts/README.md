@@ -31,6 +31,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Runtime and admin traffic are separate contracts and credentials must not be reused.
 - Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, target, workflow, and context scope.
 - Requested body scope must match token scope; the gateway must not infer missing scope from UI state or registry state.
+- A targetless workspace Workflow may send target scope on an MCP tool call only
+  when `allowed_target_tool_routes` contains the exact model alias,
+  server-qualified tool, target ID, and target type. The route is additive to
+  the ordinary allowed-tool and allowed-ref checks; all mismatches fail closed.
 - Provider credentials, admin tokens, run JWTs, MCP secret headers, raw reasoning state, and chain-of-thought must not be emitted in responses.
 - Provider credentials resolve as exact workspace override, then platform
   default. Internal status responses expose only `configured`, `enabled`, and
