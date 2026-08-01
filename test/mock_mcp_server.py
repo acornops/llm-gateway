@@ -9,7 +9,7 @@ TOOLS = [
     {
         "name": "get_weather",
         "description": "Get weather for a location.",
-        "capability": "read",
+        "annotations": {"readOnlyHint": True},
         "inputSchema": {
             "type": "object",
             "properties": {

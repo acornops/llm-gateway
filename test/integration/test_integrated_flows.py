@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_full_tool_call_flow_integrated():
     """Install, discover, approve, and execute the test MCP through normal APIs."""
     from app.auth.claims import TokenClaims
@@ -125,7 +125,7 @@ async def test_full_tool_call_flow_integrated():
             app.dependency_overrides.clear()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_llm_stream_integrated_openai(monkeypatch: pytest.MonkeyPatch):
     """
     Tests the LLM streaming flow, mocking the OpenAI API with respx.

@@ -11,7 +11,7 @@ from app.main import app
 from app.mcp.tool_identity import model_tool_alias
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_target_and_agent_credentials_use_independent_header_formats() -> None:
     from app.auth.service_token import require_admin_service_token
 
