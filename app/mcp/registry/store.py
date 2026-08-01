@@ -17,7 +17,7 @@ from app.outbound_tls import redis_tls_kwargs, sqlalchemy_connection_config
 
 logger = structlog.get_logger()
 TOOL_CACHE_INVALIDATION_CHANNEL = "gateway:tool-cache-invalidation"
-ToolCacheKey = tuple[str, str, str, str, str, bool]
+ToolCacheKey = tuple[str, str, str, str, str, str, bool]
 
 
 class ToolRegistry:
@@ -42,32 +42,49 @@ class ToolRegistry:
     def _scope_cache_key(
         self,
         workspace_id: str,
-        target_id: str,
+        scope_type: str,
+        destination_id: str,
         tool_name: str,
-        target_type: str,
+        target_type: str | None,
         server_id: str | None,
         include_disabled: bool,
     ) -> ToolCacheKey:
         return (
             workspace_id,
-            target_id,
-            target_type,
+            scope_type,
+            destination_id,
+            target_type or "",
             server_id or "",
             tool_name,
             include_disabled,
         )
 
     @staticmethod
-    def _scope_type(target_type: str) -> str:
-        return "agent" if target_type == "agent" else "target"
+    def _scope_filters(model, scope_type: str, destination_id: str, target_type: str | None):
+        if scope_type == "agent":
+            return (
+                model.scope_type == "agent",
+                model.agent_id == destination_id,
+                model.target_id.is_(None),
+                model.target_type.is_(None),
+            )
+        if scope_type != "target" or not target_type:
+            raise ValueError("target MCP scope requires target_type")
+        return (
+            model.scope_type == "target",
+            model.agent_id.is_(None),
+            model.target_id == destination_id,
+            model.target_type == target_type,
+        )
 
     async def get_tool(
         self,
         workspace_id: str,
-        target_id: str,
+        destination_id: str,
         tool_name: str,
         *,
-        target_type: str,
+        target_type: str | None = None,
+        scope_type: str = "target",
         server_id: str | None = None,
         include_disabled: bool = False,
     ) -> Tool | None:
@@ -76,7 +93,8 @@ class ToolRegistry:
         """
         cache_key = self._scope_cache_key(
             workspace_id,
-            target_id,
+            scope_type,
+            destination_id,
             tool_name,
             target_type,
             server_id,
@@ -90,9 +108,7 @@ class ToolRegistry:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
-                Tool.scope_type == self._scope_type(target_type),
-                Tool.target_id == target_id,
-                Tool.target_type == target_type,
+                *self._scope_filters(Tool, scope_type, destination_id, target_type),
                 Tool.tool_name == tool_name,
             )
             if server_id:
@@ -112,20 +128,19 @@ class ToolRegistry:
 
             return tool
 
-    async def list_target_tools(
+    async def list_tools(
         self,
         workspace_id: str,
-        target_id: str,
+        destination_id: str,
         *,
-        target_type: str,
+        target_type: str | None = None,
+        scope_type: str = "target",
         include_disabled: bool = False,
     ) -> list[Tool]:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
-                Tool.scope_type == self._scope_type(target_type),
-                Tool.target_id == target_id,
-                Tool.target_type == target_type,
+                *self._scope_filters(Tool, scope_type, destination_id, target_type),
             )
             if not include_disabled:
                 stmt = stmt.where(Tool.enabled)
@@ -133,11 +148,16 @@ class ToolRegistry:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def list_target_tool_names(
-        self, workspace_id: str, target_id: str, target_type: str
+    async def list_tool_names(
+        self,
+        workspace_id: str,
+        destination_id: str,
+        target_type: str | None = None,
+        *,
+        scope_type: str = "target",
     ) -> list[str]:
-        tools = await self.list_target_tools(
-            workspace_id, target_id, target_type=target_type
+        tools = await self.list_tools(
+            workspace_id, destination_id, target_type=target_type, scope_type=scope_type
         )
         return sorted({tool.tool_name for tool in tools})
 
@@ -146,9 +166,9 @@ class ToolRegistry:
         tool_name: str,
         mcp_server_url: str,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        destination_id: str,
         server_id: str,
+        target_type: str | None = None,
         timeout_ms: int = 10000,
         input_schema: dict | None = None,
         output_schema: dict | None = None,
@@ -161,6 +181,7 @@ class ToolRegistry:
         review_state: str = "pending",
         risk_level: str = "high_risk",
         auto_allowed: bool = False,
+        scope_type: str = "target",
     ) -> Tool:
         async with self.async_session() as session:
             server, existing = await resolve_tool_registration(
@@ -168,14 +189,14 @@ class ToolRegistry:
                 tool_name=tool_name,
                 mcp_server_url=mcp_server_url,
                 workspace_id=workspace_id,
-                scope_type=self._scope_type(target_type),
-                target_id=target_id,
+                scope_type=scope_type,
+                destination_id=destination_id,
                 target_type=target_type,
                 server_id=server_id,
             )
 
             if existing:
-                if existing.target_type != target_type:
+                if existing.scope_type != scope_type or existing.target_type != target_type:
                     raise ValueError(
                         f"tool_name '{tool_name}' is already registered for "
                         f"target_type={existing.target_type}; "
@@ -184,7 +205,10 @@ class ToolRegistry:
                 existing.server_id = server.id
                 existing.mcp_server_url = mcp_server_url
                 existing.timeout_ms = timeout_ms
-                existing.target_type = target_type
+                existing.scope_type = scope_type
+                existing.agent_id = destination_id if scope_type == "agent" else None
+                existing.target_id = destination_id if scope_type == "target" else None
+                existing.target_type = target_type if scope_type == "target" else None
                 existing.input_schema = input_schema
                 existing.output_schema = output_schema
                 existing.artifact_policy = artifact_policy
@@ -193,26 +217,25 @@ class ToolRegistry:
                 existing.capability = capability
                 existing.version = version
                 existing.source = source
-                existing.agent_id = target_id if target_type == "agent" else None
                 existing.review_state = review_state
                 existing.risk_level = risk_level
                 existing.auto_allowed = auto_allowed
                 await session.commit()
                 self._evict_scope_cache(
-                    workspace_id, target_id, tool_name, target_type=target_type
+                    workspace_id, scope_type, destination_id, tool_name, target_type=target_type
                 )
                 await self._publish_scope_invalidation(
-                    workspace_id, target_id, tool_name, target_type=target_type
+                    workspace_id, scope_type, destination_id, tool_name, target_type=target_type
                 )
                 return existing
 
             tool = Tool(
                 server_id=server.id,
                 workspace_id=workspace_id,
-                scope_type=self._scope_type(target_type),
-                agent_id=target_id if target_type == "agent" else None,
-                target_id=target_id,
-                target_type=target_type,
+                scope_type=scope_type,
+                agent_id=destination_id if scope_type == "agent" else None,
+                target_id=destination_id if scope_type == "target" else None,
+                target_type=target_type if scope_type == "target" else None,
                 tool_name=tool_name,
                 mcp_server_url=mcp_server_url,
                 enabled=enabled,
@@ -231,27 +254,26 @@ class ToolRegistry:
             session.add(tool)
             await session.commit()
             self._evict_scope_cache(
-                workspace_id, target_id, tool_name, target_type=target_type
+                workspace_id, scope_type, destination_id, tool_name, target_type=target_type
             )
             await self._publish_scope_invalidation(
-                workspace_id, target_id, tool_name, target_type=target_type
+                workspace_id, scope_type, destination_id, tool_name, target_type=target_type
             )
             return tool
 
-    async def remove_tool_for_target(
+    async def remove_tool(
         self,
         tool_name: str,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        destination_id: str,
+        target_type: str | None = None,
         server_id: str | None = None,
+        scope_type: str = "target",
     ) -> bool:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
-                Tool.scope_type == self._scope_type(target_type),
-                Tool.target_id == target_id,
-                Tool.target_type == target_type,
+                *self._scope_filters(Tool, scope_type, destination_id, target_type),
                 Tool.tool_name == tool_name,
             )
             if server_id:
@@ -268,20 +290,21 @@ class ToolRegistry:
             await session.execute(delete(Tool).where(Tool.id == tool.id))
             await session.commit()
             self._evict_scope_cache(
-                workspace_id, target_id, tool_name, target_type=target_type
+                workspace_id, scope_type, destination_id, tool_name, target_type=target_type
             )
             await self._publish_scope_invalidation(
-                workspace_id, target_id, tool_name, target_type=target_type
+                workspace_id, scope_type, destination_id, tool_name, target_type=target_type
             )
             return True
 
     async def remove_server_tools_not_in(
         self,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        destination_id: str,
         server_id: str,
         tool_names: set[str],
+        target_type: str | None = None,
+        scope_type: str = "target",
     ) -> int:
         """Remove stale discovered tools after a successful, authoritative refresh."""
         try:
@@ -292,9 +315,7 @@ class ToolRegistry:
             result = await session.execute(
                 select(Tool).where(
                     Tool.workspace_id == workspace_id,
-                    Tool.scope_type == self._scope_type(target_type),
-                    Tool.target_id == target_id,
-                    Tool.target_type == target_type,
+                    *self._scope_filters(Tool, scope_type, destination_id, target_type),
                     Tool.server_id == normalized_server_id,
                     Tool.source == "mcp",
                 )
@@ -303,23 +324,35 @@ class ToolRegistry:
             for tool in stale:
                 await session.execute(delete(Tool).where(Tool.id == tool.id))
                 self._evict_scope_cache(
-                    workspace_id, target_id, tool.tool_name, target_type=target_type
+                    workspace_id,
+                    scope_type,
+                    destination_id,
+                    tool.tool_name,
+                    target_type=target_type,
                 )
                 await self._publish_scope_invalidation(
-                    workspace_id, target_id, tool.tool_name, target_type=target_type
+                    workspace_id,
+                    scope_type,
+                    destination_id,
+                    tool.tool_name,
+                    target_type=target_type,
                 )
             await session.commit()
             return len(stale)
 
-    async def delete_target_tools_by_source(
-        self, workspace_id: str, target_id: str, target_type: str, source: str
+    async def delete_tools_by_source(
+        self,
+        workspace_id: str,
+        destination_id: str,
+        target_type: str | None,
+        source: str,
+        *,
+        scope_type: str = "target",
     ) -> None:
         async with self.async_session() as session:
             stmt = select(Tool).where(
                 Tool.workspace_id == workspace_id,
-                Tool.scope_type == self._scope_type(target_type),
-                Tool.target_id == target_id,
-                Tool.target_type == target_type,
+                *self._scope_filters(Tool, scope_type, destination_id, target_type),
                 Tool.source == source,
             )
             result = await session.execute(stmt)
@@ -327,24 +360,34 @@ class ToolRegistry:
             for tool in tools:
                 await session.execute(delete(Tool).where(Tool.id == tool.id))
                 self._evict_scope_cache(
-                    workspace_id, target_id, tool.tool_name, target_type=tool.target_type
+                    workspace_id,
+                    scope_type,
+                    destination_id,
+                    tool.tool_name,
+                    target_type=tool.target_type,
                 )
                 await self._publish_scope_invalidation(
-                    workspace_id, target_id, tool.tool_name, target_type=tool.target_type
+                    workspace_id,
+                    scope_type,
+                    destination_id,
+                    tool.tool_name,
+                    target_type=tool.target_type,
                 )
             await session.commit()
 
     def _evict_scope_cache(
         self,
         workspace_id: str,
-        target_id: str,
+        scope_type: str,
+        destination_id: str,
         tool_name: str,
         target_type: str | None = None,
     ) -> None:
         for cache_key in list(self._cache):
             (
                 key_workspace_id,
-                key_target_id,
+                key_scope_type,
+                key_destination_id,
                 key_target_type,
                 _key_server_id,
                 key_tool_name,
@@ -352,7 +395,8 @@ class ToolRegistry:
             ) = cache_key
             if (
                 key_workspace_id == workspace_id
-                and key_target_id == target_id
+                and key_scope_type == scope_type
+                and key_destination_id == destination_id
                 and key_tool_name == tool_name
                 and (target_type is None or key_target_type == target_type)
             ):
@@ -361,7 +405,8 @@ class ToolRegistry:
     async def _publish_scope_invalidation(
         self,
         workspace_id: str,
-        target_id: str,
+        scope_type: str,
+        destination_id: str,
         tool_name: str,
         target_type: str | None = None,
     ) -> None:
@@ -370,9 +415,10 @@ class ToolRegistry:
         payload = json.dumps(
             {
                 "workspace_id": workspace_id,
-                "target_id": target_id,
-                "target_type": target_type,
+                "scope_type": scope_type,
+                "destination_id": destination_id,
                 "tool_name": tool_name,
+                **({"target_type": target_type} if scope_type == "target" else {}),
             }
         )
         try:
@@ -381,7 +427,8 @@ class ToolRegistry:
             logger.warning(
                 "tool_cache_invalidation_publish_failed",
                 workspace_id=workspace_id,
-                target_id=target_id,
+                scope_type=scope_type,
+                destination_id=destination_id,
                 tool_name=tool_name,
                 error=str(exc),
             )
@@ -406,7 +453,8 @@ class ToolRegistry:
                 payload = json.loads(data)
                 self._evict_scope_cache(
                     payload["workspace_id"],
-                    payload["target_id"],
+                    payload["scope_type"],
+                    payload["destination_id"],
                     payload["tool_name"],
                     target_type=payload.get("target_type"),
                 )
@@ -435,13 +483,15 @@ class ToolRegistry:
             await session.commit()
             self._evict_scope_cache(
                 tool.workspace_id,
-                tool.target_id,
+                tool.scope_type,
+                tool.agent_id if tool.scope_type == "agent" else tool.target_id,
                 tool.tool_name,
                 target_type=tool.target_type,
             )
             await self._publish_scope_invalidation(
                 tool.workspace_id,
-                tool.target_id,
+                tool.scope_type,
+                tool.agent_id if tool.scope_type == "agent" else tool.target_id,
                 tool.tool_name,
                 target_type=tool.target_type,
             )

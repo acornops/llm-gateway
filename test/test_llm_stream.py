@@ -295,7 +295,7 @@ async def test_llm_stream_allows_internal_model_only_skill_loader_without_tool_p
         tools=[
             {
                 "name": "_acornops_load_skill",
-                "description": "Load one frozen target troubleshooting skill.",
+                "description": "Load one frozen run skill.",
                 "input_schema": {
                     "type": "object",
                     "properties": {

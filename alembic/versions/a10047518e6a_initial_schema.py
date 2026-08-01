@@ -71,8 +71,8 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.String(), nullable=False),
         sa.Column("scope_type", sa.String(), nullable=False),
         sa.Column("agent_id", sa.String(), nullable=True),
-        sa.Column("target_id", sa.String(), nullable=False),
-        sa.Column("target_type", sa.String(), nullable=False),
+        sa.Column("target_id", sa.String(), nullable=True),
+        sa.Column("target_type", sa.String(), nullable=True),
         sa.Column("server_name", sa.String(), nullable=False),
         sa.Column("server_url", sa.String(), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=True),
@@ -94,11 +94,6 @@ def upgrade() -> None:
         sa.Column("provenance_type", sa.String(), nullable=False),
         sa.Column(
             "endpoint_configuration",
-            sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql"),
-            nullable=False,
-        ),
-        sa.Column(
-            "target_constraints",
             sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql"),
             nullable=False,
         ),
@@ -130,15 +125,35 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "workspace_id",
             "scope_type",
+            "agent_id",
+            "server_name",
+            name="uq_gateway_mcp_servers_ws_agent_name",
+        ),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "scope_type",
             "target_id",
             "server_url",
             name="uq_gateway_mcp_servers_ws_target_url",
+        ),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "scope_type",
+            "agent_id",
+            "server_url",
+            name="uq_gateway_mcp_servers_ws_agent_url",
         ),
     )
     op.create_index(
         "ix_gateway_mcp_servers_workspace_target",
         "gateway_mcp_servers",
         ["workspace_id", "target_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_gateway_mcp_servers_workspace_agent",
+        "gateway_mcp_servers",
+        ["workspace_id", "agent_id"],
         unique=False,
     )
     op.create_index(
@@ -239,8 +254,7 @@ def upgrade() -> None:
             "owner_type IN ('installation', 'user')", name="ck_gateway_mcp_connection_owner_type"
         ),
         sa.CheckConstraint(
-            "status IN "
-            "('pending_authorization', 'connected', 'reauthorization_required', 'error')",
+            "status IN ('pending_authorization', 'connected', 'reauthorization_required', 'error')",
             name="ck_gateway_mcp_connection_status",
         ),
         sa.CheckConstraint(
@@ -319,8 +333,8 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.String(), nullable=False),
         sa.Column("scope_type", sa.String(), nullable=False),
         sa.Column("agent_id", sa.String(), nullable=True),
-        sa.Column("target_id", sa.String(), nullable=False),
-        sa.Column("target_type", sa.String(), nullable=False),
+        sa.Column("target_id", sa.String(), nullable=True),
+        sa.Column("target_type", sa.String(), nullable=True),
         sa.Column("tool_name", sa.String(), nullable=False),
         sa.Column("mcp_server_url", sa.String(), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=True),
@@ -355,6 +369,12 @@ def upgrade() -> None:
         "ix_gateway_tools_workspace_target",
         "gateway_tools",
         ["workspace_id", "target_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_gateway_tools_workspace_agent",
+        "gateway_tools",
+        ["workspace_id", "agent_id"],
         unique=False,
     )
     op.create_table(
@@ -422,6 +442,7 @@ def downgrade() -> None:
         "ix_gateway_catalog_artifacts_workspace_kind", table_name="gateway_catalog_artifacts"
     )
     op.drop_table("gateway_catalog_artifacts")
+    op.drop_index("ix_gateway_tools_workspace_agent", table_name="gateway_tools")
     op.drop_index("ix_gateway_tools_workspace_target", table_name="gateway_tools")
     op.drop_table("gateway_tools")
     op.drop_index(
@@ -437,6 +458,7 @@ def downgrade() -> None:
         postgresql_where=sa.text("provenance_type='builtin'"),
         sqlite_where=sa.text("provenance_type='builtin'"),
     )
+    op.drop_index("ix_gateway_mcp_servers_workspace_agent", table_name="gateway_mcp_servers")
     op.drop_index("ix_gateway_mcp_servers_workspace_target", table_name="gateway_mcp_servers")
     op.drop_table("gateway_mcp_servers")
     op.drop_index("ix_gateway_catalog_sources_workspace", table_name="gateway_catalog_sources")

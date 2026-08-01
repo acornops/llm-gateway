@@ -54,7 +54,7 @@ class ReasoningConfig(BaseModel):
 
 
 class RequestScope(BaseModel):
-    type: Literal["target", "workspace"] = "target"
+    type: Literal["target", "agent_chat", "workspace"] = "target"
 
 
 def reasoning_summaries_enabled(req: "NormalizedLLMRequest") -> bool:
@@ -76,7 +76,6 @@ class NormalizedLLMRequest(BaseModel):
     workflow_session_id: str | None = None
     executor_role: Literal["coordinator", "specialist"] | None = None
     agent_id: str | None = None
-    agent_version: int | None = None
     trigger_id: str | None = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     provider: Literal["openai", "anthropic", "gemini"] = Field(examples=["gemini"])
@@ -94,6 +93,36 @@ class NormalizedLLMRequest(BaseModel):
         if self.scope.type == "target":
             if not self.target_id or not self.target_type:
                 raise ValueError("target scope requires target_id and target_type")
+            forbidden = (
+                self.workflow_id,
+                self.execution_id,
+                self.workflow_session_id,
+                self.executor_role,
+                self.agent_id,
+                self.trigger_id,
+            )
+            if any(value is not None for value in forbidden):
+                raise ValueError(
+                    "target requests forbid Agent and Workflow identity"
+                )
+            return self
+
+        if self.scope.type == "agent_chat":
+            if not self.agent_id:
+                raise ValueError("agent chat requests require agent identity")
+            forbidden = (
+                self.target_id,
+                self.target_type,
+                self.workflow_id,
+                self.execution_id,
+                self.workflow_session_id,
+                self.executor_role,
+                self.trigger_id,
+            )
+            if any(value is not None for value in forbidden):
+                raise ValueError(
+                    "agent chat requests forbid target and workflow fields"
+                )
             return self
 
         missing = [
@@ -110,16 +139,12 @@ class NormalizedLLMRequest(BaseModel):
             raise ValueError(
                 f"workspace workflow scope missing required fields: {', '.join(missing)}"
             )
-        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
-            raise ValueError("workflow target binding requires both target_id and target_type")
-        if self.executor_role == "coordinator" and (
-            self.agent_id or self.agent_version is not None
-        ):
+        if self.target_id is not None or self.target_type is not None:
+            raise ValueError("workspace workflow requests forbid target identity fields")
+        if self.executor_role == "coordinator" and self.agent_id:
             raise ValueError("coordinator workflow requests forbid agent identity")
-        if self.executor_role == "specialist" and (
-            not self.agent_id or self.agent_version is None
-        ):
-            raise ValueError("specialist workflow requests require agent identity and version")
+        if self.executor_role == "specialist" and not self.agent_id:
+            raise ValueError("specialist workflow requests require agent identity")
         return self
 
     @model_validator(mode="after")

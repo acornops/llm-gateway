@@ -9,9 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Response
 
 from app.api.handlers_mcp_connections import (
     _check_mutation_rate_limit,
-    _merge_connection_discovery,
 )
-from app.api.mcp_admin_helpers import _discover_server_tools
+from app.api.mcp_admin_helpers import _discover_server_tools, merge_connection_discovery
 from app.api.mcp_admin_schemas import (
     McpOAuthCompleteRequest,
     McpOAuthCompleteResponse,
@@ -21,6 +20,7 @@ from app.api.mcp_admin_schemas import (
     McpOAuthStartRequest,
     McpOAuthStartResponse,
 )
+from app.api.mcp_admin_validation import registered_server_request_context
 from app.api.mcp_connection_responses import connection_response
 from app.auth.service_token import require_admin_service_token
 from app.mcp.connections import ConnectionOwner, mcp_connection_store
@@ -59,18 +59,17 @@ async def _verify_completed_authorization(flow, bundle, connection):
 
     try:
         server = await _oauth_server(flow.workspace_id, flow.server_id)
+        destination_id, _registry_scope, platform_headers = registered_server_request_context(
+            flow.workspace_id, server
+        )
         headers = build_mcp_request_headers(
             server,
             bundle.access_token,
-            platform_headers={
-                "x-workspace-id": flow.workspace_id,
-                "x-target-id": server.target_id,
-                "x-target-type": server.target_type,
-            },
+            platform_headers=platform_headers,
         )
         tools, discovery_error, discovery_error_code = await _discover_server_tools(
             flow.workspace_id,
-            server.target_id,
+            destination_id,
             server,
             request_headers=headers,
         )
@@ -112,7 +111,7 @@ async def _verify_completed_authorization(flow, bundle, connection):
                     "server_id": flow.server_id,
                 },
             )
-        verified_tool_names = await _merge_connection_discovery(server, tools)
+        verified_tool_names = await merge_connection_discovery(server, tools)
         connected = await mcp_connection_store.set_state(
             connection,
             "connected",

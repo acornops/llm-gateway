@@ -14,19 +14,7 @@ from app.mcp.header_policy import (
 from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, TargetType
 
 McpScopeType = Literal["agent", "target"]
-McpRegistryTargetType = TargetType | Literal["agent"]
-
-
-class AgentTargetConstraints(BaseModel):
-    target_types: list[TargetType] = Field(default_factory=list, max_length=16)
-    target_ids: list[str] = Field(default_factory=list, max_length=200)
-
-    @field_validator("target_types", "target_ids")
-    @classmethod
-    def _deduplicate_constraints(cls, value: list[str]) -> list[str]:
-        return sorted({item.strip() for item in value if item.strip()})
-
-    model_config = ConfigDict(extra="forbid")
+McpRegistryTargetType = TargetType
 
 
 def _effective_auth_header_prefix(auth_type: str | None, header_prefix: str | None) -> str:
@@ -47,9 +35,9 @@ class ToolConfigRequest(BaseModel):
     artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool = True
     review_state: Literal["pending", "approved", "rejected"] = "pending"
-    risk_level: Literal[
-        "read_only", "non_destructive_write", "high_risk", "destructive"
-    ] = "high_risk"
+    risk_level: Literal["read_only", "non_destructive_write", "high_risk", "destructive"] = (
+        "high_risk"
+    )
     auto_allowed: bool = False
 
     @field_validator("name")
@@ -87,9 +75,9 @@ class ToolConfigUpdateRequest(BaseModel):
     artifact_policy: Literal["never", "if_detailed", "always"] | None = None
     enabled: bool | None = None
     review_state: Literal["pending", "approved", "rejected"] | None = None
-    risk_level: Literal[
-        "read_only", "non_destructive_write", "high_risk", "destructive"
-    ] | None = None
+    risk_level: Literal["read_only", "non_destructive_write", "high_risk", "destructive"] | None = (
+        None
+    )
     auto_allowed: bool | None = None
 
     @field_validator("name")
@@ -126,9 +114,9 @@ class ToolConfigResponse(BaseModel):
     artifact_policy: Literal["never", "if_detailed", "always"] = "never"
     enabled: bool
     review_state: Literal["pending", "approved", "rejected"] = "pending"
-    risk_level: Literal[
-        "read_only", "non_destructive_write", "high_risk", "destructive"
-    ] = "high_risk"
+    risk_level: Literal["read_only", "non_destructive_write", "high_risk", "destructive"] = (
+        "high_risk"
+    )
     auto_allowed: bool = False
 
 
@@ -142,9 +130,9 @@ class ToolUpdateRequest(BaseModel):
     output_schema: dict[str, Any] | None = None
     artifact_policy: Literal["never", "if_detailed", "always"] | None = None
     review_state: Literal["pending", "approved", "rejected"] | None = None
-    risk_level: Literal[
-        "read_only", "non_destructive_write", "high_risk", "destructive"
-    ] | None = None
+    risk_level: Literal["read_only", "non_destructive_write", "high_risk", "destructive"] | None = (
+        None
+    )
     auto_allowed: bool | None = None
 
     @model_validator(mode="after")
@@ -162,7 +150,6 @@ class McpServerCreateRequest(BaseModel):
     agent_id: str | None = Field(default=None, min_length=1)
     target_id: str | None = Field(default=None, min_length=1)
     target_type: McpRegistryTargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
-    target_constraints: AgentTargetConstraints = Field(default_factory=AgentTargetConstraints)
     server_name: str = Field(min_length=1, examples=["operations-catalog"])
     server_url: str = Field(min_length=1, examples=["https://mcp.example.com/v1/"])
     enabled: bool = True
@@ -196,11 +183,7 @@ class McpServerCreateRequest(BaseModel):
                 raise ValueError("agent scope requires agent_id")
             if self.target_id or self.target_type:
                 raise ValueError("agent scope does not accept target_id or target_type")
-            # The current registry schema retains an internal owner key while
-            # the public contract exposes only agent_id for Agent records.
-            self.target_id = self.agent_id
-            self.target_type = "agent"
-        elif not self.target_id or self.target_type in (None, "agent"):
+        elif not self.target_id or self.target_type is None:
             raise ValueError("target scope requires target_id and a concrete target_type")
         external_authenticated = self.auth_type in ("bearer_token", "custom_header", "oauth")
         if external_authenticated and self.credential_mode == "none":
@@ -261,7 +244,6 @@ class McpServerUpdateRequest(BaseModel):
     public_headers: dict[str, str] | None = None
     tools: list[ToolConfigUpdateRequest] | None = None
     remove_tools: list[str] = Field(default_factory=list)
-    target_constraints: AgentTargetConstraints | None = None
     expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("public_headers")
@@ -319,7 +301,6 @@ class McpServerResponse(BaseModel):
     agent_id: str | None = None
     target_id: str | None = None
     target_type: McpRegistryTargetType | None = None
-    target_constraints: AgentTargetConstraints = Field(default_factory=AgentTargetConstraints)
     server_name: str
     server_url: str
     enabled: bool
@@ -385,13 +366,16 @@ class McpConnectionResponse(BaseModel):
         "error",
     ]
     auth_type: Literal["bearer_token", "custom_header", "oauth"]
-    action: Literal[
-        "connect_mcp_server",
-        "authorize_mcp_server",
-        "select_authorization_server",
-        "reauthorize_mcp_server",
-        "verify_mcp_server",
-    ] | None = None
+    action: (
+        Literal[
+            "connect_mcp_server",
+            "authorize_mcp_server",
+            "select_authorization_server",
+            "reauthorize_mcp_server",
+            "verify_mcp_server",
+        ]
+        | None
+    ) = None
     error_code: str | None = None
     issuer_origin: str | None = None
     registration_method: Literal["cimd", "dcr"] | None = None
@@ -446,12 +430,15 @@ class McpReadinessFailure(BaseModel):
     server_id: str
     tool_name: str
     code: McpReadinessFailureCode
-    action: Literal[
-        "connect_mcp_server",
-        "authorize_mcp_server",
-        "reauthorize_mcp_server",
-        "verify_mcp_server",
-    ] | None = None
+    action: (
+        Literal[
+            "connect_mcp_server",
+            "authorize_mcp_server",
+            "reauthorize_mcp_server",
+            "verify_mcp_server",
+        ]
+        | None
+    ) = None
 
 
 class McpReadinessResponse(BaseModel):

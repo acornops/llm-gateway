@@ -23,6 +23,7 @@ from app.api.mcp_admin_helpers import (
     _resolve_tools_for_server,
 )
 from app.api.mcp_admin_schemas import McpServerResponse
+from app.api.mcp_admin_validation import registry_scope_options
 from app.auth.service_token import require_admin_service_token
 from app.catalog.adapter import CatalogAdapterError, McpRegistryV01Adapter
 from app.catalog.models import CatalogArtifact
@@ -137,7 +138,12 @@ async def get_catalog_artifact(
     return _artifact_response(artifact)
 
 
-@router.post("/imports", response_model=McpServerResponse, status_code=201)
+@router.post(
+    "/imports",
+    response_model=McpServerResponse,
+    response_model_exclude_none=True,
+    status_code=201,
+)
 @_track_catalog_import
 async def import_catalog_mcp_server(
     request: CatalogMcpImportRequest,
@@ -146,12 +152,10 @@ async def import_catalog_mcp_server(
     request = request.root
     if request.scope_type == "agent":
         destination_id = request.agent_id
-        registry_target_type = "agent"
-        target_constraints = request.target_constraints
+        registry_scope = registry_scope_options("agent")
     else:
         destination_id = request.target_id
-        registry_target_type = request.target_type
-        target_constraints = {}
+        registry_scope = registry_scope_options("target", request.target_type)
     artifact = await catalog_store.get_artifact(
         request.workspace_id,
         artifact_id=request.artifact.artifact_id,
@@ -205,7 +209,7 @@ async def import_catalog_mcp_server(
             request.workspace_id,
             destination_id,
             request.reimport_server_id,
-            target_type=registry_target_type,
+            **registry_scope,
         )
         if reimport_server is None:
             raise HTTPException(status_code=404, detail="MCP installation not found")
@@ -226,8 +230,8 @@ async def import_catalog_mcp_server(
         request.workspace_id,
         destination_id,
         resolved_endpoint,
-        target_type=registry_target_type,
         enabled_only=False,
+        **registry_scope,
     )
     if existing is not None:
         if reimport_server is not None and existing.id != reimport_server.id:
@@ -248,8 +252,8 @@ async def import_catalog_mcp_server(
                     request.workspace_id,
                     destination_id,
                     existing.server_url,
-                    target_type=registry_target_type,
                     server_id=str(existing.id),
+                    **registry_scope,
                 )
                 return _build_server_response(existing, tools)
             raise HTTPException(
@@ -298,7 +302,6 @@ async def import_catalog_mcp_server(
                 "catalog_imported_at": datetime.now(UTC),
                 "provenance_type": "catalog",
                 "endpoint_configuration": request.endpoint_configuration,
-                "target_constraints": target_constraints,
                 "connection_status": "unknown",
                 "last_discovery_at": None,
                 "last_discovery_error": None,
@@ -315,7 +318,7 @@ async def import_catalog_mcp_server(
                         "last_discovery_at": None,
                         "last_discovery_error": ("Credential configuration update in progress."),
                     },
-                    target_type=registry_target_type,
+                    **registry_scope,
                 )
                 if transitioning is None:
                     raise HTTPException(status_code=404, detail="MCP installation not found")
@@ -342,15 +345,14 @@ async def import_catalog_mcp_server(
                 destination_id,
                 str(reimport_server.id),
                 server_patch,
-                target_type=registry_target_type,
+                **registry_scope,
             )
             if server is None:
                 raise HTTPException(status_code=404, detail="MCP installation not found")
         else:
             server = await mcp_server_registry.create_server(
                 workspace_id=request.workspace_id,
-                target_id=destination_id,
-                target_type=registry_target_type,
+                destination_id=destination_id,
                 server_name=server_name,
                 server_url=resolved_endpoint,
                 enabled=request.enabled,
@@ -366,7 +368,7 @@ async def import_catalog_mcp_server(
                 catalog_imported_at=datetime.now(UTC),
                 provenance_type="catalog",
                 endpoint_configuration=request.endpoint_configuration,
-                target_constraints=target_constraints,
+                **registry_scope,
             )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -391,32 +393,32 @@ async def import_catalog_mcp_server(
         destination_id,
         server.server_url,
         tools,
-        target_type=registry_target_type,
         server_id=str(server.id),
         remove_disabled=False,
+        **registry_scope,
     )
     if reimport_server is not None and discovery_error is None:
         await tool_registry.remove_server_tools_not_in(
             request.workspace_id,
             destination_id,
-            registry_target_type,
-            str(server.id),
-            {tool.name for tool in tools},
+            server_id=str(server.id),
+            tool_names={tool.name for tool in tools},
+            **registry_scope,
         )
     updated = await _record_discovery_status(
         request.workspace_id,
         destination_id,
         str(server.id),
         discovery_error,
-        target_type=registry_target_type,
+        **registry_scope,
     )
     server = updated or server
     server_tools = await _resolve_tools_for_server(
         request.workspace_id,
         destination_id,
         server.server_url,
-        target_type=registry_target_type,
         server_id=str(server.id),
+        **registry_scope,
     )
     logger.info(
         "catalog_mcp_reimported" if reimport_server is not None else "catalog_mcp_imported",

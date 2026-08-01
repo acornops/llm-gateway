@@ -53,6 +53,10 @@ async def post_builtin_mcp_tool(
     timeout_ms: int,
     headers: dict[str, str],
     tool_call_id: str | None = None,
+    *,
+    target_id: str | None = None,
+    target_type: str | None = None,
+    tool_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     import httpx
 
@@ -85,6 +89,9 @@ async def post_builtin_mcp_tool(
                 "name": name,
                 "arguments": arguments,
                 **({"toolCallId": tool_call_id} if tool_call_id else {}),
+                **({"targetId": target_id} if target_id else {}),
+                **({"targetType": target_type} if target_type else {}),
+                **({"toolRef": tool_ref} if tool_ref else {}),
             },
             timeout=transport_timeout,
             headers=headers,
@@ -102,6 +109,9 @@ async def post_builtin_mcp_tool(
                         "name": name,
                         "arguments": arguments,
                         **({"toolCallId": tool_call_id} if tool_call_id else {}),
+                        **({"targetId": target_id} if target_id else {}),
+                        **({"targetType": target_type} if target_type else {}),
+                        **({"toolRef": tool_ref} if tool_ref else {}),
                     },
                 },
                 timeout=transport_timeout,

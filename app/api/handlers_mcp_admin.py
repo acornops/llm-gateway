@@ -42,7 +42,8 @@ from app.api.mcp_admin_schemas import (
 )
 from app.api.mcp_admin_validation import (
     is_builtin_bridge_registration,
-    validate_registry_scope,
+    registry_destination,
+    registry_scope_options,
     validate_remote_mcp_endpoint_contract,
 )
 from app.auth.service_token import require_admin_service_token
@@ -60,58 +61,64 @@ router.include_router(mcp_tool_admin_router)
 logger = structlog.get_logger()
 
 
-@router.get("/servers", response_model=list[McpServerResponse])
+@router.get("/servers", response_model=list[McpServerResponse], response_model_exclude_none=True)
 async def list_mcp_servers(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
-    target_id: str = Query(..., min_length=1),
-    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    target_id: str | None = Query(default=None, min_length=1),
+    target_type: str | None = Query(default=None, min_length=1, examples=TARGET_TYPE_EXAMPLES),
     scope_type: Literal["agent", "target"] = Query(default="target"),
     agent_id: str | None = Query(default=None),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> list[McpServerResponse]:
-    validate_registry_scope(scope_type, target_id, target_type, agent_id)
+    destination_id, destination_target_type = registry_destination(
+        scope_type, target_id, target_type, agent_id
+    )
+    registry_scope = registry_scope_options(scope_type, destination_target_type)
     servers = await mcp_server_registry.list_servers(
-        workspace_id, target_id, target_type=target_type
+        workspace_id, destination_id, **registry_scope
     )
     response: list[McpServerResponse] = []
     for server in servers:
         server_tools = await _resolve_tools_for_server(
             workspace_id,
-            target_id,
+            destination_id,
             server.server_url,
-            target_type=server.target_type,
             server_id=str(server.id),
+            **registry_scope,
         )
         response.append(_build_server_response(server, server_tools))
     return response
 
 
-@router.get("/tools", response_model=list[ToolConfigResponse])
+@router.get("/tools", response_model=list[ToolConfigResponse], response_model_exclude_none=True)
 async def list_mcp_tools(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
-    target_id: str = Query(..., min_length=1),
-    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    target_id: str | None = Query(default=None, min_length=1),
+    target_type: str | None = Query(default=None, min_length=1, examples=TARGET_TYPE_EXAMPLES),
     scope_type: Literal["agent", "target"] = Query(default="target"),
     agent_id: str | None = Query(default=None),
     include_server_disabled: bool = Query(default=False),
     include_disabled: bool = Query(default=False),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> list[ToolConfigResponse]:
-    validate_registry_scope(scope_type, target_id, target_type, agent_id)
-    tools = await tool_registry.list_target_tools(
+    destination_id, destination_target_type = registry_destination(
+        scope_type, target_id, target_type, agent_id
+    )
+    registry_scope = registry_scope_options(scope_type, destination_target_type)
+    tools = await tool_registry.list_tools(
         workspace_id,
-        target_id,
-        target_type=target_type,
+        destination_id,
         include_disabled=include_disabled,
+        **registry_scope,
     )
     response: list[ToolConfigResponse] = []
     for tool in tools:
         server = await mcp_server_registry.get_server_by_url(
             workspace_id,
-            target_id,
+            destination_id,
             tool.mcp_server_url,
             enabled_only=False,
-            target_type=tool.target_type,
+            **registry_scope,
         )
         if not include_server_disabled and server and not server.enabled:
             continue
@@ -119,12 +126,20 @@ async def list_mcp_tools(
     return response
 
 
-@router.post("/servers", response_model=McpServerResponse, status_code=201)
+@router.post(
+    "/servers",
+    response_model=McpServerResponse,
+    response_model_exclude_none=True,
+    status_code=201,
+)
 async def create_mcp_server(
     request: McpServerCreateRequest,
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerResponse:
-    assert request.target_id is not None and request.target_type is not None
+    destination_id, destination_target_type = registry_destination(
+        request.scope_type, request.target_id, request.target_type, request.agent_id
+    )
+    registry_scope = registry_scope_options(request.scope_type, destination_target_type)
     is_builtin_bridge = is_builtin_bridge_registration(request)
     if any(tool.source == "builtin" for tool in request.tools) and not is_builtin_bridge:
         raise HTTPException(
@@ -143,8 +158,7 @@ async def create_mcp_server(
     try:
         server = await mcp_server_registry.create_server(
             workspace_id=request.workspace_id,
-            target_id=request.target_id,
-            target_type=request.target_type,
+            destination_id=destination_id,
             server_name=request.server_name,
             server_url=request.server_url,
             enabled=request.enabled,
@@ -153,9 +167,9 @@ async def create_mcp_server(
             auth_header_prefix=auth_header_prefix,
             public_headers=request.public_headers,
             credential_mode=request.credential_mode,
-            target_constraints=request.target_constraints.model_dump(),
             provenance_type="builtin" if is_builtin_bridge else "manual",
             endpoint_configuration=None,
+            **registry_scope,
         )
     except IntegrityError as exc:
         raise HTTPException(
@@ -173,7 +187,7 @@ async def create_mcp_server(
             require_remote_mcp_enabled()
         try:
             tools_to_apply, discovery_error, _discovery_error_code = await _discover_server_tools(
-                request.workspace_id, request.target_id, server
+                request.workspace_id, destination_id, server
             )
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
@@ -181,7 +195,8 @@ async def create_mcp_server(
             logger.warning(
                 "mcp_tool_discovery_validation_failed",
                 workspace_id=request.workspace_id,
-                target_id=request.target_id,
+                scope_type=request.scope_type,
+                destination_id=destination_id,
                 server_name=request.server_name,
                 server_url=loggable_mcp_server_origin(request.server_url),
                 error_code="MCP_DISCOVERY_VALIDATION_FAILED",
@@ -191,7 +206,8 @@ async def create_mcp_server(
             logger.exception(
                 "mcp_tool_discovery_failed",
                 workspace_id=request.workspace_id,
-                target_id=request.target_id,
+                scope_type=request.scope_type,
+                destination_id=destination_id,
                 server_name=request.server_name,
                 server_url=loggable_mcp_server_origin(request.server_url),
             )
@@ -200,48 +216,58 @@ async def create_mcp_server(
 
         updated_server = await _record_discovery_status(
             request.workspace_id,
-            request.target_id,
+            destination_id,
             str(server.id),
             discovery_error,
-            target_type=request.target_type,
+            **registry_scope,
         )
         if updated_server is not None:
             server = updated_server
 
     await _apply_tools_for_server(
         request.workspace_id,
-        request.target_id,
+        destination_id,
         server.server_url,
         tools_to_apply,
-        target_type=request.target_type,
         server_id=str(server.id),
         remove_disabled=len(request.tools) > 0,
+        **registry_scope,
     )
 
     server_tools = await _resolve_tools_for_server(
         request.workspace_id,
-        request.target_id,
+        destination_id,
         request.server_url,
-        target_type=request.target_type,
         server_id=str(server.id),
+        **registry_scope,
     )
     return _build_server_response(server, server_tools)
 
 
-@router.patch("/servers/{server_id}", response_model=McpServerResponse)
+@router.patch(
+    "/servers/{server_id}",
+    response_model=McpServerResponse,
+    response_model_exclude_none=True,
+)
 async def update_mcp_server(
     request: McpServerUpdateRequest,
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
-    target_id: str = Query(..., min_length=1),
-    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    target_id: str | None = Query(default=None, min_length=1),
+    target_type: str | None = Query(default=None, min_length=1, examples=TARGET_TYPE_EXAMPLES),
     scope_type: Literal["agent", "target"] = Query(default="target"),
     agent_id: str | None = Query(default=None),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerResponse:
-    validate_registry_scope(scope_type, target_id, target_type, agent_id)
+    destination_id, destination_target_type = registry_destination(
+        scope_type, target_id, target_type, agent_id
+    )
+    registry_scope = registry_scope_options(scope_type, destination_target_type)
     server = await mcp_server_registry.get_server(
-        workspace_id, target_id, server_id, target_type=target_type
+        workspace_id,
+        destination_id,
+        server_id,
+        **registry_scope,
     )
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
@@ -343,8 +369,6 @@ async def update_mcp_server(
                 patch["auth_header_prefix"] = next_auth_header_prefix
     if request.public_headers is not None:
         patch["public_headers"] = request.public_headers
-    if request.target_constraints is not None:
-        patch["target_constraints"] = request.target_constraints.model_dump()
     if request.tools is not None:
         requested_sources = {tool.source for tool in request.tools if tool.source is not None}
         if (
@@ -391,10 +415,10 @@ async def update_mcp_server(
             try:
                 transitioning = await mcp_server_registry.update_server(
                     workspace_id,
-                    target_id,
+                    destination_id,
                     server_id,
                     transition_patch,
-                    target_type=target_type,
+                    **registry_scope,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -416,10 +440,10 @@ async def update_mcp_server(
         try:
             updated = await mcp_server_registry.update_server(
                 workspace_id,
-                target_id,
+                destination_id,
                 server_id,
                 patch,
-                target_type=target_type,
+                **registry_scope,
             )
         except IntegrityError as exc:
             raise HTTPException(
@@ -435,20 +459,20 @@ async def update_mcp_server(
     if request.tools:
         await _apply_tools_for_server(
             workspace_id,
-            target_id,
+            destination_id,
             server.server_url,
             request.tools,
-            target_type=server.target_type,
             server_id=str(server.id),
+            **registry_scope,
         )
     elif not request.remove_tools:
         # Recovery path: if a server has no tools mapped, try discovery on update.
         current_tools = await _resolve_tools_for_server(
             workspace_id,
-            target_id,
+            destination_id,
             server.server_url,
-            target_type=server.target_type,
             server_id=str(server.id),
+            **registry_scope,
         )
         if len(current_tools) == 0 and server.credential_mode == "none":
             if getattr(server, "provenance_type", "manual") != "builtin":
@@ -459,16 +483,16 @@ async def update_mcp_server(
                     discovered_tools,
                     discovery_error,
                     _discovery_error_code,
-                ) = await _discover_server_tools(workspace_id, target_id, server)
+                ) = await _discover_server_tools(workspace_id, destination_id, server)
                 if len(discovered_tools) > 0:
                     await _apply_tools_for_server(
                         workspace_id,
-                        target_id,
+                        destination_id,
                         server.server_url,
                         discovered_tools,
-                        target_type=server.target_type,
                         server_id=str(server.id),
                         remove_disabled=False,
+                        **registry_scope,
                     )
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
@@ -476,7 +500,8 @@ async def update_mcp_server(
                 logger.warning(
                     "mcp_tool_discovery_validation_failed_on_update",
                     workspace_id=workspace_id,
-                    target_id=target_id,
+                    scope_type=scope_type,
+                    destination_id=destination_id,
                     server_name=server.server_name,
                     server_url=loggable_mcp_server_origin(server.server_url),
                     error_code="MCP_DISCOVERY_VALIDATION_FAILED",
@@ -485,7 +510,8 @@ async def update_mcp_server(
                 logger.exception(
                     "mcp_tool_discovery_failed_on_update",
                     workspace_id=workspace_id,
-                    target_id=target_id,
+                    scope_type=scope_type,
+                    destination_id=destination_id,
                     server_name=server.server_name,
                     server_url=loggable_mcp_server_origin(server.server_url),
                 )
@@ -493,30 +519,30 @@ async def update_mcp_server(
 
             updated_server = await _record_discovery_status(
                 workspace_id,
-                target_id,
+                destination_id,
                 str(server.id),
                 discovery_error,
-                target_type=target_type,
+                **registry_scope,
             )
             if updated_server is not None:
                 server = updated_server
 
     if request.remove_tools:
         for tool_name in request.remove_tools:
-            await tool_registry.remove_tool_for_target(
+            await tool_registry.remove_tool(
                 tool_name,
                 workspace_id,
-                target_id,
-                target_type=server.target_type,
+                destination_id,
                 server_id=str(server.id),
+                **registry_scope,
             )
 
     server_tools = await _resolve_tools_for_server(
         workspace_id,
-        target_id,
+        destination_id,
         server.server_url,
-        target_type=server.target_type,
         server_id=str(server.id),
+        **registry_scope,
     )
     return _build_server_response(server, server_tools)
 
@@ -525,15 +551,21 @@ async def update_mcp_server(
 async def test_mcp_server_connection(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
-    target_id: str = Query(..., min_length=1),
-    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
+    target_id: str | None = Query(default=None, min_length=1),
+    target_type: str | None = Query(default=None, min_length=1, examples=TARGET_TYPE_EXAMPLES),
     scope_type: Literal["agent", "target"] = Query(default="target"),
     agent_id: str | None = Query(default=None),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerConnectionTestResponse:
-    validate_registry_scope(scope_type, target_id, target_type, agent_id)
+    destination_id, destination_target_type = registry_destination(
+        scope_type, target_id, target_type, agent_id
+    )
+    registry_scope = registry_scope_options(scope_type, destination_target_type)
     server = await mcp_server_registry.get_server(
-        workspace_id, target_id, server_id, target_type=target_type
+        workspace_id,
+        destination_id,
+        server_id,
+        **registry_scope,
     )
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
@@ -550,7 +582,7 @@ async def test_mcp_server_connection(
     discovery_error: str | None = None
     try:
         discovered_tools, discovery_error, _discovery_error_code = await _discover_server_tools(
-            workspace_id, target_id, server
+            workspace_id, destination_id, server
         )
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
@@ -559,7 +591,8 @@ async def test_mcp_server_connection(
         logger.exception(
             "mcp_tool_discovery_test_failed",
             workspace_id=workspace_id,
-            target_id=target_id,
+            scope_type=scope_type,
+            destination_id=destination_id,
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
         )
@@ -567,10 +600,10 @@ async def test_mcp_server_connection(
 
     updated_server = await _record_discovery_status(
         workspace_id,
-        target_id,
+        destination_id,
         server_id,
         discovery_error,
-        target_type=target_type,
+        **registry_scope,
     )
     if updated_server is not None:
         server = updated_server
@@ -587,48 +620,3 @@ async def test_mcp_server_connection(
         discovered_tools=discovered_tool_names,
         error=discovery_error,
     )
-
-
-@router.delete("/servers/{server_id}", status_code=204)
-async def delete_mcp_server(
-    server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
-    workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
-    target_id: str = Query(..., min_length=1),
-    target_type: str = Query(..., min_length=1, examples=TARGET_TYPE_EXAMPLES),
-    scope_type: Literal["agent", "target"] = Query(default="target"),
-    agent_id: str | None = Query(default=None),
-    _token_ok: None = Depends(require_admin_service_token),
-) -> None:
-    validate_registry_scope(scope_type, target_id, target_type, agent_id)
-    server = await mcp_server_registry.get_server(
-        workspace_id, target_id, server_id, target_type=target_type
-    )
-    if not server:
-        raise HTTPException(status_code=404, detail="MCP server not found")
-
-    await cleanup_server_connections(workspace_id, server_id)
-
-    server_tools = await _resolve_tools_for_server(
-        workspace_id,
-        target_id,
-        server.server_url,
-        target_type=server.target_type,
-        server_id=str(server.id),
-    )
-    for tool in server_tools:
-        await tool_registry.remove_tool_for_target(
-            tool.tool_name,
-            workspace_id,
-            target_id,
-            target_type=server.target_type,
-            server_id=str(server.id),
-        )
-
-    deleted = await mcp_server_registry.delete_server(
-        workspace_id,
-        target_id,
-        server_id,
-        target_type=target_type,
-    )
-    if not deleted:
-        raise HTTPException(status_code=404, detail="MCP server not found")

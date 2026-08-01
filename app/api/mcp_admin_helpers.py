@@ -11,12 +11,18 @@ from app.api.mcp_admin_schemas import (
     ToolConfigResponse,
     ToolConfigUpdateRequest,
 )
+from app.api.mcp_admin_validation import (
+    registered_server_destination,
+    registry_request_headers,
+    registry_scope_options,
+)
 from app.config.settings import settings
 from app.internal_model_tools import is_reserved_internal_tool_name
 from app.mcp.header_policy import build_mcp_request_headers
 from app.mcp.logging import loggable_mcp_server_origin
 from app.mcp.registry.models import McpServer, Tool
 from app.mcp.registry.store import mcp_server_registry, tool_registry
+from app.mcp.tool_definition_policy import ensure_discovered_tool_compatible
 from app.mcp.tool_identity import model_tool_alias
 from app.mcp.tool_metadata import (
     extract_discovery_error as _extract_discovery_error,
@@ -79,7 +85,6 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         target_type=(
             server.target_type if getattr(server, "scope_type", "target") == "target" else None
         ),
-        target_constraints=getattr(server, "target_constraints", {}) or {},
         server_name=server.server_name,
         server_url=server.server_url,
         enabled=bool(server.enabled),
@@ -113,30 +118,60 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
 
 async def _resolve_tools_for_server(
     workspace_id: str,
-    target_id: str,
+    destination_id: str,
     server_url: str,
-    target_type: str,
+    target_type: str | None = None,
     server_id: str | None = None,
+    scope_type: str = "target",
 ) -> list[Tool]:
+    registry_scope = registry_scope_options(scope_type, target_type)
     resolved_server_id = server_id
     if resolved_server_id is None:
         server = await mcp_server_registry.get_server_by_url(
             workspace_id,
-            target_id,
+            destination_id,
             server_url,
-            target_type=target_type,
             enabled_only=False,
+            **registry_scope,
         )
         if server is None:
             return []
         resolved_server_id = str(server.id)
-    tools = await tool_registry.list_target_tools(
+    tools = await tool_registry.list_tools(
         workspace_id,
-        target_id,
-        target_type=target_type,
+        destination_id,
         include_disabled=True,
+        **registry_scope,
     )
     return [tool for tool in tools if str(tool.server_id) == resolved_server_id]
+
+
+async def merge_connection_discovery(server: McpServer, tools: list[Any]) -> list[str]:
+    destination_id, registry_scope = registered_server_destination(server)
+    existing = await _resolve_tools_for_server(
+        server.workspace_id,
+        destination_id,
+        server.server_url,
+        server_id=str(server.id),
+        **registry_scope,
+    )
+    existing_by_name = {tool.tool_name: tool for tool in existing}
+    for observed in tools:
+        current = existing_by_name.get(observed.name)
+        if current is not None:
+            ensure_discovered_tool_compatible(current, observed)
+    newly_observed = [tool for tool in tools if tool.name not in existing_by_name]
+    if newly_observed:
+        await _apply_tools_for_server(
+            server.workspace_id,
+            destination_id,
+            server.server_url,
+            newly_observed,
+            server_id=str(server.id),
+            remove_disabled=False,
+            **registry_scope,
+        )
+    return sorted(tool.name for tool in tools)
 
 
 def _auth_header_name_for(auth_type: str, header_name: str | None) -> str | None:
@@ -156,17 +191,17 @@ def _auth_header_prefix_for(auth_type: str, header_prefix: str | None) -> str | 
 
 
 async def _build_server_request_headers(
-    workspace_id: str, target_id: str, server: McpServer
+    workspace_id: str, destination_id: str, server: McpServer
 ) -> dict[str, str]:
+    registry_scope = registry_scope_options(
+        getattr(server, "scope_type", "target"), getattr(server, "target_type", None)
+    )
+    platform_headers = registry_request_headers(workspace_id, destination_id, registry_scope)
     try:
         return build_mcp_request_headers(
             server,
             None,
-            platform_headers={
-                "x-workspace-id": workspace_id,
-                "x-target-id": target_id,
-                "x-target-type": server.target_type,
-            },
+            platform_headers=platform_headers,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -258,13 +293,13 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
 
 async def _discover_server_tools(
     workspace_id: str,
-    target_id: str,
+    destination_id: str,
     server: McpServer,
     *,
     request_headers: dict[str, str] | None = None,
 ) -> tuple[list[ToolConfigRequest], str | None, str | None]:
     headers = request_headers or await _build_server_request_headers(
-        workspace_id, target_id, server
+        workspace_id, destination_id, server
     )
     discovery_response = await mcp_transport.list_tools(
         server.server_url, settings.MCP_CALL_DEFAULT_TIMEOUT_MS, headers
@@ -273,7 +308,8 @@ async def _discover_server_tools(
         logger.warning(
             "mcp_tool_discovery_invalid_response",
             workspace_id=workspace_id,
-            target_id=target_id,
+            scope_type=getattr(server, "scope_type", "target"),
+            destination_id=destination_id,
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
         )
@@ -294,7 +330,8 @@ async def _discover_server_tools(
         logger.warning(
             "mcp_tool_discovery_error",
             workspace_id=workspace_id,
-            target_id=target_id,
+            scope_type=getattr(server, "scope_type", "target"),
+            destination_id=destination_id,
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
             error_code=discovery_error_code,
@@ -306,7 +343,8 @@ async def _discover_server_tools(
         logger.warning(
             "mcp_tool_discovery_empty",
             workspace_id=workspace_id,
-            target_id=target_id,
+            scope_type=getattr(server, "scope_type", "target"),
+            destination_id=destination_id,
             server_name=server.server_name,
             server_url=loggable_mcp_server_origin(server.server_url),
         )
@@ -315,21 +353,23 @@ async def _discover_server_tools(
 
 async def _record_discovery_status(
     workspace_id: str,
-    target_id: str,
+    destination_id: str,
     server_id: str,
     discovery_error: str | None,
-    target_type: str,
+    target_type: str | None = None,
+    scope_type: str = "target",
 ) -> McpServer | None:
+    registry_scope = registry_scope_options(scope_type, target_type)
     return await mcp_server_registry.update_server(
         workspace_id,
-        target_id,
+        destination_id,
         server_id,
         {
             "connection_status": "error" if discovery_error else "ok",
             "last_discovery_at": datetime.now(UTC),
             "last_discovery_error": discovery_error,
         },
-        target_type=target_type,
+        **registry_scope,
     )
 
 
@@ -349,22 +389,24 @@ def _effective_patch_value(
 
 async def _apply_tools_for_server(
     workspace_id: str,
-    target_id: str,
+    destination_id: str,
     server_url: str,
     tools: list[ToolConfigRequest | ToolConfigUpdateRequest],
     *,
-    target_type: str,
+    target_type: str | None = None,
     server_id: str | None = None,
     remove_disabled: bool = True,
+    scope_type: str = "target",
 ) -> None:
+    registry_scope = registry_scope_options(scope_type, target_type)
     resolved_server_id = server_id
     if resolved_server_id is None:
         server = await mcp_server_registry.get_server_by_url(
             workspace_id,
-            target_id,
+            destination_id,
             server_url,
-            target_type=target_type,
             enabled_only=False,
+            **registry_scope,
         )
         if server is None:
             raise HTTPException(status_code=404, detail="MCP server not found")
@@ -376,11 +418,11 @@ async def _apply_tools_for_server(
         if isinstance(tool, ToolConfigUpdateRequest) or not capability_provided:
             existing_tool = await tool_registry.get_tool(
                 workspace_id,
-                target_id,
+                destination_id,
                 tool.name,
-                target_type=target_type,
                 include_disabled=True,
                 server_id=resolved_server_id,
+                **registry_scope,
             )
 
         if isinstance(tool, ToolConfigUpdateRequest):
@@ -412,12 +454,12 @@ async def _apply_tools_for_server(
             artifact_policy = getattr(tool, "artifact_policy", "never")
 
         if not enabled and remove_disabled:
-            await tool_registry.remove_tool_for_target(
+            await tool_registry.remove_tool(
                 tool.name,
                 workspace_id,
-                target_id,
-                target_type=target_type,
+                destination_id,
                 server_id=resolved_server_id,
+                **registry_scope,
             )
             continue
         if (
@@ -442,8 +484,7 @@ async def _apply_tools_for_server(
                 tool_name=tool.name,
                 mcp_server_url=server_url,
                 workspace_id=workspace_id,
-                target_id=target_id,
-                target_type=target_type,
+                destination_id=destination_id,
                 timeout_ms=timeout_ms,
                 input_schema=input_schema,
                 output_schema=output_schema,
@@ -457,6 +498,7 @@ async def _apply_tools_for_server(
                 review_state=review_state,
                 risk_level=risk_level,
                 auto_allowed=auto_allowed,
+                **registry_scope,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -98,20 +98,16 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
 
             for server, installation in zip(created, installations, strict=True):
                 is_agent = installation["scope_type"] == "agent"
-                target_id = (
-                    installation["agent_id"]
-                    if is_agent
-                    else installation["target_id"]
-                )
                 tool_query = {
                     "workspace_id": workspace_id,
-                    "target_id": target_id,
-                    "target_type": "agent" if is_agent else installation["target_type"],
                     "scope_type": "agent" if is_agent else "target",
                     "server_id": server["id"],
                 }
                 if is_agent:
                     tool_query["agent_id"] = installation["agent_id"]
+                else:
+                    tool_query["target_id"] = installation["target_id"]
+                    tool_query["target_type"] = installation["target_type"]
                 approved = await ac.patch(
                     "/api/v1/internal/mcp/tools/get_weather",
                     params=tool_query,
@@ -128,12 +124,23 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
 
             for server, installation in zip(created, installations, strict=True):
                 is_agent = installation["scope_type"] == "agent"
-                target_id = (
-                    installation["agent_id"]
-                    if is_agent
-                    else installation["target_id"]
-                )
                 tool_alias = model_tool_alias(server["id"], "get_weather")
+                scope_claims = (
+                    {
+                        "scope": {"type": "workspace"},
+                        "workflow_id": "workflow-agent-mcp",
+                        "execution_id": f"execution-{uuid4()}",
+                        "workflow_session_id": f"workflow-session-{uuid4()}",
+                        "executor_role": "specialist",
+                        "agent_id": installation["agent_id"],
+                    }
+                    if is_agent
+                    else {
+                        "scope": {"type": "target"},
+                        "target_id": installation["target_id"],
+                        "target_type": installation["target_type"],
+                    }
+                )
                 claims = TokenClaims(
                     iss="llm-gateway",
                     aud="execution-gateway",
@@ -144,15 +151,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     permission_mode="read_only",
                     run_id=f"run-{uuid4()}",
                     workspace_id=workspace_id,
-                    scope={"type": "workspace" if is_agent else "target"},
-                    target_id=None if is_agent else target_id,
-                    target_type=None if is_agent else installation["target_type"],
-                    workflow_id="workflow-agent-mcp" if is_agent else None,
-                    execution_id=f"execution-{uuid4()}" if is_agent else None,
-                    workflow_session_id=f"workflow-session-{uuid4()}" if is_agent else None,
-                    executor_role="specialist" if is_agent else None,
-                    agent_id=installation.get("agent_id"),
-                    agent_version=1 if is_agent else None,
+                    **scope_claims,
                     session_id=f"session-{uuid4()}",
                     permissions={
                         "allowed_tools": ["*"],
@@ -179,18 +178,18 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                         "run_id": claims.run_id,
                         "workspace_id": workspace_id,
                         "scope": {"type": "workspace" if is_agent else "target"},
-                        "target_id": None if is_agent else target_id,
-                        "target_type": None if is_agent else installation["target_type"],
                         "workflow_id": claims.workflow_id,
                         "execution_id": claims.execution_id,
                         "workflow_session_id": claims.workflow_session_id,
                         "executor_role": claims.executor_role,
                         "agent_id": installation.get("agent_id"),
-                        "agent_version": 1 if is_agent else None,
                         "tool": tool_alias,
                         "tool_ref": {"server_id": server["id"], "tool_name": "get_weather"},
                         "arguments": {"location": "Singapore"},
                     }
+                    if not is_agent:
+                        payload["target_id"] = installation["target_id"]
+                        payload["target_type"] = installation["target_type"]
                     first = await ac.post(
                         "/api/v1/mcp/tool-call",
                         json=payload,

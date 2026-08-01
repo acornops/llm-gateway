@@ -25,7 +25,7 @@ async def _create_server(
 ):
     return await registry.create_server(
         workspace_id="ws-1",
-        target_id="cluster-a",
+        destination_id="cluster-a",
         target_type=target_type,
         server_name=server_name,
         server_url=server_url,
@@ -48,7 +48,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             enabled=False,
@@ -88,27 +88,27 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             enabled=True,
             description="updated description",
             source="builtin",
         )
-        listed_names = await registry.list_target_tool_names(
+        listed_names = await registry.list_tool_names(
             "ws-1", "cluster-a", target_type="kubernetes"
         )
         assert listed_names == ["github.search"]
-        assert await registry.list_target_tool_names(
+        assert await registry.list_tool_names(
             "ws-1", "cluster-a", target_type="virtual_machine"
         ) == []
         assert updated.description == "updated description"
         assert updated.enabled is True
 
-        assert await registry.remove_tool_for_target(
+        assert await registry.remove_tool(
             "github.search", "ws-1", "cluster-a", target_type="kubernetes"
         ) is True
-        assert await registry.remove_tool_for_target(
+        assert await registry.remove_tool(
             "github.search", "ws-1", "cluster-a", target_type="kubernetes"
         ) is False
 
@@ -116,7 +116,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             tool_name="tool.one",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             source="mcp",
@@ -125,16 +125,16 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
             tool_name="tool.two",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             source="builtin",
         )
-        await registry.delete_target_tools_by_source(
+        await registry.delete_tools_by_source(
             "ws-1", "cluster-a", "kubernetes", "mcp"
         )
 
-        remaining = await registry.list_target_tool_names(
+        remaining = await registry.list_tool_names(
             "ws-1", "cluster-a", target_type="kubernetes"
         )
         assert remaining == ["tool.two"]
@@ -161,7 +161,7 @@ async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp
             tool_name="list_resources",
             mcp_server_url=old_url,
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             source="builtin",
@@ -188,7 +188,7 @@ async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp
             tool_name="list_resources",
             mcp_server_url=new_url,
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             source="builtin",
@@ -225,7 +225,7 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(first_server.id),
         )
@@ -234,12 +234,12 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
             tool_name="github.search",
             mcp_server_url="http://server-b",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(second_server.id),
         )
 
-        tools = await registry.list_target_tools(
+        tools = await registry.list_tools(
             "ws-1", "cluster-a", target_type="kubernetes"
         )
         assert len(tools) == 2
@@ -266,7 +266,7 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
             tool_name="github.search",
             mcp_server_url="http://server-a",
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
         )
@@ -276,7 +276,7 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
                 tool_name="github.search",
                 mcp_server_url="http://server-a",
                 workspace_id="ws-1",
-                target_id="cluster-a",
+                destination_id="cluster-a",
                 target_type="virtual_machine",
                 server_id=str(server.id),
             )
@@ -310,7 +310,7 @@ async def test_mcp_server_registry_crud_and_invalid_id_handling(tmp_path):
     try:
         created = await registry.create_server(
             workspace_id="ws-1",
-            target_id="cluster-a",
+            destination_id="cluster-a",
             target_type="kubernetes",
             server_name="github",
             server_url="https://github.example/mcp",
@@ -391,7 +391,7 @@ async def test_mcp_server_registry_isolates_agent_and_target_destinations(tmp_pa
     try:
         target = await registry.create_server(
             workspace_id="ws-1",
-            target_id="destination-a",
+            destination_id="destination-a",
             target_type="kubernetes",
             server_name="operations",
             server_url="https://operations.example/mcp",
@@ -400,23 +400,25 @@ async def test_mcp_server_registry_isolates_agent_and_target_destinations(tmp_pa
         )
         agent = await registry.create_server(
             workspace_id="ws-1",
-            target_id="destination-a",
-            target_type="agent",
+            destination_id="destination-a",
             server_name="operations",
             server_url="https://operations.example/mcp",
             enabled=True,
             auth_type="none",
+            scope_type="agent",
         )
 
         assert target.scope_type == "target"
         assert target.agent_id is None
         assert agent.scope_type == "agent"
         assert agent.agent_id == "destination-a"
+        assert agent.target_id is None
+        assert agent.target_type is None
         assert [server.id for server in await registry.list_servers(
             "ws-1", "destination-a", "kubernetes"
         )] == [target.id]
         assert [server.id for server in await registry.list_servers(
-            "ws-1", "destination-a", "agent"
+            "ws-1", "destination-a", scope_type="agent"
         )] == [agent.id]
 
         with pytest.raises(ValueError, match="revision"):

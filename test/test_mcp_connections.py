@@ -6,10 +6,10 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.handlers_mcp_connections import (
-    _merge_connection_discovery,
     _verify_connection,
     check_mcp_connection_readiness,
 )
+from app.api.mcp_admin_helpers import merge_connection_discovery
 from app.api.mcp_admin_schemas import (
     McpConnectionUpsertRequest,
     McpExactToolReference,
@@ -37,6 +37,8 @@ def _server(**overrides):
         "workspace_id": "ws-1",
         "target_id": "target-1",
         "target_type": "kubernetes",
+        "scope_type": "target",
+        "agent_id": None,
         "server_url": "https://mcp.example.com/mcp",
         "credential_mode": "individual",
         "auth_type": "bearer_token",
@@ -230,6 +232,37 @@ async def test_failed_verification_retains_bounded_error_state() -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_verification_uses_only_agent_destination_context() -> None:
+    connection = SimpleNamespace(status="error")
+    discover = AsyncMock(return_value=([], "unavailable", "MCP_ENDPOINT_UNAVAILABLE"))
+    agent_server = _server(scope_type="agent", agent_id="agent-1")
+    del agent_server.target_id
+    del agent_server.target_type
+    with (
+        patch(
+            "app.api.handlers_mcp_connections._discover_server_tools",
+            new=discover,
+        ),
+        patch(
+            "app.api.handlers_mcp_connections.mcp_connection_store.set_state",
+            new=AsyncMock(return_value=connection),
+        ),
+    ):
+        await _verify_connection(
+            server=agent_server,
+            connection=connection,
+            workspace_id="ws-1",
+            credential="agent-credential",
+        )
+
+    assert discover.await_args.args[1] == "agent-1"
+    headers = discover.await_args.kwargs["request_headers"]
+    assert headers["x-agent-id"] == "agent-1"
+    assert "x-target-id" not in headers
+    assert "x-target-type" not in headers
+
+
+@pytest.mark.anyio
 async def test_oauth_authentication_rejection_requires_reauthorization() -> None:
     connection = SimpleNamespace(status="error")
     server = _server()
@@ -307,15 +340,15 @@ async def test_discovery_adds_only_new_tools_to_installation_catalog() -> None:
     ]
     with (
         patch(
-            "app.api.handlers_mcp_connections._resolve_tools_for_server",
+            "app.api.mcp_admin_helpers._resolve_tools_for_server",
             new=AsyncMock(return_value=[existing]),
         ),
         patch(
-            "app.api.handlers_mcp_connections._apply_tools_for_server",
+            "app.api.mcp_admin_helpers._apply_tools_for_server",
             new=AsyncMock(),
         ) as apply_tools,
     ):
-        await _merge_connection_discovery(_server(), discovered)
+        await merge_connection_discovery(_server(), discovered)
     assert [tool.name for tool in apply_tools.await_args.args[3]] == ["records.write"]
     assert apply_tools.await_args.kwargs["remove_disabled"] is False
 
@@ -360,16 +393,16 @@ async def test_user_discovery_rejects_security_relevant_shared_tool_conflicts(
 ) -> None:
     with (
         patch(
-            "app.api.handlers_mcp_connections._resolve_tools_for_server",
+            "app.api.mcp_admin_helpers._resolve_tools_for_server",
             new=AsyncMock(return_value=[existing]),
         ),
         patch(
-            "app.api.handlers_mcp_connections._apply_tools_for_server",
+            "app.api.mcp_admin_helpers._apply_tools_for_server",
             new=AsyncMock(),
         ) as apply_tools,
         pytest.raises(McpToolDefinitionConflictError),
     ):
-        await _merge_connection_discovery(_server(), [observed])
+        await merge_connection_discovery(_server(), [observed])
 
     apply_tools.assert_not_awaited()
 

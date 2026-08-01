@@ -11,11 +11,11 @@ default-Agent scope.
 
 - Catalog data and Agent installation data remain separate.
 - Catalog credentials are write-only and secret-backed.
-- Imported server DTOs expose immutable provenance, review state, and target
-  constraints, never credentials.
-- Agent imports carry an Agent ID and optional structured target constraints.
-  Target imports carry the server-derived target ID and target type and reject
-  Agent constraints.
+- Imported server DTOs expose immutable provenance and review state, never
+  credentials or Agent-to-target constraints.
+- Agent imports carry an Agent ID. Target imports carry the server-derived
+  target ID and target type; neither destination creates an Agent-to-target
+  binding.
 - Existing built-in Kubernetes MCP behavior remains unchanged.
 - Target-scoped gateway records remain owned by the selected Cluster or VM
   generic agent, including existing third-party MCP servers. Agent-scoped

@@ -234,24 +234,6 @@ class CatalogMcpImportBase(BaseModel):
 class CatalogAgentMcpImportRequest(CatalogMcpImportBase):
     scope_type: Literal["agent"]
     agent_id: str = Field(min_length=1)
-    target_constraints: dict[str, list[str]] = Field(default_factory=dict)
-
-    @field_validator("target_constraints")
-    @classmethod
-    def validate_target_constraints(
-        cls, value: dict[str, list[str]]
-    ) -> dict[str, list[str]]:
-        unknown = set(value) - {"target_types", "target_ids"}
-        if unknown:
-            raise ValueError("target constraints contain unsupported fields")
-        if any(not item.strip() for items in value.values() for item in items):
-            raise ValueError("target constraints cannot contain empty values")
-        if set(value.get("target_types", [])) - {"kubernetes", "virtual_machine"}:
-            raise ValueError("target constraints contain unsupported target types")
-        return {
-            key: sorted({item.strip() for item in items})
-            for key, items in value.items()
-        }
 
 
 class CatalogTargetMcpImportRequest(CatalogMcpImportBase):

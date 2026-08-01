@@ -104,6 +104,9 @@ def build_token_claims(**overrides):
     claims = deepcopy(BASE_CLAIMS)
     permissions = overrides.pop("permissions", None)
     claims.update(overrides)
+    if claims.get("scope", {}).get("type") in {"workspace", "agent_chat"}:
+        claims.pop("target_id", None)
+        claims.pop("target_type", None)
     if permissions:
         claims["permissions"] = {**claims["permissions"], **permissions}
     return claims
@@ -133,7 +136,6 @@ def build_workflow_tool_call_payload(**overrides):
         "workflow_session_id": "workflow-session-1",
         "executor_role": "specialist",
         "agent_id": "agent-1",
-        "agent_version": 1,
         "tool": "mcp.tools.list",
         "tool_ref": {"server_id": EXAMPLE_SERVER_ID, "tool_name": "mcp.tools.list"},
         "arguments": {},
@@ -235,6 +237,7 @@ async def test_tool_call_contract():
                     EXAMPLE_TARGET_ID,
                     "get_weather",
                     target_type="kubernetes",
+                    scope_type="target",
                     server_id=EXAMPLE_SERVER_ID,
                 )
             finally:
@@ -736,14 +739,11 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
 async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwards_run_token():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
-        target_id=None,
-        target_type=None,
         workflow_id="workspace-tool-exposure-audit",
         execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-1",
-        agent_version=1,
         permissions={
             "allowed_tools": ["mcp.tools.list"],
             "allowed_tool_refs": [{"server_id": EXAMPLE_SERVER_ID, "tool_name": "mcp.tools.list"}],
@@ -756,8 +756,6 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
-        target_id="agent-1",
-        target_type="agent",
         tool_name="mcp.tools.list",
         mcp_server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
@@ -769,8 +767,6 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
-        target_id="agent-1",
-        target_type="agent",
         server_name="acornops-target-agent",
         server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
@@ -831,7 +827,7 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
                 EXAMPLE_WORKSPACE_ID,
                 "agent-1",
                 "mcp.tools.list",
-                target_type="agent",
+                scope_type="agent",
                 server_id=EXAMPLE_SERVER_ID,
             )
             mock_get_server.assert_awaited_once()
@@ -847,16 +843,15 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("executor_role", "agent_id", "agent_version"),
+    ("executor_role", "agent_id"),
     [
-        ("specialist", "agent-1", 1),
-        ("coordinator", None, None),
+        ("specialist", "agent-1"),
+        ("coordinator", None),
     ],
 )
-async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
+async def test_workspace_workflow_calls_builtin_tool_through_generic_targets_mcp(
     executor_role: str,
     agent_id: str | None,
-    agent_version: int | None,
 ):
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
@@ -865,14 +860,12 @@ async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
         workflow_session_id="workflow-session-1",
         executor_role=executor_role,
         agent_id=agent_id,
-        agent_version=agent_version,
         permissions={
             "allowed_tools": ["get_weather"],
             "allowed_tool_refs": [
-                {"server_id": EXAMPLE_SERVER_ID, "tool_name": "get_weather"}
+                {"server_id": "targets", "tool_name": "get_weather"}
             ],
             "allowed_tool_operations": {"get_weather": "read"},
-            "context_grants": ["target_inventory"],
         },
     )
     mock_tool = reviewed_tool(
@@ -884,19 +877,24 @@ async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
         server_url="http://control-plane:8081/internal/v1/mcp",
         provenance_type="builtin",
     )
-    registry_results = [None, mock_tool] if agent_id else [mock_tool]
+    server_by_url_results = [mock_server]
 
     with (
         patch(
             "app.api.handlers_tool_call.tool_registry.get_tool",
             new_callable=AsyncMock,
-            side_effect=registry_results,
+            return_value=mock_tool,
         ) as mock_get_tool,
         patch(
             "app.api.handlers_tool_call.mcp_server_registry.get_server",
             new_callable=AsyncMock,
             return_value=mock_server,
         ) as mock_get_server,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
+            new_callable=AsyncMock,
+            side_effect=server_by_url_results,
+        ) as mock_get_server_by_url,
         patch(
             "app.api.handlers_tool_call.post_builtin_mcp_tool",
             new_callable=AsyncMock,
@@ -922,38 +920,39 @@ async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
                 response = await ac.post(
                     "/api/v1/mcp/tool-call",
                     json=build_workflow_tool_call_payload(
-                        target_id=EXAMPLE_TARGET_ID,
-                        target_type="kubernetes",
                         workflow_id="target-diagnostics",
                         executor_role=executor_role,
                         agent_id=agent_id,
-                        agent_version=agent_version,
-                        tool=EXAMPLE_TOOL_ALIAS,
+                        tool="get_weather",
                         tool_ref={
-                            "server_id": EXAMPLE_SERVER_ID,
+                            "server_id": "targets",
                             "tool_name": "get_weather",
                         },
-                        arguments={"location": "SF"},
+                        arguments={
+                            "target_id": EXAMPLE_TARGET_ID,
+                            "target_type": "kubernetes",
+                            "location": "SF",
+                        },
                     ),
                     headers={"Authorization": "Bearer workflow-run-jwt"},
                 )
 
             assert response.status_code == 200
-            if agent_id:
-                assert mock_get_tool.await_args_list[0].kwargs == {
-                    "target_type": "agent",
-                    "server_id": EXAMPLE_SERVER_ID,
-                }
-                assert mock_get_tool.await_args_list[0].args == (
-                    EXAMPLE_WORKSPACE_ID,
-                    agent_id,
-                    "get_weather",
-                )
-            assert mock_get_tool.await_args_list[-1].kwargs == {
+            assert mock_get_server_by_url.await_args_list[-1].args == (
+                EXAMPLE_WORKSPACE_ID,
+                EXAMPLE_TARGET_ID,
+                "http://control-plane:8081/internal/v1/mcp",
+            )
+            assert mock_get_server_by_url.await_args_list[-1].kwargs == {
                 "target_type": "kubernetes",
+                "scope_type": "target",
+            }
+            assert mock_get_tool.await_args.kwargs == {
+                "target_type": "kubernetes",
+                "scope_type": "target",
                 "server_id": EXAMPLE_SERVER_ID,
             }
-            assert mock_get_tool.await_args_list[-1].args == (
+            assert mock_get_tool.await_args.args == (
                 EXAMPLE_WORKSPACE_ID,
                 EXAMPLE_TARGET_ID,
                 "get_weather",
@@ -963,6 +962,7 @@ async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
                 EXAMPLE_TARGET_ID,
                 EXAMPLE_SERVER_ID,
                 target_type="kubernetes",
+                scope_type="target",
             )
             mock_call_tool.assert_not_awaited()
             assert mock_builtin_call.await_args.args[4] == {
@@ -973,7 +973,7 @@ async def test_target_bound_workspace_workflow_routes_builtin_target_tool(
 
 
 @pytest.mark.anyio
-async def test_target_bound_workspace_workflow_routes_reviewed_remote_target_tool():
+async def test_workspace_targets_mcp_does_not_expose_remote_target_servers():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
         workflow_id="target-diagnostics",
@@ -981,46 +981,28 @@ async def test_target_bound_workspace_workflow_routes_reviewed_remote_target_too
         workflow_session_id="workflow-session-1",
         executor_role="coordinator",
         agent_id=None,
-        agent_version=None,
         permissions={
             "allowed_tools": ["records.list"],
             "allowed_tool_refs": [
-                {"server_id": EXAMPLE_SERVER_ID, "tool_name": "records.list"}
+                {"server_id": "targets", "tool_name": "records.list"}
             ],
             "allowed_tool_operations": {"records.list": "read"},
         },
-    )
-    mock_tool = reviewed_tool(
-        tool_name="records.list",
-        source="mcp",
-        mcp_server_url="https://mcp.example.com/v1",
-    )
-    mock_server = enabled_server(
-        server_name="target-records",
-        server_url="https://mcp.example.com/v1",
-        provenance_type="manual",
     )
 
     with (
         patch(
             "app.api.handlers_tool_call.tool_registry.get_tool",
             new_callable=AsyncMock,
-            return_value=mock_tool,
         ) as mock_get_tool,
         patch(
-            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            "app.api.handlers_tool_call.mcp_server_registry.get_server_by_url",
             new_callable=AsyncMock,
-            return_value=mock_server,
+            return_value=None,
         ),
-        patch(
-            "app.api.handlers_tool_call.connection_request_headers",
-            new_callable=AsyncMock,
-            return_value={"Authorization": "Bearer connected-credential"},
-        ) as mock_connection_headers,
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool",
             new_callable=AsyncMock,
-            return_value={"content": [{"type": "text", "text": "ok"}], "isError": False},
         ) as mock_call_tool,
         patch(
             "app.api.handlers_tool_call.post_builtin_mcp_tool",
@@ -1041,39 +1023,26 @@ async def test_target_bound_workspace_workflow_routes_reviewed_remote_target_too
                 response = await ac.post(
                     "/api/v1/mcp/tool-call",
                     json=build_workflow_tool_call_payload(
-                        target_id=EXAMPLE_TARGET_ID,
-                        target_type="kubernetes",
                         workflow_id="target-diagnostics",
                         executor_role="coordinator",
                         agent_id=None,
-                        agent_version=None,
-                        tool=model_tool_alias(EXAMPLE_SERVER_ID, "records.list"),
+                        tool="records.list",
                         tool_ref={
-                            "server_id": EXAMPLE_SERVER_ID,
+                            "server_id": "targets",
                             "tool_name": "records.list",
+                        },
+                        arguments={
+                            "target_id": EXAMPLE_TARGET_ID,
+                            "target_type": "kubernetes",
                         },
                     ),
                     headers={"Authorization": "Bearer workflow-run-jwt"},
                 )
 
-            assert response.status_code == 200
-            mock_get_tool.assert_awaited_once_with(
-                EXAMPLE_WORKSPACE_ID,
-                EXAMPLE_TARGET_ID,
-                "records.list",
-                target_type="kubernetes",
-                server_id=EXAMPLE_SERVER_ID,
-            )
-            platform_headers = mock_connection_headers.await_args.kwargs[
-                "platform_headers"
-            ]
-            assert platform_headers == {
-                "x-workspace-id": EXAMPLE_WORKSPACE_ID,
-                "x-target-id": EXAMPLE_TARGET_ID,
-                "x-target-type": "kubernetes",
-                "x-run-id": EXAMPLE_RUN_ID,
-            }
-            mock_call_tool.assert_awaited_once()
+            assert response.status_code == 404
+            assert response.json()["detail"] == "Tool records.list not found or disabled"
+            mock_get_tool.assert_not_awaited()
+            mock_call_tool.assert_not_awaited()
             mock_builtin_call.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
@@ -1083,14 +1052,11 @@ async def test_target_bound_workspace_workflow_routes_reviewed_remote_target_too
 async def test_workspace_only_workflow_does_not_fall_through_to_target_registry():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
-        target_id=None,
-        target_type=None,
         workflow_id="workspace-audit",
         execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-1",
-        agent_version=1,
         permissions={
             "allowed_tools": ["records.list"],
             "allowed_tool_refs": [
@@ -1132,8 +1098,6 @@ async def test_workspace_only_workflow_does_not_fall_through_to_target_registry(
                 response = await ac.post(
                     "/api/v1/mcp/tool-call",
                     json=build_workflow_tool_call_payload(
-                        target_id=None,
-                        target_type=None,
                         workflow_id="workspace-audit",
                         tool=model_tool_alias(EXAMPLE_SERVER_ID, "records.list"),
                         tool_ref={
@@ -1149,7 +1113,7 @@ async def test_workspace_only_workflow_does_not_fall_through_to_target_registry(
                 EXAMPLE_WORKSPACE_ID,
                 "agent-1",
                 "records.list",
-                target_type="agent",
+                scope_type="agent",
                 server_id=EXAMPLE_SERVER_ID,
             )
             mock_get_server.assert_not_awaited()
@@ -1163,14 +1127,11 @@ async def test_workspace_only_workflow_does_not_fall_through_to_target_registry(
 async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_tool():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
-        target_id=None,
-        target_type=None,
         workflow_id="workspace-tool-exposure-audit",
         execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-1",
-        agent_version=1,
         permissions={
             "allowed_tools": ["records.list"],
             "allowed_tool_refs": [{"server_id": EXAMPLE_SERVER_ID, "tool_name": "records.list"}],
@@ -1181,8 +1142,6 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
-        target_id="agent-1",
-        target_type="agent",
         tool_name="records.list",
         mcp_server_url="https://mcp.example.com/v1",
         enabled=True,
@@ -1195,8 +1154,6 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
-        target_id="agent-1",
-        target_type="agent",
         server_name="operations-catalog",
         server_url="https://mcp.example.com/v1",
             enabled=True,
@@ -1259,14 +1216,11 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
 async def test_workspace_workflow_tool_call_rejects_internal_model_only_tool_before_bridge():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},
-        target_id=None,
-        target_type=None,
         workflow_id="workspace-tool-exposure-audit",
         execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-1",
-        agent_version=1,
         permissions={"allowed_tools": ["*"]},
     )
 

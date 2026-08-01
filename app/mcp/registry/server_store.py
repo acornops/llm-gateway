@@ -23,27 +23,50 @@ class McpServerRegistry:
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
 
     @staticmethod
-    def _scope_type(target_type: str) -> str:
-        return "agent" if target_type == "agent" else "target"
+    def _scope_filters(model, scope_type: str, destination_id: str, target_type: str | None):
+        if scope_type == "agent":
+            return (
+                model.scope_type == "agent",
+                model.agent_id == destination_id,
+                model.target_id.is_(None),
+                model.target_type.is_(None),
+            )
+        if scope_type != "target" or not target_type:
+            raise ValueError("target MCP scope requires target_type")
+        return (
+            model.scope_type == "target",
+            model.agent_id.is_(None),
+            model.target_id == destination_id,
+            model.target_type == target_type,
+        )
 
     async def list_servers(
-        self, workspace_id: str, target_id: str, target_type: str
+        self,
+        workspace_id: str,
+        destination_id: str,
+        target_type: str | None = None,
+        *,
+        scope_type: str = "target",
     ) -> list[McpServer]:
         async with self.async_session() as session:
             result = await session.execute(
                 select(McpServer)
                 .where(
                     McpServer.workspace_id == workspace_id,
-                    McpServer.scope_type == self._scope_type(target_type),
-                    McpServer.target_id == target_id,
-                    McpServer.target_type == target_type,
+                    *self._scope_filters(McpServer, scope_type, destination_id, target_type),
                 )
                 .order_by(McpServer.server_name.asc())
             )
             return list(result.scalars().all())
 
     async def get_server(
-        self, workspace_id: str, target_id: str, server_id: str, target_type: str
+        self,
+        workspace_id: str,
+        destination_id: str,
+        server_id: str,
+        target_type: str | None = None,
+        *,
+        scope_type: str = "target",
     ) -> McpServer | None:
         normalized_server_id = self._normalize_server_id(server_id)
         if normalized_server_id is None:
@@ -53,9 +76,7 @@ class McpServerRegistry:
                 select(McpServer).where(
                     McpServer.id == normalized_server_id,
                     McpServer.workspace_id == workspace_id,
-                    McpServer.scope_type == self._scope_type(target_type),
-                    McpServer.target_id == target_id,
-                    McpServer.target_type == target_type,
+                    *self._scope_filters(McpServer, scope_type, destination_id, target_type),
                 )
             )
             return result.scalars().first()
@@ -66,29 +87,32 @@ class McpServerRegistry:
             return None
         async with self.async_session() as session:
             return (
-                await session.execute(
-                    select(McpServer).where(
-                        McpServer.id == normalized_server_id,
-                        McpServer.workspace_id == workspace_id,
+                (
+                    await session.execute(
+                        select(McpServer).where(
+                            McpServer.id == normalized_server_id,
+                            McpServer.workspace_id == workspace_id,
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
 
     async def get_server_by_url(
         self,
         workspace_id: str,
-        target_id: str,
+        destination_id: str,
         server_url: str,
         *,
-        target_type: str,
+        target_type: str | None = None,
+        scope_type: str = "target",
         enabled_only: bool = True,
     ) -> McpServer | None:
         async with self.async_session() as session:
             stmt = select(McpServer).where(
                 McpServer.workspace_id == workspace_id,
-                McpServer.scope_type == self._scope_type(target_type),
-                McpServer.target_id == target_id,
-                McpServer.target_type == target_type,
+                *self._scope_filters(McpServer, scope_type, destination_id, target_type),
                 McpServer.server_url == server_url,
             )
             if enabled_only:
@@ -98,12 +122,12 @@ class McpServerRegistry:
     async def create_server(
         self,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        destination_id: str,
         server_name: str,
         server_url: str,
         enabled: bool,
         auth_type: str,
+        target_type: str | None = None,
         auth_header_name: str | None = None,
         auth_header_prefix: str | None = None,
         public_headers: dict[str, str] | None = None,
@@ -114,16 +138,16 @@ class McpServerRegistry:
         catalog_digest: str | None = None,
         catalog_imported_at=None,
         endpoint_configuration: dict[str, str] | None = None,
-        target_constraints: dict[str, list[str]] | None = None,
         provenance_type: str = "manual",
+        scope_type: str = "target",
     ) -> McpServer:
         async with self.async_session() as session:
             server = McpServer(
                 workspace_id=workspace_id,
-                scope_type=self._scope_type(target_type),
-                agent_id=target_id if target_type == "agent" else None,
-                target_id=target_id,
-                target_type=target_type,
+                scope_type=scope_type,
+                agent_id=destination_id if scope_type == "agent" else None,
+                target_id=destination_id if scope_type == "target" else None,
+                target_type=target_type if scope_type == "target" else None,
                 server_name=server_name,
                 server_url=server_url,
                 enabled=enabled,
@@ -139,7 +163,6 @@ class McpServerRegistry:
                 catalog_imported_at=catalog_imported_at,
                 provenance_type=provenance_type,
                 endpoint_configuration=endpoint_configuration or {},
-                target_constraints=target_constraints or {},
                 revision=1,
                 connection_status="unknown",
                 last_discovery_at=None,
@@ -153,10 +176,11 @@ class McpServerRegistry:
     async def update_server(
         self,
         workspace_id: str,
-        target_id: str,
+        destination_id: str,
         server_id: str,
         patch: dict,
-        target_type: str,
+        target_type: str | None = None,
+        scope_type: str = "target",
     ) -> McpServer | None:
         normalized_server_id = self._normalize_server_id(server_id)
         if normalized_server_id is None:
@@ -166,9 +190,7 @@ class McpServerRegistry:
                 select(McpServer).where(
                     McpServer.id == normalized_server_id,
                     McpServer.workspace_id == workspace_id,
-                    McpServer.scope_type == self._scope_type(target_type),
-                    McpServer.target_id == target_id,
-                    McpServer.target_type == target_type,
+                    *self._scope_filters(McpServer, scope_type, destination_id, target_type),
                 )
             )
             server = result.scalars().first()
@@ -185,7 +207,13 @@ class McpServerRegistry:
             return server
 
     async def delete_server(
-        self, workspace_id: str, target_id: str, server_id: str, target_type: str
+        self,
+        workspace_id: str,
+        destination_id: str,
+        server_id: str,
+        target_type: str | None = None,
+        *,
+        scope_type: str = "target",
     ) -> bool:
         normalized_server_id = self._normalize_server_id(server_id)
         if normalized_server_id is None:
@@ -195,9 +223,7 @@ class McpServerRegistry:
                 delete(McpServer).where(
                     McpServer.id == normalized_server_id,
                     McpServer.workspace_id == workspace_id,
-                    McpServer.scope_type == self._scope_type(target_type),
-                    McpServer.target_id == target_id,
-                    McpServer.target_type == target_type,
+                    *self._scope_filters(McpServer, scope_type, destination_id, target_type),
                 )
             )
             await session.commit()

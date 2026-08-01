@@ -59,14 +59,6 @@ def _enforce_reviewed_authority(tool, server, req: ToolCallRequest, claims: Toke
                 "message": "The MCP tool has not been approved for this Agent.",
             },
         )
-    constraints = getattr(server, "target_constraints", {}) or {}
-    allowed_target_types = set(constraints.get("target_types") or [])
-    allowed_target_ids = set(constraints.get("target_ids") or [])
-    if req.target_type and allowed_target_types and req.target_type not in allowed_target_types:
-        raise HTTPException(status_code=403, detail="Tool is not allowed for this target type")
-    if req.target_id and allowed_target_ids and req.target_id not in allowed_target_ids:
-        raise HTTPException(status_code=403, detail="Tool is not allowed for this target")
-
     capability = "read" if tool.capability == "read" else "write"
     risk = getattr(tool, "risk_level", "high_risk")
     if claims.permission_mode == "read_only" and capability != "read":
@@ -95,25 +87,9 @@ def _enforce_reviewed_authority(tool, server, req: ToolCallRequest, claims: Toke
 async def _authorize_tool_dispatch(tool, server, req: ToolCallRequest, claims: TokenClaims) -> None:
     if not _enforce_reviewed_authority(tool, server, req, claims):
         return
-    approval_arguments = dict(req.arguments)
-    if (
-        claims.scope.type == "workspace"
-        and not claims.target_id
-        and req.target_id
-        and req.tool_ref is not None
-        and any(
-            route.alias == req.tool
-            and route.server_id == req.tool_ref.server_id
-            and route.tool_name == req.tool_ref.tool_name
-            and route.target_id == req.target_id
-            and route.target_type == req.target_type
-            for route in claims.permissions.allowed_target_tool_routes
-        )
-    ):
-        approval_arguments["target_id"] = req.target_id
     try:
         await validate_and_claim_approval_receipt(
-            req.approval_receipt or "", req, approval_arguments
+            req.approval_receipt or "", req, dict(req.arguments)
         )
     except ApprovalReceiptError as exc:
         raise HTTPException(
@@ -161,8 +137,6 @@ async def execute_tool_call(
             claims_workflow_id=claims.workflow_id,
             agent_id=req.agent_id,
             claims_agent_id=claims.agent_id,
-            agent_version=req.agent_version,
-            claims_agent_version=claims.agent_version,
             trigger_id=req.trigger_id,
             claims_trigger_id=claims.trigger_id,
         )
@@ -179,12 +153,32 @@ async def execute_tool_call(
             status_code=403,
             detail="MCP tool calls require a server-qualified tool_ref",
         )
+    dispatch_target_id = req.target_id
+    dispatch_target_type = req.target_type
+    target_tool_arguments = dict(req.arguments)
+    if (
+        claims.scope.type in {"workspace", "agent_chat"}
+        and req.tool_ref.server_id == "targets"
+    ):
+        dispatch_target_id = target_tool_arguments.pop("target_id", None)
+        dispatch_target_type = target_tool_arguments.pop("target_type", None)
+        if not isinstance(dispatch_target_id, str) or dispatch_target_type not in {
+            "kubernetes",
+            "virtual_machine",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TOOL_TARGET_INVALID",
+                    "message": "Targets MCP calls require target_id and target_type arguments.",
+                },
+            )
     agent_tool = None
-    if claims.agent_id:
+    if claims.agent_id and req.tool_ref.server_id != "targets":
         agent_tool = await resolve_registered_tool(
             req,
-            target_id=claims.agent_id,
-            target_type="agent",
+            destination_id=claims.agent_id,
+            scope_type="agent",
             registry=tool_registry,
         )
     if agent_tool is not None:
@@ -222,14 +216,14 @@ async def execute_tool_call(
                 req.workspace_id,
                 claims.agent_id,
                 str(tool.server_id),
-                target_type="agent",
+                scope_type="agent",
             )
             if tool.server_id
             else await mcp_server_registry.get_server_by_url(
                 req.workspace_id,
                 claims.agent_id,
                 tool.mcp_server_url,
-                target_type="agent",
+                scope_type="agent",
             )
         )
         if server is None:
@@ -254,8 +248,9 @@ async def execute_tool_call(
                 "x-workspace-id": req.workspace_id,
                 "x-agent-id": claims.agent_id,
                 "x-run-id": req.run_id,
-                "x-workflow-execution-id": req.execution_id or "",
             }
+            if req.execution_id:
+                platform_headers["x-workflow-execution-id"] = req.execution_id
             request_headers = await connection_request_headers(
                 server, claims, tool.tool_name, platform_headers=platform_headers
             )
@@ -272,6 +267,7 @@ async def execute_tool_call(
                     tool.timeout_ms,
                     request_headers,
                     req.tool_call_id,
+                    tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
                 )
             else:
                 mcp_response = await mcp_transport.call_tool(
@@ -316,7 +312,7 @@ async def execute_tool_call(
             return _mark_unknown_write_contract(
                 _normalize_tool_response(
                     mcp_response,
-                    trusted_builtin=is_builtin_tool and req.target_type == KUBERNETES_TARGET_TYPE,
+                    trusted_builtin=False,
                     output_schema=tool.output_schema,
                     artifact_policy=getattr(tool, "artifact_policy", "never"),
                     expected_tool=tool.tool_name,
@@ -330,18 +326,27 @@ async def execute_tool_call(
                 outcome="transport_error",
             ).inc()
             GATEWAY_TOOL_CALLS_TOTAL.labels(tool=req.tool, is_error=True).inc()
+            execution_context = (
+                {
+                    "workflow_id": req.workflow_id,
+                    "execution_id": req.execution_id,
+                    "executor_role": req.executor_role,
+                }
+                if claims.scope.type == "workspace"
+                else {"agent_id": claims.agent_id}
+            )
             logger.warning(
-                "workflow_tool_call_execution_failed",
+                "scoped_mcp_tool_call_execution_failed",
                 workspace_id=req.workspace_id,
-                workflow_id=req.workflow_id,
-                execution_id=req.execution_id,
-                executor_role=req.executor_role,
                 tool=req.tool,
                 server_name=server.server_name,
+                **execution_context,
             )
             return _tool_execution_error_response(exc, str(tool.capability))
 
-    if claims.scope.type == "workspace" and not (req.target_id and req.target_type):
+    if claims.scope.type in {"workspace", "agent_chat"} and not (
+        dispatch_target_id and dispatch_target_type
+    ):
         raise HTTPException(
             status_code=404,
             detail=f"Agent MCP tool {req.tool} not found or disabled",
@@ -350,8 +355,8 @@ async def execute_tool_call(
     # Resolve tool from registry
     tool = await resolve_registered_tool(
         req,
-        target_id=req.target_id,
-        target_type=req.target_type,
+        destination_id=dispatch_target_id,
+        target_type=dispatch_target_type,
         registry=tool_registry,
     )
     if not tool:
@@ -363,7 +368,7 @@ async def execute_tool_call(
 
     if tool.input_schema:
         try:
-            jsonschema_validate(instance=req.arguments, schema=tool.input_schema)
+            jsonschema_validate(instance=target_tool_arguments, schema=tool.input_schema)
         except JsonSchemaValidationError as exc:
             raise HTTPException(
                 status_code=400,
@@ -376,16 +381,18 @@ async def execute_tool_call(
     server = (
         await mcp_server_registry.get_server(
             req.workspace_id,
-            req.target_id,
+            dispatch_target_id,
             str(tool.server_id),
-            target_type=req.target_type,
+            target_type=dispatch_target_type,
+            scope_type="target",
         )
         if tool.server_id
         else await mcp_server_registry.get_server_by_url(
             req.workspace_id,
-            req.target_id,
+            dispatch_target_id,
             tool.mcp_server_url,
-            target_type=req.target_type,
+            target_type=dispatch_target_type,
+            scope_type="target",
         )
     )
     if server and not server.enabled:
@@ -405,8 +412,8 @@ async def execute_tool_call(
         logger.warning(
             "tool_call_builtin_bridge_misconfigured",
             workspace_id=req.workspace_id,
-            target_id=req.target_id,
-            target_type=req.target_type,
+            target_id=dispatch_target_id,
+            target_type=dispatch_target_type,
             tool=req.tool,
             mcp_server_url=loggable_mcp_server_origin(tool.mcp_server_url),
             server_name=server.server_name if server else None,
@@ -423,8 +430,8 @@ async def execute_tool_call(
     else:
         platform_headers = {
             "x-workspace-id": req.workspace_id,
-            "x-target-id": req.target_id,
-            "x-target-type": req.target_type,
+            "x-target-id": dispatch_target_id,
+            "x-target-type": dispatch_target_type,
             "x-run-id": req.run_id,
         }
         request_headers = await connection_request_headers(
@@ -440,16 +447,19 @@ async def execute_tool_call(
             mcp_response = await post_builtin_mcp_tool(
                 tool.mcp_server_url,
                 tool.tool_name,
-                req.arguments,
+                target_tool_arguments,
                 tool.timeout_ms,
                 request_headers,
                 req.tool_call_id,
+                target_id=dispatch_target_id,
+                target_type=dispatch_target_type,
+                tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
             )
         else:
             mcp_response = await mcp_transport.call_tool(
                 tool.mcp_server_url,
                 tool.tool_name,
-                req.arguments,
+                target_tool_arguments,
                 tool.timeout_ms,
                 request_headers,
             )
@@ -490,7 +500,9 @@ async def execute_tool_call(
         return _mark_unknown_write_contract(
             _normalize_tool_response(
                 mcp_response,
-                trusted_builtin=is_builtin_tool and req.target_type == KUBERNETES_TARGET_TYPE,
+                trusted_builtin=(
+                    is_builtin_tool and dispatch_target_type == KUBERNETES_TARGET_TYPE
+                ),
                 output_schema=tool.output_schema,
                 artifact_policy=getattr(tool, "artifact_policy", "never"),
                 expected_tool=tool.tool_name,
@@ -507,7 +519,7 @@ async def execute_tool_call(
         logger.warning(
             "tool_call_execution_failed",
             workspace_id=req.workspace_id,
-            target_id=req.target_id,
+            target_id=dispatch_target_id,
             tool=req.tool,
             error=str(e),
             exc_info=True,

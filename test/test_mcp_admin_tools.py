@@ -34,12 +34,18 @@ def _make_tool(
     review_state: str = "pending",
     risk_level: str = "high_risk",
     auto_allowed: bool = False,
+    scope_type: str = "target",
+    agent_id: str | None = None,
+    target_id: str | None = "target-1",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         server_id=server_id,
         tool_name=name,
         mcp_server_url=server_url,
         target_type=target_type,
+        scope_type=scope_type,
+        agent_id=agent_id,
+        target_id=target_id,
         timeout_ms=10000,
         description=f"{name} description",
         capability=capability,
@@ -131,8 +137,8 @@ def test_mcp_server_schema_keeps_target_and_agent_ownership_distinct():
     )
     assert agent_request.scope_type == "agent"
     assert agent_request.agent_id == "agent-a"
-    assert agent_request.target_id == "agent-a"
-    assert agent_request.target_type == "agent"
+    assert agent_request.target_id is None
+    assert agent_request.target_type is None
 
     with pytest.raises(ValidationError):
         McpServerCreateRequest(
@@ -404,7 +410,7 @@ async def test_apply_tools_for_server_removes_disabled_and_maps_conflicts():
             new=AsyncMock(return_value=SimpleNamespace(id="server-1")),
         ),
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.remove_tool_for_target",
+            "app.api.handlers_mcp_admin.tool_registry.remove_tool",
             new=AsyncMock(),
         ) as remove_mock,
         patch(
@@ -428,6 +434,7 @@ async def test_apply_tools_for_server_removes_disabled_and_maps_conflicts():
         "cluster-a",
         target_type="kubernetes",
         server_id="server-1",
+        scope_type="target",
     )
 
 
@@ -497,7 +504,7 @@ async def test_create_builtin_server_allows_configured_internal_http_bridge() ->
             new=AsyncMock(return_value=registered_tool),
         ) as upsert_tool_mock,
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=[registered_tool]),
         ),
         patch(
@@ -616,16 +623,18 @@ async def test_list_mcp_tools_excludes_server_disabled_by_default() -> None:
         name="tool.disabled", server_url="http://enabled-server", enabled=False
     )
 
-    async def fake_list_target_tools(
+    async def fake_list_tools(
         workspace_id: str,
         target_id: str,
         *,
         target_type: str,
+        scope_type: str,
         include_disabled: bool = False,
     ):
         assert workspace_id == "ws-1"
         assert target_id == "cl-1"
         assert target_type == "kubernetes"
+        assert scope_type == "target"
         if include_disabled:
             return [enabled_tool, disabled_server_tool, disabled_tool]
         return [enabled_tool, disabled_server_tool]
@@ -636,20 +645,22 @@ async def test_list_mcp_tools_excludes_server_disabled_by_default() -> None:
         server_url: str,
         *,
         target_type: str,
+        scope_type: str,
         enabled_only: bool = False,
     ):
         assert workspace_id == "ws-1"
         assert target_id == "cl-1"
         assert not enabled_only
         assert target_type == "kubernetes"
+        assert scope_type == "target"
         if server_url == "http://disabled-server":
             return _make_server(enabled=False)
         return _make_server(enabled=True)
 
     with (
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
-            new=AsyncMock(side_effect=fake_list_target_tools),
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
+            new=AsyncMock(side_effect=fake_list_tools),
         ),
         patch(
             "app.api.handlers_mcp_admin.mcp_server_registry.get_server_by_url",
@@ -676,16 +687,18 @@ async def test_list_mcp_tools_can_include_server_disabled_and_disabled_tools() -
         name="tool.disabled", server_url="http://enabled-server", enabled=False
     )
 
-    async def fake_list_target_tools(
+    async def fake_list_tools(
         workspace_id: str,
         target_id: str,
         *,
         target_type: str,
+        scope_type: str,
         include_disabled: bool = False,
     ):
         assert workspace_id == "ws-2"
         assert target_id == "cl-2"
         assert target_type == "kubernetes"
+        assert scope_type == "target"
         if include_disabled:
             return [enabled_tool, disabled_server_tool, disabled_tool]
         return [enabled_tool, disabled_server_tool]
@@ -696,20 +709,22 @@ async def test_list_mcp_tools_can_include_server_disabled_and_disabled_tools() -
         server_url: str,
         *,
         target_type: str,
+        scope_type: str,
         enabled_only: bool = False,
     ):
         assert workspace_id == "ws-2"
         assert target_id == "cl-2"
         assert not enabled_only
         assert target_type == "kubernetes"
+        assert scope_type == "target"
         if server_url == "http://disabled-server":
             return _make_server(enabled=False)
         return _make_server(enabled=True)
 
     with (
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
-            new=AsyncMock(side_effect=fake_list_target_tools),
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
+            new=AsyncMock(side_effect=fake_list_tools),
         ),
         patch(
             "app.api.handlers_mcp_admin.mcp_server_registry.get_server_by_url",
@@ -794,7 +809,7 @@ async def test_create_server_stores_auto_discovered_tools_disabled_for_review() 
             new=AsyncMock(return_value=discovered_tool),
         ) as upsert_tool_mock,
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=[discovered_tool]),
         ),
     ):
@@ -900,7 +915,8 @@ async def test_agent_mcp_tool_still_requires_explicit_review_approval() -> None:
         name="pending.lookup",
         server_url="http://pending-mcp",
         enabled=False,
-        target_type="agent",
+        scope_type="agent",
+        agent_id="agent-a",
     )
 
     with (
@@ -916,8 +932,7 @@ async def test_agent_mcp_tool_still_requires_explicit_review_approval() -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.patch(
                 "/api/v1/internal/mcp/tools/pending.lookup"
-                "?workspace_id=ws-review&target_id=agent-a&target_type=agent"
-                "&scope_type=agent&agent_id=agent-a",
+                "?workspace_id=ws-review&scope_type=agent&agent_id=agent-a",
                 headers={"Authorization": "Bearer dev_orchestrator_token"},
                 json={"enabled": True, "capability": "read"},
             )
@@ -1027,7 +1042,7 @@ async def test_update_server_auto_discovers_tools_when_none_are_mapped() -> None
             new=AsyncMock(return_value=server),
         ),
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(side_effect=[[], [discovered_tool]]),
         ),
         patch(
@@ -1150,7 +1165,7 @@ async def test_update_server_tool_list_preserves_existing_capability_when_omitte
             new=AsyncMock(return_value=existing_tool),
         ) as upsert_tool_mock,
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=[existing_tool]),
         ),
     ):
@@ -1253,7 +1268,7 @@ async def test_update_server_normalizes_bearer_auth_fields() -> None:
             new=AsyncMock(return_value=updated_server),
         ) as update_server_mock,
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=[existing_tool]),
         ),
         patch(
@@ -1322,7 +1337,7 @@ async def test_update_existing_bearer_server_keeps_bearer_auth_shape() -> None:
             new=AsyncMock(return_value=updated_server),
         ) as update_server_mock,
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=[existing_tool]),
         ),
     ):
@@ -1407,11 +1422,11 @@ async def test_delete_server_removes_tools_before_deleting_server() -> None:
             new=AsyncMock(return_value=server),
         ),
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.list_target_tools",
+            "app.api.handlers_mcp_admin.tool_registry.list_tools",
             new=AsyncMock(return_value=server_tools),
         ),
         patch(
-            "app.api.handlers_mcp_admin.tool_registry.remove_tool_for_target",
+            "app.api.handlers_mcp_admin.tool_registry.remove_tool",
             new=AsyncMock(),
         ) as remove_mock,
         patch(
@@ -1430,6 +1445,7 @@ async def test_delete_server_removes_tools_before_deleting_server() -> None:
     delete_mock.assert_awaited_once_with(
         "ws-1",
         "cluster-a",
-        "srv-delete",
-        target_type="kubernetes",
-    )
+            "srv-delete",
+            target_type="kubernetes",
+            scope_type="target",
+        )

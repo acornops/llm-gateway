@@ -29,12 +29,12 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Runtime auth uses `Authorization: Bearer <run-scoped-jwt>`.
 - Admin auth uses `Authorization: Bearer <ADMIN_API_TOKEN>`.
 - Runtime and admin traffic are separate contracts and credentials must not be reused.
-- Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, target, workflow, and context scope.
+- Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, conversation, workflow, and context scope.
 - Requested body scope must match token scope; the gateway must not infer missing scope from UI state or registry state.
-- A targetless workspace Workflow may send target scope on an MCP tool call only
-  when `allowed_target_tool_routes` contains the exact model alias,
-  server-qualified tool, target ID, and target type. The route is additive to
-  the ordinary allowed-tool and allowed-ref checks; all mismatches fail closed.
+- A target-independent Workflow or Agent chat may select a target only on an MCP
+  tool call whose signed `allowed_tool_refs` entry has `server_id = targets` and
+  the exact model tool name. The target ID and type are call-time arguments, not
+  token or conversation identity; all mismatches fail closed.
 - Provider credentials, admin tokens, run JWTs, MCP secret headers, raw reasoning state, and chain-of-thought must not be emitted in responses.
 - Provider credentials resolve as exact workspace override, then platform
   default. Internal status responses expose only `configured`, `enabled`, and
@@ -88,6 +88,8 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   platform-default provider-credential administration.
 - Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after an enabled workspace registry entry identifies the tool as built-in.
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
+- Direct Agent conversations use `scope.type = "agent_chat"`, require the exact Agent id, and forbid Workflow and target identity fields. Optional target calls use only the generic `targets` MCP reference signed into the run token.
+- Target scope requires target identity and rejects Agent and Workflow identity fields. This is enforced independently on JWT claims, LLM requests, and tool-call requests.
 - Target adapters register their live built-in tools against the configured internal bridge URL (the local deployment default is `http://control-plane:8081/internal/v1/mcp`). The server identity comes from the registered target, not a seeded workspace integration.
 - Connection readiness accepts enabled tools only when their server and tool identities match. Trusted built-in tools do not require remote MCP review or a credential connection snapshot; remote tools remain review-gated, and the exact resolved credential must include the tool in its verified snapshot.
 - Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
@@ -101,10 +103,9 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Catalog source list responses expose secret-free source-management capabilities. Omitted authentication on update preserves the stored credential, `auth.type = none` clears it, and bearer or custom-header replacement requires a new write-only credential. URL and authentication changes are probed before persistence, clear stale artifacts, and perform a full synchronization.
 - Bootstrap registries are reconciled by display name and are configuration-read-only through APIs, although authorized control-plane callers may synchronize them. Removed bootstrap configuration disables a source instead of deleting its cached snapshot. Disabled sources disappear from browsing immediately; deleting a workspace source removes its cache and registry credential without deleting installed MCP servers.
 - Registry availability is per-source operational state and does not participate in global gateway readiness. Synchronization logs and metrics use bounded labels and exclude source credentials, authorization headers, and URL query values.
-- Active registry records have an explicit `scope_type` of `agent` or `target`. Target records belong to the selected Cluster or VM generic agent; Agent records belong to the workspace Agent named by `agent_id`.
-- Catalog import is a discriminated contract: Agent requests carry `agent_id`
-  and optional `target_constraints`; target requests carry `target_id` and
-  `target_type` and cannot carry Agent constraints. Duplicate and re-import
+- Active registry records have an explicit `scope_type` of `agent` or `target`. Target records belong to a target adapter; Agent records belong to the workspace Agent named by `agent_id`.
+- Catalog import is a discriminated contract: Agent requests carry only
+  `agent_id`; target requests carry `target_id` and `target_type`. Duplicate and re-import
   checks include workspace, scope type, and destination identity.
 - `credential_mode` is explicit installation metadata with values `none`,
   `workspace`, or `individual`. Workspace mode resolves one installation-owned

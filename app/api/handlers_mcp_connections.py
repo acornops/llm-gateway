@@ -8,9 +8,8 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.api.mcp_admin_helpers import (
-    _apply_tools_for_server,
     _discover_server_tools,
-    _resolve_tools_for_server,
+    merge_connection_discovery,
 )
 from app.api.mcp_admin_schemas import (
     McpConnectionResponse,
@@ -19,6 +18,10 @@ from app.api.mcp_admin_schemas import (
     McpReadinessFailure,
     McpReadinessRequest,
     McpReadinessResponse,
+)
+from app.api.mcp_admin_validation import (
+    registered_server_destination,
+    registered_server_request_context,
 )
 from app.api.mcp_connection_responses import connection_response
 from app.auth.service_token import require_admin_service_token
@@ -37,7 +40,6 @@ from app.mcp.oauth.registration_store import oauth_registration_store
 from app.mcp.oauth.tokens import oauth_token_service
 from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.mcp.remote_policy import require_remote_mcp_enabled
-from app.mcp.tool_definition_policy import ensure_discovered_tool_compatible
 from app.observability.metrics import (
     GATEWAY_MCP_CONNECTION_OPERATION_LATENCY_MS,
     GATEWAY_MCP_CONNECTION_OPERATIONS_TOTAL,
@@ -135,50 +137,20 @@ async def _check_mutation_rate_limit(
         )
 
 
-async def _merge_connection_discovery(server, tools) -> list[str]:
-    existing = await _resolve_tools_for_server(
-        server.workspace_id,
-        server.target_id,
-        server.server_url,
-        target_type=server.target_type,
-        server_id=str(server.id),
-    )
-    existing_by_name = {tool.tool_name: tool for tool in existing}
-    for observed in tools:
-        current = existing_by_name.get(observed.name)
-        if current is None:
-            continue
-        ensure_discovered_tool_compatible(current, observed)
-    existing_names = set(existing_by_name)
-    newly_observed = [tool for tool in tools if tool.name not in existing_names]
-    if newly_observed:
-        await _apply_tools_for_server(
-            server.workspace_id,
-            server.target_id,
-            server.server_url,
-            newly_observed,
-            target_type=server.target_type,
-            server_id=str(server.id),
-            remove_disabled=False,
-        )
-    return sorted(tool.name for tool in tools)
-
-
 async def _verify_connection(*, server, connection, workspace_id: str, credential: str):
     require_remote_mcp_enabled()
+    destination_id, _registry_scope, platform_headers = registered_server_request_context(
+        workspace_id, server
+    )
     try:
         headers = build_mcp_request_headers(
             server,
             credential,
-            platform_headers={
-                "x-workspace-id": workspace_id,
-                "x-target-id": server.target_id,
-                "x-target-type": server.target_type,
-            },
+            platform_headers=platform_headers,
         )
         tools, discovery_error, discovery_error_code = await _discover_server_tools(
             workspace_id,
-            server.target_id,
+            destination_id,
             server,
             request_headers=headers,
         )
@@ -201,7 +173,7 @@ async def _verify_connection(*, server, connection, workspace_id: str, credentia
                 status,
                 error_code=error_code,
             )
-        verified_tool_names = await _merge_connection_discovery(server, tools)
+        verified_tool_names = await merge_connection_discovery(server, tools)
         return await mcp_connection_store.set_state(
             connection,
             "connected",
@@ -545,13 +517,14 @@ async def check_mcp_connection_readiness(
         ):
             code = "MCP_INSTALLATION_UNAVAILABLE"
         else:
+            destination_id, registry_scope = registered_server_destination(server)
             tool = await tool_registry.get_tool(
                 request.workspace_id,
-                server.target_id,
+                destination_id,
                 ref.tool_name,
-                target_type=server.target_type,
                 server_id=ref.server_id,
                 include_disabled=True,
+                **registry_scope,
             )
             is_trusted_builtin = (
                 tool is not None

@@ -130,6 +130,12 @@ for field in (
 ):
     expect_in(LLM_SERVICE_SOURCE, field, "LLM request model")
 
+expect_in(
+    LLM_SERVICE_SOURCE,
+    'type: Literal["target", "agent_chat", "workspace"] = "target"',
+    "LLM request scope types",
+)
+
 for field in (
     "iss: str",
     "aud: str",
@@ -152,6 +158,12 @@ for field in (
     "max_output_tokens: int | None = None",
 ):
     expect_in(CLAIMS_SOURCE, field, "Token claim model")
+
+expect_in(
+    CLAIMS_SOURCE,
+    'type: Literal["target", "agent_chat", "workspace"] = "target"',
+    "Token claim scope types",
+)
 
 for field in CONTROL_PLANE_CONTRACT["runJwtPermissionFields"]:
     expect_in(MANIFEST_TEXT, field, "Manifest run JWT permission field")

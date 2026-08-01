@@ -29,6 +29,7 @@ class Tool(Base):
             name="uq_gateway_tools_ws_target_name",
         ),
         Index("ix_gateway_tools_workspace_target", "workspace_id", "target_id"),
+        Index("ix_gateway_tools_workspace_agent", "workspace_id", "agent_id"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -40,8 +41,8 @@ class Tool(Base):
     workspace_id = Column(String, nullable=False)
     scope_type = Column(String, nullable=False, default="target")
     agent_id = Column(String, nullable=True)
-    target_id = Column(String, nullable=False)
-    target_type = Column(String, nullable=False)
+    target_id = Column(String, nullable=True)
+    target_type = Column(String, nullable=True)
     tool_name = Column(String, nullable=False)
     mcp_server_url = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
@@ -73,12 +74,27 @@ class McpServer(Base):
         UniqueConstraint(
             "workspace_id",
             "scope_type",
+            "agent_id",
+            "server_name",
+            name="uq_gateway_mcp_servers_ws_agent_name",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "scope_type",
             "target_id",
             "server_url",
             name="uq_gateway_mcp_servers_ws_target_url",
         ),
+        UniqueConstraint(
+            "workspace_id",
+            "scope_type",
+            "agent_id",
+            "server_url",
+            name="uq_gateway_mcp_servers_ws_agent_url",
+        ),
         UniqueConstraint("id", "workspace_id", name="uq_gateway_mcp_servers_id_workspace"),
         Index("ix_gateway_mcp_servers_workspace_target", "workspace_id", "target_id"),
+        Index("ix_gateway_mcp_servers_workspace_agent", "workspace_id", "agent_id"),
         Index(
             "uq_gateway_mcp_servers_builtin_destination",
             "workspace_id",
@@ -103,8 +119,8 @@ class McpServer(Base):
     workspace_id = Column(String, nullable=False)
     scope_type = Column(String, nullable=False, default="target")
     agent_id = Column(String, nullable=True)
-    target_id = Column(String, nullable=False)
-    target_type = Column(String, nullable=False)
+    target_id = Column(String, nullable=True)
+    target_type = Column(String, nullable=True)
     server_name = Column(String, nullable=False)
     server_url = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
@@ -121,9 +137,6 @@ class McpServer(Base):
     catalog_imported_at = Column(DateTime(timezone=True), nullable=True)
     provenance_type = Column(String, nullable=False, default="manual")
     endpoint_configuration = Column(
-        JSON().with_variant(JSONB, "postgresql"), nullable=False, default=dict
-    )
-    target_constraints = Column(
         JSON().with_variant(JSONB, "postgresql"), nullable=False, default=dict
     )
     revision = Column(Integer, nullable=False, default=1)
@@ -161,8 +174,7 @@ class McpConnection(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "status IN "
-            "('pending_authorization', 'connected', 'reauthorization_required', 'error')",
+            "status IN ('pending_authorization', 'connected', 'reauthorization_required', 'error')",
             name="ck_gateway_mcp_connection_status",
         ),
         CheckConstraint(
@@ -198,12 +210,8 @@ class McpConnection(Base):
     oauth_registration_method = Column(String, nullable=True)
     oauth_resource = Column(String, nullable=True)
     oauth_client_id = Column(String, nullable=True)
-    oauth_endpoint_snapshot = Column(
-        JSON().with_variant(JSONB, "postgresql"), nullable=True
-    )
-    oauth_scopes = Column(
-        JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list
-    )
+    oauth_endpoint_snapshot = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    oauth_scopes = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list)
     oauth_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     oauth_refresh_capable = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

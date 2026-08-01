@@ -47,6 +47,25 @@ def _is_missing_secret_error(exc: Exception) -> bool:
     return isinstance(exc, SecretNotFoundError)
 
 
+def _scope_log_fields(scope: Any, prefix: str = "") -> dict[str, Any]:
+    fields: dict[str, Any] = {f"{prefix}scope_type": scope.scope.type}
+    if scope.scope.type == "target":
+        fields[f"{prefix}target_id"] = scope.target_id
+        fields[f"{prefix}target_type"] = scope.target_type
+    elif scope.scope.type == "agent_chat":
+        fields[f"{prefix}agent_id"] = scope.agent_id
+    else:
+        fields.update({
+            f"{prefix}workflow_id": scope.workflow_id,
+            f"{prefix}execution_id": scope.execution_id,
+            f"{prefix}executor_role": scope.executor_role,
+            f"{prefix}workflow_session_id": scope.workflow_session_id,
+            f"{prefix}agent_id": scope.agent_id,
+            f"{prefix}trigger_id": scope.trigger_id,
+        })
+    return fields
+
+
 def _schema_allows_empty_arguments(schema: dict[str, Any]) -> bool:
     required = schema.get("required")
     return not isinstance(required, list) or len(required) == 0
@@ -95,10 +114,14 @@ def _request_matches_claim_scope(req: NormalizedLLMRequest, claims: TokenClaims)
             and req.workflow_session_id == claims.workflow_session_id
             and req.executor_role == claims.executor_role
             and req.agent_id == claims.agent_id
-            and req.agent_version == claims.agent_version
             and req.trigger_id == claims.trigger_id
-            and req.target_id == claims.target_id
-            and req.target_type == claims.target_type
+        )
+
+    if claims.scope.type == "agent_chat":
+        return (
+            req.agent_id == claims.agent_id
+            and req.target_id is None
+            and req.target_type is None
         )
 
     return req.target_id == claims.target_id and req.target_type == claims.target_type
@@ -291,30 +314,12 @@ async def stream_generation(
             "llm_request_forbidden",
             run_id=req.run_id,
             workspace_id=req.workspace_id,
-            target_id=req.target_id,
-            target_type=req.target_type,
             session_id=req.session_id,
-            scope_type=req.scope.type,
-            workflow_id=req.workflow_id,
-            execution_id=req.execution_id,
-            executor_role=req.executor_role,
-            workflow_session_id=req.workflow_session_id,
-            agent_id=req.agent_id,
-            agent_version=req.agent_version,
-            trigger_id=req.trigger_id,
             claims_run_id=claims.run_id,
             claims_workspace_id=claims.workspace_id,
-            claims_target_id=claims.target_id,
-            claims_target_type=claims.target_type,
             claims_session_id=claims.session_id,
-            claims_scope_type=claims.scope.type,
-            claims_workflow_id=claims.workflow_id,
-            claims_execution_id=claims.execution_id,
-            claims_executor_role=claims.executor_role,
-            claims_workflow_session_id=claims.workflow_session_id,
-            claims_agent_id=claims.agent_id,
-            claims_agent_version=claims.agent_version,
-            claims_trigger_id=claims.trigger_id,
+            **_scope_log_fields(req),
+            **_scope_log_fields(claims, "claims_"),
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
 
@@ -371,18 +376,10 @@ async def stream_generation(
             "llm_deterministic_dev_response_enabled",
             run_id=req.run_id,
             workspace_id=req.workspace_id,
-            target_id=req.target_id,
-            target_type=req.target_type,
-            scope_type=req.scope.type,
-            workflow_id=req.workflow_id,
-            execution_id=req.execution_id,
-            executor_role=req.executor_role,
-            agent_id=req.agent_id,
-            agent_version=req.agent_version,
-            trigger_id=req.trigger_id,
             provider=req.provider,
             api_surface=api_surface,
             model=req.model,
+            **_scope_log_fields(req),
         )
         return StreamingResponse(
             _deterministic_dev_events(req),
@@ -417,11 +414,11 @@ async def stream_generation(
                 logger.warning(
                     "provider_secret_lookup_failed",
                     workspace_id=req.workspace_id,
-                    target_id=req.target_id,
                     provider=req.provider,
                     credential_source=source,
                     secret_name=secret_name,
                     error=str(e),
+                    **_scope_log_fields(req),
                 )
                 break
         if api_key or last_secret_error:
@@ -436,9 +433,9 @@ async def stream_generation(
         logger.warning(
             "provider_secret_not_configured",
             workspace_id=req.workspace_id,
-            target_id=req.target_id,
             provider=req.provider,
             secret_names=secret_names,
+            **_scope_log_fields(req),
         )
         raise HTTPException(
             status_code=500,
@@ -448,9 +445,9 @@ async def stream_generation(
     logger.info(
         "provider_secret_resolved",
         workspace_id=req.workspace_id,
-        target_id=req.target_id,
         provider=req.provider,
         credential_source=credential_source,
+        **_scope_log_fields(req),
     )
 
     try:

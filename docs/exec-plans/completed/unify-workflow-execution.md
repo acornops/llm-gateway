@@ -11,7 +11,7 @@ capability registry.
 - Replace `workflow_run_id` with `execution_id` in claims and requests.
 - Require `executor_role` for Workflow runs.
 - Forbid Agent identity on coordinator runs.
-- Require matching Agent ID and version on specialist runs.
+- Require a matching Agent ID and pinned Agent snapshot on specialist runs.
 - Reject Agent-without-Workflow request and token shapes.
 - Keep target-run identity and Agent-owned MCP installations unchanged.
 
