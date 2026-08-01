@@ -4,6 +4,7 @@ import base64
 import json
 from typing import Any
 
+from app.llm.openai_continuation import project_openai_reasoning_input
 from app.llm.service import NormalizedLLMRequest
 from app.llm.transcript import (
     AssistantTurn,
@@ -59,16 +60,12 @@ def render_openai_responses_input(req: NormalizedLLMRequest) -> list[dict[str, A
                             "OpenAI Responses continuation items must be a list"
                         )
                     for item in continuation_items:
-                        if (
-                            not isinstance(item, dict)
-                            or item.get("type") != "reasoning"
-                            or "content" in item
-                        ):
+                        if not isinstance(item, dict):
                             raise ValueError(
                                 "OpenAI Responses continuation contains an "
                                 "unsupported item"
                             )
-                        items.append(item)
+                        items.append(project_openai_reasoning_input(item))
                 items.append(
                     {
                         "type": "function_call",

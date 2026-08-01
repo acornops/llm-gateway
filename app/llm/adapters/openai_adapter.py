@@ -16,6 +16,7 @@ from app.llm.adapters.openai_chat_completions_adapter import (
     OpenAIChatCompletionsAdapter,
 )
 from app.llm.adapters.provider_errors import provider_failure_event
+from app.llm.openai_continuation import capture_openai_reasoning_input
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
 from app.llm.renderers import render_openai_responses_input
 from app.llm.service import (
@@ -223,33 +224,9 @@ class OpenAIResponsesAdapter(LLMAdapter):
                             event_type == "response.output_item.done"
                             and getattr(item, "type", None) == "reasoning"
                         ):
-                            serialized = (
-                                item.model_dump(exclude={"content"})
-                                if callable(getattr(item, "model_dump", None))
-                                else {
-                                    "type": "reasoning",
-                                    "id": str(getattr(item, "id", "") or ""),
-                                    "summary": [
-                                        {
-                                            "type": str(
-                                                getattr(summary, "type", "") or ""
-                                            ),
-                                            "text": str(
-                                                getattr(summary, "text", "") or ""
-                                            ),
-                                        }
-                                        for summary in (
-                                            getattr(item, "summary", None) or []
-                                        )
-                                    ],
-                                    "encrypted_content": getattr(
-                                        item, "encrypted_content", None
-                                    ),
-                                    "status": getattr(item, "status", None),
-                                }
+                            continuation_items.append(
+                                capture_openai_reasoning_input(item)
                             )
-                            serialized.pop("content", None)
-                            continuation_items.append(serialized)
                         if getattr(item, "type", None) == "function_call":
                             item_id = str(getattr(item, "id", "") or getattr(item, "call_id", ""))
                             if item_id:

@@ -34,6 +34,13 @@ described by the workspace change set:
 - 2026-07-31: The canonical HTTP contract uses a non-empty trusted
   `runtime_instruction` and a discriminated transcript. Provider adapters own
   all native message/item/content/part serialization.
+- 2026-08-01: Provider continuation state remains opaque to the canonical
+  transcript, while each provider boundary projects captured and replayed
+  state onto an explicit provider-accepted input shape. OpenAI Responses
+  reasoning output fields such as `status` are not replayable input fields and
+  are removed at both capture and render time. This avoids coupling the shared
+  contract to provider SDK output models and fails safely when those models add
+  future output-only fields.
 
 ## Validation Log
 
@@ -98,6 +105,13 @@ described by the workspace change set:
   harness checks, all 539 unit tests, and the 50-case evaluator. These results
   measure deterministic provider mapping fidelity, not live-provider
   reliability or model answer quality.
+- OpenAI continuation hardening (2026-08-01): reproduced a live Responses API
+  rejection of replayed reasoning output state (`Unknown parameter:
+  input[n].status`), then added replay-safe projection at the OpenAI capture and
+  renderer boundaries. Focused adapter/renderer tests passed (53), including
+  SDK-style output, fixture replay, stale `status`, and an unknown future field.
+  Final `task validate` passed lint, contracts, harness checks, all 542 unit
+  tests, and the 50-case keyless evaluator.
 
 ## Completion Criteria
 

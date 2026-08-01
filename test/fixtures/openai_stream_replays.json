@@ -77,8 +77,7 @@
                 "type": "reasoning",
                 "id": "rs_1",
                 "summary": [],
-                "encrypted_content": "opaque-reasoning-state",
-                "status": "completed"
+                "encrypted_content": "opaque-reasoning-state"
               }
             ]
           }

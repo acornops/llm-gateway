@@ -15,6 +15,7 @@ from app.llm.adapters.openai_adapter import OpenAIAdapter
 from app.llm.adapters.openai_chat_completions_adapter import (
     OpenAIChatCompletionsAdapter,
 )
+from app.llm.openai_continuation import capture_openai_reasoning_input
 from app.llm.service import NormalizedLLMRequest, ReasoningConfig, ToolSpec
 from app.resilience.outbound import CircuitOpenError
 
@@ -67,6 +68,27 @@ def test_retry_detection_for_openai_reasoning_error() -> None:
     assert should_retry_openai_without_reasoning("This model does not support reasoning.", True)
     assert not should_retry_openai_without_reasoning("Invalid request: bad input.", True)
     assert not should_retry_openai_without_reasoning("Unsupported parameter: 'reasoning'.", False)
+
+
+def test_openai_reasoning_continuation_projects_sdk_output_fields() -> None:
+    class FakeReasoningItem:
+        def model_dump(self, **kwargs):
+            assert kwargs == {"exclude": {"content"}, "exclude_none": True}
+            return {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [],
+                "encrypted_content": "opaque-reasoning-state",
+                "status": "completed",
+                "object": "response.reasoning_item",
+            }
+
+    assert capture_openai_reasoning_input(FakeReasoningItem()) == {
+        "type": "reasoning",
+        "id": "rs_1",
+        "summary": [],
+        "encrypted_content": "opaque-reasoning-state",
+    }
 
 
 @pytest.mark.anyio

@@ -415,6 +415,8 @@ def test_provider_continuation_state_renders_only_at_native_boundary():
                                         "id": "rs-1",
                                         "summary": [],
                                         "encrypted_content": "opaque",
+                                        "status": "completed",
+                                        "object": "response.reasoning_item",
                                     }
                                 ],
                             },
@@ -428,7 +430,12 @@ def test_provider_continuation_state_renders_only_at_native_boundary():
             },
         ],
     )
-    assert render_openai_responses_input(openai)[1]["type"] == "reasoning"
+    assert render_openai_responses_input(openai)[1] == {
+        "type": "reasoning",
+        "id": "rs-1",
+        "summary": [],
+        "encrypted_content": "opaque",
+    }
 
     anthropic = _request(
         "anthropic",
