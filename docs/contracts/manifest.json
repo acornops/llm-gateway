@@ -261,8 +261,6 @@
         "allowed_tool_refs[].tool_name",
         "allowed_native_tools",
         "allowed_tool_operations?",
-        "resource_bindings[].{binding_id,type,resource_id,provider,provider_version,workspace_id,label_snapshot,source,operations,context_mode,provider_data?}",
-        "binding_digest",
         "max_output_tokens"
       ],
       "runJwtNonTargetScopeFields": [
