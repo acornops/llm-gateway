@@ -156,25 +156,8 @@ async def execute_tool_call(
     dispatch_target_id = req.target_id
     dispatch_target_type = req.target_type
     target_tool_arguments = dict(req.arguments)
-    if (
-        claims.scope.type in {"workspace", "agent_chat"}
-        and req.tool_ref.server_id == "targets"
-    ):
-        dispatch_target_id = target_tool_arguments.pop("target_id", None)
-        dispatch_target_type = target_tool_arguments.pop("target_type", None)
-        if not isinstance(dispatch_target_id, str) or dispatch_target_type not in {
-            "kubernetes",
-            "virtual_machine",
-        }:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "TOOL_TARGET_INVALID",
-                    "message": "Targets MCP calls require target_id and target_type arguments.",
-                },
-            )
     agent_tool = None
-    if claims.agent_id and req.tool_ref.server_id != "targets":
+    if claims.agent_id:
         agent_tool = await resolve_registered_tool(
             req,
             destination_id=claims.agent_id,

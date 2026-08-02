@@ -217,17 +217,17 @@ def test_agent_chat_scope_matches_exact_agent_without_workflow_identity():
     )
 
 
-def test_agent_chat_scope_allows_any_call_time_target_through_signed_targets_mcp_ref():
+def test_agent_chat_scope_allows_tool_arguments_through_signed_agent_mcp_ref():
     claims = agent_chat_claims(
         permissions={
             "allowed_tools": ["read"],
-            "allowed_tool_refs": [{"server_id": "targets", "tool_name": "read"}],
+            "allowed_tool_refs": [{"server_id": "srv-agent-targets", "tool_name": "read"}],
         }
     )
     assert tool_request_matches_claim_scope(
         agent_chat_tool_request(
             tool="read",
-            tool_ref={"server_id": "targets", "tool_name": "read"},
+            tool_ref={"server_id": "srv-agent-targets", "tool_name": "read"},
             arguments={"target_id": "vm-1", "target_type": "virtual_machine"},
         ),
         claims,
@@ -235,7 +235,7 @@ def test_agent_chat_scope_allows_any_call_time_target_through_signed_targets_mcp
     assert tool_request_matches_claim_scope(
         agent_chat_tool_request(
             tool="read",
-            tool_ref={"server_id": "targets", "tool_name": "read"},
+            tool_ref={"server_id": "srv-agent-targets", "tool_name": "read"},
             arguments={"target_id": "vm-2", "target_type": "virtual_machine"},
         ),
         claims,
@@ -268,14 +268,14 @@ def test_workspace_claims_reject_persistent_target_binding():
         )
 
 
-def test_tool_workspace_scope_allows_any_call_time_target_through_signed_targets_mcp_ref():
+def test_tool_workspace_scope_allows_tool_arguments_through_signed_agent_mcp_ref():
     claims = TokenClaims(
         **{
             **workspace_agent_claims().model_dump(exclude={"permissions"}),
             "permissions": {
                 "allowed_tools": ["read"],
                 "allowed_tool_refs": [
-                    {"server_id": "targets", "tool_name": "read"}
+                    {"server_id": "srv-agent-targets", "tool_name": "read"}
                 ],
             },
         }
@@ -284,7 +284,7 @@ def test_tool_workspace_scope_allows_any_call_time_target_through_signed_targets
     assert tool_request_matches_claim_scope(
         tool_request(
             tool="read",
-            tool_ref={"server_id": "targets", "tool_name": "read"},
+            tool_ref={"server_id": "srv-agent-targets", "tool_name": "read"},
             arguments={"target_id": "vm-1", "target_type": "virtual_machine"},
         ),
         claims,
@@ -292,7 +292,7 @@ def test_tool_workspace_scope_allows_any_call_time_target_through_signed_targets
     assert tool_request_matches_claim_scope(
         tool_request(
             tool="read",
-            tool_ref={"server_id": "targets", "tool_name": "read"},
+            tool_ref={"server_id": "srv-agent-targets", "tool_name": "read"},
             arguments={"target_id": "vm-2", "target_type": "virtual_machine"},
         ),
         claims,

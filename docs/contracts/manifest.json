@@ -277,7 +277,7 @@
         "user_id? (required for individual MCP authorization)",
         "permissions.context_grants",
         "scope.type=agent_chat requires agent_id while forbidding Workflow and top-level target identity claims",
-        "Workflow and agent_chat target selection is call-time only and requires an exact allowed_tool_refs entry whose server_id is targets and whose tool_name equals the model tool name",
+        "Workflow and agent_chat MCP calls require the exact Agent server/tool pair in allowed_tool_refs; built-in AcornOps Targets calls use the same lookup without synthetic argument rebinding",
         "write tool calls receive a gateway-injected idempotencyKey derived from run_id and tool_call_id"
       ],
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; admin/run-scoped bearer tokens remain required",

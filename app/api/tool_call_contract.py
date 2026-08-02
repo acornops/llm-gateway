@@ -3,13 +3,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.auth.claims import McpToolRef, TokenClaims
-from app.config.settings import settings
 from app.examples import EXAMPLE_RUN_ID, EXAMPLE_TARGET_ID, EXAMPLE_WORKSPACE_ID
-from app.mcp.registry.store import ToolRegistry, mcp_server_registry, tool_registry
+from app.mcp.registry.store import ToolRegistry, tool_registry
 from app.mcp.tool_identity import model_tool_alias
 from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, TargetType
-
-TARGETS_MCP_SERVER_ID = "targets"
 
 
 class ToolCallRequest(BaseModel):
@@ -143,22 +140,7 @@ async def resolve_registered_tool(
 ):
     if req.tool_ref is None:
         return None
-    generic_target_ref = (
-        req.scope.type in {"workspace", "agent_chat"}
-        and req.tool_ref.server_id == TARGETS_MCP_SERVER_ID
-    )
     server_id = req.tool_ref.server_id
-    if generic_target_ref:
-        server = await mcp_server_registry.get_server_by_url(
-            req.workspace_id,
-            destination_id,
-            settings.BUILTIN_TARGET_MCP_SERVER_URL,
-            target_type=target_type,
-            scope_type="target",
-        )
-        if server is None or getattr(server, "provenance_type", "manual") != "builtin":
-            return None
-        server_id = str(server.id)
     registry_scope = (
         {"scope_type": "target", "target_type": target_type}
         if scope_type == "target"
@@ -180,17 +162,6 @@ async def resolve_registered_tool(
 
 
 def tool_ref_is_permitted(tool, req: ToolCallRequest, claims: TokenClaims) -> bool:
-    if (
-        req.tool_ref is not None
-        and req.scope.type in {"workspace", "agent_chat"}
-        and req.tool_ref.server_id == TARGETS_MCP_SERVER_ID
-        and tool.source == "builtin"
-    ):
-        return any(
-            ref.server_id == TARGETS_MCP_SERVER_ID
-            and ref.tool_name == tool.tool_name == req.tool_ref.tool_name
-            for ref in claims.permissions.allowed_tool_refs
-        )
     return req.tool_ref is not None and any(
         ref.server_id == str(tool.server_id)
         and ref.tool_name == tool.tool_name

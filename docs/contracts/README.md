@@ -31,10 +31,10 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Runtime and admin traffic are separate contracts and credentials must not be reused.
 - Run JWT claims are authoritative for provider, model, tool, native-tool, max-output, conversation, workflow, and context scope.
 - Requested body scope must match token scope; the gateway must not infer missing scope from UI state or registry state.
-- A target-independent Workflow or Agent chat may select a target only on an MCP
-  tool call whose signed `allowed_tool_refs` entry has `server_id = targets` and
-  the exact model tool name. The target ID and type are call-time arguments, not
-  token or conversation identity; all mismatches fail closed.
+- A Workflow or Agent chat may call only the exact Agent MCP server/tool pair in
+  its signed `allowed_tool_refs`. The built-in AcornOps Targets server follows
+  that ordinary Agent-scoped lookup; the gateway does not synthesize a server,
+  rewrite target arguments, or rebind the call to a target connector tool.
 - Provider credentials, admin tokens, run JWTs, MCP secret headers, raw reasoning state, and chain-of-thought must not be emitted in responses.
 - Provider credentials resolve as exact workspace override, then platform
   default. Internal status responses expose only `configured`, `enabled`, and
