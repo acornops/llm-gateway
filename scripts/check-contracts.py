@@ -154,7 +154,6 @@ for field in (
     "allowed_tools: list[str] = []",
     "allowed_native_tools: list[NativeToolPermission] = []",
     'allowed_tool_operations: dict[str, Literal["read", "write"]] = {}',
-    "context_grants: list[str] = []",
     "max_output_tokens: int | None = None",
 ):
     expect_in(CLAIMS_SOURCE, field, "Token claim model")

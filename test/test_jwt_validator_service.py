@@ -64,7 +64,6 @@ def _workflow_payload() -> dict:
                 "mcp.tools.list": "read",
                 "audit.events.search": "read",
             },
-            "context_grants": ["audit_events", "workspace_metadata"],
             "max_output_tokens": 1024,
         },
     }
@@ -124,7 +123,6 @@ async def test_jwt_validator_returns_workspace_workflow_claims(monkeypatch: pyte
         "mcp.tools.list": "read",
         "audit.events.search": "read",
     }
-    assert claims.permissions.context_grants == ["audit_events", "workspace_metadata"]
     assert metrics.statuses == ["success"]
 
 

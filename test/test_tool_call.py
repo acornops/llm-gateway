@@ -748,7 +748,6 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
             "allowed_tools": ["mcp.tools.list"],
             "allowed_tool_refs": [{"server_id": EXAMPLE_SERVER_ID, "tool_name": "mcp.tools.list"}],
             "allowed_tool_operations": {"mcp.tools.list": "read"},
-            "context_grants": ["workspace_metadata"],
         },
     )
     mock_tool = Tool(
