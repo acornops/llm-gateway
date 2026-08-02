@@ -275,7 +275,6 @@
         "agent_id forbidden for coordinator Workflow runs",
         "trigger_id?",
         "user_id? (required for individual MCP authorization)",
-        "permissions.context_grants",
         "scope.type=agent_chat requires agent_id while forbidding Workflow and top-level target identity claims",
         "Workflow and agent_chat MCP calls require the exact Agent server/tool pair in allowed_tool_refs; built-in AcornOps Targets calls use the same lookup without synthetic argument rebinding",
         "write tool calls receive a gateway-injected idempotencyKey derived from run_id and tool_call_id"

@@ -47,7 +47,6 @@ class Permissions(BaseModel):
     allowed_tool_refs: list[McpToolRef] = []
     allowed_native_tools: list[NativeToolPermission] = []
     allowed_tool_operations: dict[str, Literal["read", "write"]] = {}
-    context_grants: list[str] = []
     resource_bindings: list[ResourceBindingClaim] = Field(default_factory=list, max_length=64)
     binding_digest: str | None = None
     max_output_tokens: int | None = None
