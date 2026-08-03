@@ -20,20 +20,28 @@ from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, Targe
 
 class ToolSpec(BaseModel):
     name: str = Field(min_length=1, examples=["list_pods"])
+    model_name: str | None = Field(default=None, examples=["list_pods"])
     description: str | None = Field(default=None, examples=["List pods in the cluster."])
     input_schema: dict[str, Any] = Field(
         default_factory=lambda: {"type": "object", "additionalProperties": True},
         examples=[{"type": "object", "properties": {"namespace": {"type": "string"}}}],
     )
 
-    @field_validator("name")
+    @field_validator("name", "model_name")
     @classmethod
-    def validate_provider_neutral_name(cls, value: str) -> str:
+    def validate_provider_neutral_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,62}", value):
             raise ValueError(
                 "function name must match ^[A-Za-z_][A-Za-z0-9_-]{0,62}$"
             )
         return value
+
+    @property
+    def provider_name(self) -> str:
+        """Return the optional readable name declared to the model provider."""
+        return self.model_name or self.name
 
 
 class NativeToolSpec(BaseModel):

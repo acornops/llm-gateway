@@ -19,6 +19,7 @@ ROUTER_SOURCE = read("app/api/router.py")
 LLM_SERVICE_SOURCE = read("app/llm/service.py")
 CLAIMS_SOURCE = read("app/auth/claims.py")
 LLM_HANDLER_SOURCE = read("app/api/handlers_llm_stream.py")
+LLM_ADAPTER_COMMON_SOURCE = read("app/llm/adapters/common.py")
 TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py") + read("app/api/tool_call_contract.py")
 INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = (
@@ -135,6 +136,14 @@ expect_in(
     'type: Literal["target", "agent_chat", "workspace"] = "target"',
     "LLM request scope types",
 )
+
+for field in EXECUTION_ENGINE_CONTRACT["streamToolSpecFields"]:
+    expect_in(MANIFEST_TEXT, field, "Manifest stream tool-spec field")
+
+expect_in(DOC, "provider-facing `model_name`", "Documented readable model tool name")
+expect_in(LLM_SERVICE_SOURCE, "model_name: str | None", "Optional readable model tool name")
+expect_in(LLM_HANDLER_SOURCE, "tool.name", "Internal tool authorization identity")
+expect_in(LLM_ADAPTER_COMMON_SOURCE, "tool.provider_name", "Provider-facing tool identity")
 
 for field in (
     "iss: str",

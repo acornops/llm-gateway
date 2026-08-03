@@ -1,4 +1,5 @@
 import time
+from collections import Counter
 from typing import Any
 
 import structlog
@@ -81,11 +82,20 @@ def _authorization_checked_tool_names(req: NormalizedLLMRequest) -> list[str]:
 
 def _validate_stream_tool_names(req: NormalizedLLMRequest) -> None:
     reserved_disallowed = [
-        tool.name
+        tool.provider_name
         for tool in req.tools
         if (
-            is_reserved_internal_tool_name(tool.name)
-            and not is_internal_model_only_tool_name(tool.name)
+            (
+                is_internal_model_only_tool_name(tool.name)
+                and tool.provider_name != tool.name
+            )
+            or (
+                is_reserved_internal_tool_name(tool.provider_name)
+                and not (
+                    is_internal_model_only_tool_name(tool.name)
+                    and tool.provider_name == tool.name
+                )
+            )
         )
     ]
     if reserved_disallowed:
@@ -95,6 +105,16 @@ def _validate_stream_tool_names(req: NormalizedLLMRequest) -> None:
                 "Tool(s) reserved for internal model-only use: "
                 f"{', '.join(reserved_disallowed)}"
             ),
+        )
+    provider_names = [tool.provider_name for tool in req.tools]
+    provider_name_counts = Counter(name.casefold() for name in provider_names)
+    duplicate_provider_names = sorted(
+        {name for name in provider_names if provider_name_counts[name.casefold()] > 1}
+    )
+    if duplicate_provider_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate provider tool name(s): {', '.join(duplicate_provider_names)}",
         )
 
 
@@ -197,7 +217,7 @@ def _select_deterministic_tool(req: NormalizedLLMRequest) -> str | None:
         "list_pods",
     )
     eligible_tools = {
-        tool.name
+        tool.provider_name
         for tool in req.tools
         if (
             not is_internal_model_only_tool_name(tool.name)

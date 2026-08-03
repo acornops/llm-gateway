@@ -395,6 +395,66 @@ async def test_llm_stream_rejects_reserved_internal_tool_prefix_except_model_onl
 
 
 @pytest.mark.anyio
+async def test_llm_stream_authorizes_internal_name_when_model_name_differs():
+    internal_name = "m_123098sa90d80s9f_get_target_we92809"
+    mock_claims = build_token_claims(
+        permissions={"allowed_tools": [internal_name]}
+    )
+    payload = build_llm_stream_payload(
+        tools=[
+            {
+                "name": internal_name,
+                "model_name": "get_target",
+                "input_schema": {"type": "object"},
+            }
+        ]
+    )
+    captured_names: list[tuple[str, str]] = []
+
+    with patch(
+        "app.api.handlers_llm_stream.secret_store.get_secret", new_callable=AsyncMock
+    ) as mock_get_secret:
+        mock_get_secret.return_value = "fake-api-key"
+
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+
+        try:
+            with patch("app.llm.adapters.openai_adapter.OpenAIAdapter.stream") as mock_stream:
+
+                async def mock_generator(*args, **kwargs):
+                    stream_req = next(
+                        arg for arg in args if isinstance(arg, NormalizedLLMRequest)
+                    )
+                    captured_names.extend(
+                        (tool.name, tool.provider_name) for tool in stream_req.tools
+                    )
+                    yield StreamEvent(type="final", usage={})
+
+                mock_stream.side_effect = mock_generator
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as ac:
+                    response = await ac.post(
+                        "/api/v1/llm/generations:stream",
+                        json=payload,
+                        headers={"Authorization": "Bearer fake-token"},
+                    )
+
+            assert response.status_code == 200
+            assert captured_names == [(internal_name, "get_target")]
+            mock_get_secret.assert_awaited_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
 async def test_llm_stream_allows_native_web_search_when_claim_matches():
     native_tools = [
         {

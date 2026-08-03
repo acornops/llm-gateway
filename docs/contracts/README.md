@@ -61,6 +61,11 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Callable function names must match `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`; the
   gateway rejects unsafe names before provider dispatch, while provider-safe
   platform aliases remain unchanged across OpenAI, Anthropic, and Gemini.
+- A streamed tool spec may include an optional provider-facing `model_name`.
+  Provider declarations use it when present, while JWT authorization continues
+  to check the internal `name`; omitting it preserves the existing contract.
+  Provider-facing names must be unique case-insensitively and cannot claim the
+  reserved `_acornops_` namespace.
 - OpenAI API-surface selection uses
   `LLM_PROVIDER_OPENAI_API_SURFACE=responses|chat_completions` as a deployment
   contract, not a request field. `responses` is the default;

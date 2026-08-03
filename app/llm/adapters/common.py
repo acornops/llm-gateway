@@ -113,8 +113,8 @@ def build_openai_response_tools(
     declarations = [
         {
             "type": "function",
-            "name": tool.name,
-            "description": tool.description or f"Execute tool '{tool.name}'.",
+            "name": tool.provider_name,
+            "description": tool.description or f"Execute tool '{tool.provider_name}'.",
             "parameters": tool.input_schema or {"type": "object", "additionalProperties": True},
         }
         for tool in tools
@@ -143,8 +143,8 @@ def build_openai_chat_completion_tools(
         {
             "type": "function",
             "function": {
-                "name": tool.name,
-                "description": tool.description or f"Execute tool '{tool.name}'.",
+                "name": tool.provider_name,
+                "description": tool.description or f"Execute tool '{tool.provider_name}'.",
                 "parameters": tool.input_schema
                 or {"type": "object", "additionalProperties": True},
             },
@@ -171,8 +171,8 @@ def build_anthropic_tools(
     """Builds Anthropic Messages API tool declarations."""
     declarations = [
         {
-            "name": tool.name,
-            "description": tool.description or f"Execute tool '{tool.name}'.",
+            "name": tool.provider_name,
+            "description": tool.description or f"Execute tool '{tool.provider_name}'.",
             "input_schema": tool.input_schema or {"type": "object", "additionalProperties": True},
         }
         for tool in tools
@@ -199,8 +199,8 @@ def build_gemini_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
         {
             "function_declarations": [
                 {
-                    "name": tool.name,
-                    "description": tool.description or f"Execute tool '{tool.name}'.",
+                    "name": tool.provider_name,
+                    "description": tool.description or f"Execute tool '{tool.provider_name}'.",
                     "parameters": sanitize_gemini_schema(tool.input_schema) or {"type": "object"},
                 }
                 for tool in tools
