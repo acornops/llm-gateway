@@ -992,6 +992,10 @@ async def test_test_connection_endpoint_records_status_and_returns_discovered_to
             "app.api.handlers_mcp_admin.mcp_server_registry.update_server",
             new=AsyncMock(return_value=updated_server),
         ),
+        patch(
+            "app.api.handlers_mcp_admin.merge_connection_discovery",
+            new=AsyncMock(return_value=["github.get_issue", "github.search_repositories"]),
+        ) as merge_tools,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
@@ -1006,6 +1010,73 @@ async def test_test_connection_endpoint_records_status_and_returns_discovered_to
     assert payload["discovered_tool_count"] == 2
     assert payload["discovered_tools"] == ["github.get_issue", "github.search_repositories"]
     assert payload["error"] is None
+    merge_tools.assert_awaited_once()
+    merged_tools = merge_tools.await_args.args[1]
+    assert [tool.name for tool in merged_tools] == [
+        "github.search_repositories",
+        "github.get_issue",
+    ]
+    assert all(tool.enabled is False for tool in merged_tools)
+
+
+@pytest.mark.anyio
+async def test_test_connection_does_not_mutate_tools_when_discovery_fails() -> None:
+    server = SimpleNamespace(
+        id="srv-test-error",
+        workspace_id="ws-test",
+        target_id="cl-test",
+        target_type="kubernetes",
+        server_name="github",
+        server_url="http://github-mcp",
+        enabled=True,
+        auth_type="none",
+        credential_mode="none",
+        auth_header_name=None,
+        auth_header_prefix=None,
+        public_headers=None,
+        connection_status="unknown",
+        last_discovery_at=None,
+        last_discovery_error=None,
+    )
+    updated_server = SimpleNamespace(
+        **{
+            **server.__dict__,
+            "connection_status": "error",
+            "last_discovery_at": "2026-03-04T00:00:00Z",
+            "last_discovery_error": "MCP server unavailable",
+        }
+    )
+
+    with (
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.get_server",
+            new=AsyncMock(return_value=server),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin._discover_server_tools",
+            new=AsyncMock(
+                return_value=([], "MCP server unavailable", "MCP_ENDPOINT_UNAVAILABLE")
+            ),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.mcp_server_registry.update_server",
+            new=AsyncMock(return_value=updated_server),
+        ),
+        patch(
+            "app.api.handlers_mcp_admin.merge_connection_discovery",
+            new=AsyncMock(),
+        ) as merge_tools,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/internal/mcp/servers/srv-test-error/test"
+                "?workspace_id=ws-test&target_id=cl-test&target_type=kubernetes",
+                headers={"Authorization": "Bearer dev_orchestrator_token"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["connection_status"] == "error"
+    merge_tools.assert_not_awaited()
 
 
 @pytest.mark.anyio

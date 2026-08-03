@@ -168,7 +168,9 @@ On unauthenticated server create (when no explicit tool list is supplied), llm-g
 tools, stores them disabled, and sanitizes remote descriptions/schemas before
 they are shown for admin review. A discovered external tool is not returned to
 runtime tool lists or sent to an LLM until an admin explicitly enables it with a
-reviewed capability.
+reviewed capability. A later successful connection test adds only newly
+discovered tools with the same disabled review state; it does not delete missing
+tools or replace reviewed definitions.
 Each MCP server also tracks `connection_status`, `last_discovery_at`, and `last_discovery_error` so UI can surface discovery health.
 An authenticated discovery that succeeds with an empty tool list marks that
 user connection connected with an empty snapshot. Discovery failure marks only

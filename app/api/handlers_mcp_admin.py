@@ -22,6 +22,7 @@ from app.api.mcp_admin_helpers import (
     _discover_server_tools,
     _record_discovery_status,
     _resolve_tools_for_server,
+    merge_connection_discovery,
 )
 from app.api.mcp_admin_helpers import (
     _extract_discovery_error as _extract_discovery_error,
@@ -584,6 +585,8 @@ async def test_mcp_server_connection(
         discovered_tools, discovery_error, _discovery_error_code = await _discover_server_tools(
             workspace_id, destination_id, server
         )
+        if discovery_error is None:
+            await merge_connection_discovery(server, discovered_tools)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
         discovery_error = detail or "MCP server discovery failed."
