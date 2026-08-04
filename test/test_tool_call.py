@@ -1006,6 +1006,101 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
 
 
 @pytest.mark.anyio
+async def test_workspace_workflow_write_tool_forwards_only_declared_arguments():
+    mock_claims = build_token_claims(
+        scope={"type": "workspace"},
+        workflow_id="workspace-tool-exposure-audit",
+        execution_id="workflow-execution-1",
+        workflow_session_id="workflow-session-1",
+        executor_role="specialist",
+        agent_id="agent-1",
+        permission_mode="auto_allowed_changes",
+        permissions={
+            "allowed_tools": [model_tool_alias(EXAMPLE_SERVER_ID, "pages.create")],
+            "allowed_tool_refs": [{"server_id": EXAMPLE_SERVER_ID, "tool_name": "pages.create"}],
+            "allowed_tool_operations": {
+                model_tool_alias(EXAMPLE_SERVER_ID, "pages.create"): "write"
+            },
+        },
+    )
+    mock_tool = Tool(
+        server_id=EXAMPLE_SERVER_ID,
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="agent",
+        agent_id="agent-1",
+        tool_name="pages.create",
+        mcp_server_url="https://mcp.example.com/v1",
+        enabled=True,
+        timeout_ms=10000,
+        source="mcp",
+        capability="write",
+        risk_level="non_destructive_write",
+        auto_allowed=True,
+        review_state="approved",
+        input_schema={
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+    )
+    mock_server = McpServer(
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        scope_type="agent",
+        agent_id="agent-1",
+        server_name="confluence",
+        server_url="https://mcp.example.com/v1",
+        enabled=True,
+        auth_type="none",
+        credential_mode="none",
+    )
+
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new_callable=AsyncMock,
+            return_value=mock_tool,
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new_callable=AsyncMock,
+            return_value=mock_server,
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new_callable=AsyncMock,
+            return_value={"content": [{"type": "text", "text": "created"}], "isError": False},
+        ) as mock_call_tool,
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_workflow_tool_call_payload(
+                        tool=model_tool_alias(EXAMPLE_SERVER_ID, "pages.create"),
+                        tool_ref={"server_id": EXAMPLE_SERVER_ID, "tool_name": "pages.create"},
+                        arguments={"title": "Runbook"},
+                        tool_call_id="call-1",
+                    ),
+                    headers={"Authorization": "Bearer workflow-run-jwt"},
+                )
+
+            assert response.status_code == 200
+            assert mock_call_tool.await_args.args[2] == {"title": "Runbook"}
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
 async def test_workspace_workflow_tool_call_rejects_internal_model_only_tool_before_bridge():
     mock_claims = build_token_claims(
         scope={"type": "workspace"},

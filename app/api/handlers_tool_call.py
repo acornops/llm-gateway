@@ -1,4 +1,3 @@
-import hashlib
 import time
 
 import structlog
@@ -182,18 +181,17 @@ async def execute_tool_call(
                     },
                 ) from exc
         tool_arguments = dict(req.arguments)
-        if claims.permissions.allowed_tool_operations.get(req.tool) == "write":
-            if not req.tool_call_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "WRITE_IDEMPOTENCY_KEY_REQUIRED",
-                        "message": "Write tool calls require a stable tool_call_id",
-                    },
-                )
-            tool_arguments["idempotencyKey"] = hashlib.sha256(
-                f"{req.run_id}:{req.tool_call_id}:{req.tool}".encode()
-            ).hexdigest()
+        if (
+            claims.permissions.allowed_tool_operations.get(req.tool) == "write"
+            and not req.tool_call_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "WRITE_IDEMPOTENCY_KEY_REQUIRED",
+                    "message": "Write tool calls require a stable tool_call_id",
+                },
+            )
         server = (
             await mcp_server_registry.get_server(
                 req.workspace_id,
