@@ -371,20 +371,6 @@ async def test_discovery_adds_only_new_tools_to_installation_catalog() -> None:
                 capability="write",
             ),
         ),
-        (
-            SimpleNamespace(
-                tool_name="records.list",
-                input_schema={"type": "object"},
-                output_schema=None,
-                capability="read",
-            ),
-            SimpleNamespace(
-                name="records.list",
-                input_schema={"type": "object"},
-                output_schema=None,
-                capability="write",
-            ),
-        ),
     ],
 )
 async def test_user_discovery_rejects_security_relevant_shared_tool_conflicts(
@@ -404,6 +390,36 @@ async def test_user_discovery_rejects_security_relevant_shared_tool_conflicts(
     ):
         await merge_connection_discovery(_server(), [observed])
 
+    apply_tools.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_user_read_only_capability_override_allows_rediscovery() -> None:
+    existing = SimpleNamespace(
+        tool_name="records.list",
+        input_schema={"type": "object"},
+        output_schema=None,
+        capability="read",
+    )
+    observed = SimpleNamespace(
+        name="records.list",
+        input_schema={"type": "object"},
+        output_schema=None,
+        capability="write",
+    )
+    with (
+        patch(
+            "app.api.mcp_admin_helpers._resolve_tools_for_server",
+            new=AsyncMock(return_value=[existing]),
+        ),
+        patch(
+            "app.api.mcp_admin_helpers._apply_tools_for_server",
+            new=AsyncMock(),
+        ) as apply_tools,
+    ):
+        verified_tool_names = await merge_connection_discovery(_server(), [observed])
+
+    assert verified_tool_names == ["records.list"]
     apply_tools.assert_not_awaited()
 
 
