@@ -138,6 +138,73 @@ async def test_llm_stream_contract():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("adapter_events", "raise_after_events", "expected_types"),
+    [
+        ([StreamEvent(type="delta", text="partial")], False, ["delta", "error"]),
+        (
+            [
+                StreamEvent(type="final", usage={}),
+                StreamEvent(type="delta", text="late"),
+            ],
+            False,
+            ["final"],
+        ),
+        ([StreamEvent(type="delta", text="partial")], True, ["delta", "error"]),
+        ([StreamEvent(type="final", usage={})], True, ["final"]),
+    ],
+    ids=["incomplete", "post-terminal", "exception", "exception-after-terminal"],
+)
+async def test_llm_stream_enforces_one_terminal_event(
+    adapter_events: list[StreamEvent],
+    raise_after_events: bool,
+    expected_types: list[str],
+):
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+
+    async def override_validate():
+        return TokenClaims(**build_token_claims())
+
+    async def mock_generator(*_args, **_kwargs):
+        for event in adapter_events:
+            yield event
+        if raise_after_events:
+            raise RuntimeError("provider detail must not escape")
+
+    app.dependency_overrides[validator.validate] = override_validate
+    try:
+        with (
+            patch(
+                "app.api.handlers_llm_stream.secret_store.get_secret",
+                new_callable=AsyncMock,
+                return_value="fake-api-key",
+            ),
+            patch(
+                "app.llm.adapters.openai_adapter.OpenAIAdapter.stream",
+                side_effect=mock_generator,
+            ),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=build_llm_stream_payload(),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    chunks = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert [chunk["type"] for chunk in chunks] == expected_types
+    if expected_types[-1] == "error":
+        assert chunks[-1]["code"] == "GATEWAY_INCOMPLETE_STREAM"
+        assert chunks[-1]["retryable"] is True
+    assert "provider detail must not escape" not in response.text
+
+
+@pytest.mark.anyio
 async def test_llm_stream_uses_platform_default_after_workspace_credential_miss():
     mock_claims = build_token_claims()
 

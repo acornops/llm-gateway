@@ -18,10 +18,12 @@ model content, and expose bounded metadata for one pre-execution correction.
   and log redaction.
 - Added bounded pre-stream compatibility fallback for explicitly rejected
   `stream_options` and `max_completion_tokens` request fields.
+- Enforced one terminal event at the normalized gateway boundary so every
+  consumer receives an explicit error for cleanly incomplete adapter streams.
 
 ## Validation
 
-- `task validate` passed: 568 repository tests and 52 keyless evaluations,
+- `task validate` passed: 571 repository tests and 52 keyless evaluations,
   including ten provider stream-replay cases.
 
 ## Completed

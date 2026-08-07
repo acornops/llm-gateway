@@ -29,6 +29,10 @@
 ## Outbound Dependency Resilience
 
 - Provider streaming retries are allowed only before the gateway has emitted any NDJSON event for a request.
+- Every normalized stream emits exactly one terminal `final` or `error` event.
+  Adapter EOF or failure before a terminal event becomes retryable
+  `GATEWAY_INCOMPLETE_STREAM`; later provider events are discarded and recorded
+  as failures.
 - The gateway does not repair malformed tool JSON. It marks malformed argument
   errors retryable because no tool executed; execution-engine owns the single
   bounded corrective generation.

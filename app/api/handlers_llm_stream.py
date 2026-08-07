@@ -483,12 +483,26 @@ async def stream_generation(
     async def event_generator():
         GATEWAY_STREAM_SESSIONS_ACTIVE.inc()
         saw_error = False
+        saw_terminal = False
         text_delta_count = 0
         text_delta_chars = 0
         try:
             async for event in adapter.stream(req, api_key):
+                if saw_terminal:
+                    saw_error = True
+                    logger.warning(
+                        "llm_stream_event_after_terminal",
+                        run_id=req.run_id,
+                        workspace_id=req.workspace_id,
+                        provider=req.provider,
+                        api_surface=api_surface,
+                        model=req.model,
+                        event_type=event.type,
+                    )
+                    break
                 if event.type == "error":
                     saw_error = True
+                is_terminal = event.type in {"final", "error"}
                 if event.type == "delta":
                     text_delta_count += 1
                     text_delta_chars += len(event.text or "")
@@ -524,10 +538,45 @@ async def stream_generation(
                         model=req.model,
                         reason=reason,
                     )
-                yield event.model_dump_json() + "\n"
-        except Exception:
+                serialized_event = event.model_dump_json() + "\n"
+                yield serialized_event
+                if is_terminal:
+                    saw_terminal = True
+            if not saw_terminal:
+                saw_error = True
+                logger.warning(
+                    "llm_stream_incomplete",
+                    run_id=req.run_id,
+                    workspace_id=req.workspace_id,
+                    provider=req.provider,
+                    api_surface=api_surface,
+                    model=req.model,
+                )
+                yield StreamEvent(
+                    type="error",
+                    code="GATEWAY_INCOMPLETE_STREAM",
+                    message="Provider stream ended before a terminal event.",
+                    retryable=True,
+                ).model_dump_json() + "\n"
+        except Exception as exc:
             saw_error = True
-            raise
+            logger.error(
+                "llm_stream_generator_failed",
+                run_id=req.run_id,
+                workspace_id=req.workspace_id,
+                provider=req.provider,
+                api_surface=api_surface,
+                model=req.model,
+                after_terminal=saw_terminal,
+                error_type=type(exc).__name__,
+            )
+            if not saw_terminal:
+                yield StreamEvent(
+                    type="error",
+                    code="GATEWAY_INCOMPLETE_STREAM",
+                    message="Provider stream ended before a terminal event.",
+                    retryable=True,
+                ).model_dump_json() + "\n"
         finally:
             GATEWAY_STREAM_SESSIONS_ACTIVE.dec()
             logger.info(
