@@ -338,6 +338,7 @@ class OpenAIChatCompletionsAdapter(LLMAdapter):
             accumulation_error: str | None = None
             usage: Any = None
             emitted_event = False
+            saw_provider_terminal = False
             try:
                 await dependency_circuit_breaker.before_call(
                     dependency_key,
@@ -405,6 +406,8 @@ class OpenAIChatCompletionsAdapter(LLMAdapter):
                     for choice in getattr(chunk, "choices", None) or []:
                         if int(getattr(choice, "index", 0) or 0) != 0:
                             continue
+                        if getattr(choice, "finish_reason", None) is not None:
+                            saw_provider_terminal = True
                         delta = getattr(choice, "delta", None)
                         text = str(getattr(delta, "content", "") or "")
                         if text:
@@ -416,6 +419,43 @@ class OpenAIChatCompletionsAdapter(LLMAdapter):
                                     tool_calls,
                                     fragment,
                                 )
+
+                if not saw_provider_terminal:
+                    note_dependency_event("provider", "failure")
+                    logger.warning(
+                        "provider_stream_incomplete",
+                        provider="openai",
+                        api_surface="chat_completions",
+                        model=req.model,
+                        run_id=req.run_id,
+                        workspace_id=req.workspace_id,
+                        emitted_event=emitted_event,
+                    )
+                    opened = await dependency_circuit_breaker.record_failure(
+                        dependency_key,
+                        settings.OUTBOUND_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+                        settings.OUTBOUND_CIRCUIT_BREAKER_RESET_MS,
+                    )
+                    if opened:
+                        note_dependency_event("provider", "circuit_open")
+                    if attempt < attempts and not emitted_event and not opened:
+                        note_dependency_event("provider", "retry")
+                        await asyncio.sleep(
+                            backoff_seconds(
+                                settings.PROVIDER_RETRY_BACKOFF_MS,
+                                attempt,
+                            )
+                        )
+                        attempt += 1
+                        continue
+                    yield StreamEvent(
+                        type="error",
+                        code="GATEWAY_INCOMPLETE_STREAM",
+                        message="Provider stream ended before a terminal event.",
+                        retryable=True,
+                        usage=_optional_usage_payload(usage),
+                    )
+                    return
 
                 tool_call_events = _tool_call_events(
                     tool_calls,

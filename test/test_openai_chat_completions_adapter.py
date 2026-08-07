@@ -44,6 +44,19 @@ def _build_request(
     )
 
 
+def _finished_chunk(usage=None) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=0,
+                delta=SimpleNamespace(content=""),
+                finish_reason="stop",
+            )
+        ],
+        usage=usage,
+    )
+
+
 def test_build_openai_chat_completion_tools_uses_nested_function_shape() -> None:
     tools = build_openai_chat_completion_tools(
         [
@@ -246,15 +259,98 @@ async def test_chat_completions_adapter_uses_sdk_tool_call_delta_types(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("delta", "expected_types", "expected_requests"),
+    [
+        ({"content": "partial"}, ["delta", "error"], 1),
+        (
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_incomplete",
+                        "function": {
+                            "name": "lookup_pod",
+                            "arguments": "{\"id\":42}",
+                        },
+                    }
+                ]
+            },
+            ["error"],
+            2,
+        ),
+    ],
+    ids=["text", "tool-call"],
+)
+async def test_chat_completions_adapter_rejects_eof_without_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    delta: dict,
+    expected_types: list[str],
+    expected_requests: int,
+) -> None:
+    requests = 0
+
+    async def stream_response():
+        yield to_namespace({
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            "usage": None,
+        })
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            nonlocal requests
+            requests += 1
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.AsyncOpenAI",
+        FakeClient,
+    )
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.settings.PROVIDER_RETRY_ATTEMPTS",
+        2,
+    )
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.settings."
+        "OUTBOUND_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+        100,
+    )
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.settings.PROVIDER_RETRY_BACKOFF_MS",
+        1,
+    )
+
+    events = [
+        event.model_dump(exclude_none=True)
+        async for event in OpenAIChatCompletionsAdapter().stream(
+            _build_request(),
+            "fake-key",
+        )
+    ]
+
+    assert [event["type"] for event in events] == expected_types
+    assert requests == expected_requests
+    assert events[-1] == {
+        "type": "error",
+        "code": "GATEWAY_INCOMPLETE_STREAM",
+        "message": "Provider stream ended before a terminal event.",
+        "retryable": True,
+    }
+
+
+@pytest.mark.anyio
 async def test_chat_completions_adapter_maps_request_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
 
     async def stream_response():
-        yield SimpleNamespace(
-            choices=[],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        yield _finished_chunk(
+            SimpleNamespace(prompt_tokens=1, completion_tokens=1)
         )
 
     class FakeCompletions:
@@ -302,7 +398,7 @@ async def test_chat_completions_adapter_omits_temperature_for_gpt5(
     calls: list[dict] = []
 
     async def stream_response():
-        yield SimpleNamespace(choices=[], usage=None)
+        yield _finished_chunk()
 
     class FakeCompletions:
         async def create(self, **kwargs):
@@ -340,7 +436,7 @@ async def test_chat_completions_adapter_retries_without_reasoning_effort(
         pass
 
     async def stream_response():
-        yield SimpleNamespace(choices=[], usage=None)
+        yield _finished_chunk()
 
     class FakeCompletions:
         async def create(self, **kwargs):
@@ -405,7 +501,7 @@ async def test_chat_completions_adapter_degrades_optional_compatible_parameters(
         pass
 
     async def stream_response():
-        yield SimpleNamespace(choices=[], usage=None)
+        yield _finished_chunk()
 
     class FakeCompletions:
         async def create(self, **kwargs):
@@ -450,9 +546,8 @@ async def test_chat_completions_adapter_reports_summary_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def stream_response():
-        yield SimpleNamespace(
-            choices=[],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        yield _finished_chunk(
+            SimpleNamespace(prompt_tokens=1, completion_tokens=1)
         )
 
     class FakeCompletions:
@@ -524,9 +619,8 @@ async def test_chat_completions_adapter_retries_transient_failure_before_output(
     async def stream_response(request_attempt: int):
         if request_attempt == 1:
             raise httpx.ConnectError("connection interrupted")
-        yield SimpleNamespace(
-            choices=[],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        yield _finished_chunk(
+            SimpleNamespace(prompt_tokens=1, completion_tokens=1)
         )
 
     class FakeCompletions:

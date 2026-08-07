@@ -20,10 +20,13 @@ model content, and expose bounded metadata for one pre-execution correction.
   `stream_options` and `max_completion_tokens` request fields.
 - Enforced one terminal event at the normalized gateway boundary so every
   consumer receives an explicit error for cleanly incomplete adapter streams.
+- Required an OpenAI Chat Completions finish marker before releasing buffered
+  tool calls or reporting success; safe pre-output EOFs retain the bounded
+  provider retry, while partial-output EOFs fail without replay.
 
 ## Validation
 
-- `task validate` passed: 571 repository tests and 52 keyless evaluations,
+- `task validate` passed: 573 repository tests and 52 keyless evaluations,
   including ten provider stream-replay cases.
 
 ## Completed
