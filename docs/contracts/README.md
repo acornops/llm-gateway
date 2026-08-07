@@ -73,10 +73,15 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   rejects the AcornOps native-tool contract before dispatch and reports
   reasoning summaries as unavailable. The gateway never probes or falls back
   between surfaces.
-- Malformed OpenAI function arguments fail closed with
-  `OPENAI_TOOL_ARGUMENTS_INVALID`; incomplete Chat Completions tool calls fail
-  with `OPENAI_TOOL_CALL_INVALID`. Neither case is silently dropped or coerced
-  into an empty object.
+- OpenAI Chat Completions normalizes bounded incremental, cumulative-snapshot,
+  repeated-name, and object-valued argument streams without altering argument
+  content. Malformed or non-object arguments fail before execution with
+  retryable `OPENAI_TOOL_ARGUMENTS_INVALID`; incomplete or conflicting call
+  identity fails non-retryably with `OPENAI_TOOL_CALL_INVALID`. Errors and
+  diagnostics never include raw arguments.
+- For direct OpenAI-compatible Chat Completions servers, an explicit unsupported
+  parameter response may omit `stream_options` or switch
+  `max_completion_tokens` to `max_tokens` before any output is emitted.
 - Provider failure events may use `MODEL_UNAVAILABLE`, `PROVIDER_AUTH_INVALID`,
   `PROVIDER_RATE_LIMITED`, or `PROVIDER_UNAVAILABLE`. `MODEL_UNAVAILABLE`
   requires an explicit structured provider code; ambiguous provider responses

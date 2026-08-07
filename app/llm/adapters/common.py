@@ -8,6 +8,13 @@ from typing import Any
 from app.llm.service import NativeToolSpec, ToolSpec
 
 _OPENAI_DEFAULT_TEMPERATURE_ONLY_MODELS: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
+_OPENAI_UNSUPPORTED_PARAMETER_MARKERS: tuple[str, ...] = (
+    "unsupported parameter",
+    "unknown parameter",
+    "does not support",
+    "not supported",
+    "extra inputs are not permitted",
+)
 
 
 def supports_openai_custom_temperature(model: str) -> bool:
@@ -54,6 +61,34 @@ def should_retry_openai_without_reasoning(error_message: str, reasoning_sent: bo
         or "does not support" in normalized
         or "not supported" in normalized
         or "unsupported_model" in normalized
+    )
+
+
+def should_retry_openai_without_stream_options(
+    error_message: str,
+    stream_options_sent: bool,
+) -> bool:
+    """Returns true when an OpenAI-compatible server rejects stream options."""
+    if not stream_options_sent:
+        return False
+    normalized = error_message.lower()
+    return (
+        "stream_options" in normalized or "include_usage" in normalized
+    ) and any(
+        marker in normalized for marker in _OPENAI_UNSUPPORTED_PARAMETER_MARKERS
+    )
+
+
+def should_retry_openai_with_max_tokens(
+    error_message: str,
+    max_completion_tokens_sent: bool,
+) -> bool:
+    """Returns true when a compatible server requires the older max_tokens name."""
+    if not max_completion_tokens_sent:
+        return False
+    normalized = error_message.lower()
+    return "max_completion_tokens" in normalized and any(
+        marker in normalized for marker in _OPENAI_UNSUPPORTED_PARAMETER_MARKERS
     )
 
 
@@ -153,13 +188,17 @@ def build_openai_chat_completion_tools(
     ]
 
 
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
 def parse_openai_tool_arguments(value: str) -> dict[str, Any] | None:
     """Parses provider tool arguments, returning None for unsafe shapes."""
     if not value:
         return {}
     try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
+        parsed = json.loads(value, parse_constant=_reject_non_finite_json_constant)
+    except (json.JSONDecodeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
 

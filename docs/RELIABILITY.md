@@ -13,6 +13,8 @@
 - Run `task lint` in all environments.
 - Run `task unit-test` in a provisioned Python 3.12.11 environment when auth, provider, or MCP behavior changes.
 - Preserve normalized stream event and tool-call response shapes.
+- Verify OpenAI malformed tool arguments fail before execution with safe
+  metadata and usage, while logs and metrics contain sizes and outcomes only.
 
 ## Recovery Expectations
 
@@ -27,6 +29,13 @@
 ## Outbound Dependency Resilience
 
 - Provider streaming retries are allowed only before the gateway has emitted any NDJSON event for a request.
+- The gateway does not repair malformed tool JSON. It marks malformed argument
+  errors retryable because no tool executed; execution-engine owns the single
+  bounded corrective generation.
+- OpenAI Chat Completions may degrade only explicitly rejected optional request
+  fields before streaming starts: omit `stream_options`, or replace
+  `max_completion_tokens` with `max_tokens`. It does not retry alternate tool
+  schemas or replay emitted output.
 - MCP tool discovery and Vault secret reads use bounded exponential backoff for retryable timeout, connection, rate-limit, and 5xx failure modes.
 - MCP tool execution does not automatically retry because tool side effects may be non-idempotent; repeated retryable failures instead trip a short-lived circuit breaker.
 - Remote MCP discovery and tool execution each use a fresh initialized

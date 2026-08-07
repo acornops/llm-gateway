@@ -140,8 +140,52 @@
       {
         "type": "error",
         "code": "OPENAI_TOOL_ARGUMENTS_INVALID",
-        "message": "Provider returned invalid tool arguments",
-        "retryable": false
+        "message": "Provider returned malformed JSON tool arguments; no tool was executed",
+        "call_id": "call_2",
+        "tool": "lookup_weather",
+        "retryable": true,
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 1,
+          "tool_calls": 0
+        }
+      }
+    ]
+  },
+  {
+    "name": "openai-missing-tool-identity-replay",
+    "model": "gpt-4o-mini",
+    "chunks": [
+      {
+        "type": "response.output_item.done",
+        "item": {
+          "type": "function_call",
+          "name": "lookup_weather",
+          "arguments": "{\"location\":\"SF\"}"
+        }
+      },
+      {
+        "type": "response.completed",
+        "response": {
+          "usage": {
+            "input_tokens": 3,
+            "output_tokens": 1
+          }
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "error",
+        "code": "OPENAI_TOOL_CALL_INVALID",
+        "message": "Provider returned an invalid tool call; no tool was executed",
+        "tool": "lookup_weather",
+        "retryable": false,
+        "usage": {
+          "input_tokens": 3,
+          "output_tokens": 1,
+          "tool_calls": 0
+        }
       }
     ]
   }

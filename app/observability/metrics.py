@@ -38,6 +38,19 @@ GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL = Counter(
     ["provider", "model", "reason"],
 )
 
+GATEWAY_LLM_TOOL_ARGUMENT_EVENTS_TOTAL = Counter(
+    "gateway_llm_tool_argument_events_total",
+    "Provider tool argument stream outcomes",
+    ["provider", "api_surface", "outcome"],
+)
+
+GATEWAY_LLM_TOOL_ARGUMENT_BYTES = Histogram(
+    "gateway_llm_tool_argument_bytes",
+    "Serialized provider tool argument bytes",
+    ["provider", "api_surface"],
+    buckets=(256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304),
+)
+
 GATEWAY_JWT_VALIDATIONS_TOTAL = Counter(
     "gateway_jwt_validations_total",
     "Total number of JWT validation attempts",

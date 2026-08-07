@@ -15,6 +15,10 @@ from app.llm.adapters.common import (
 from app.llm.adapters.openai_chat_completions_adapter import (
     OpenAIChatCompletionsAdapter,
 )
+from app.llm.adapters.openai_tool_diagnostics import (
+    observe_openai_tool_arguments,
+    openai_tool_error_event,
+)
 from app.llm.adapters.provider_errors import provider_failure_event
 from app.llm.openai_continuation import capture_openai_reasoning_input
 from app.llm.provider_diagnostics import log_provider_stream_failure, provider_base_url
@@ -95,10 +99,12 @@ class OpenAIResponsesAdapter(LLMAdapter):
 
         while attempt <= attempts:
             tool_calls_map: dict[str, dict[str, str]] = {}
+            tool_call_fragment_counts: dict[str, int] = {}
             tool_calls_count = 0
             completed_summary_keys: set[tuple[str, int, int]] = set()
             continuation_items: list[dict[str, object]] = []
             continuation_attached = False
+            pending_tool_error: StreamEvent | None = None
             emitted_event = False
             try:
                 await dependency_circuit_breaker.before_call(dependency_key, "provider", "openai")
@@ -228,39 +234,96 @@ class OpenAIResponsesAdapter(LLMAdapter):
                                 capture_openai_reasoning_input(item)
                             )
                         if getattr(item, "type", None) == "function_call":
-                            item_id = str(getattr(item, "id", "") or getattr(item, "call_id", ""))
-                            if item_id:
-                                tool_calls_map[item_id] = {
-                                    "id": str(getattr(item, "call_id", "") or item_id),
-                                    "name": str(getattr(item, "name", "") or ""),
-                                    "arguments": str(getattr(item, "arguments", "") or ""),
-                                }
+                            raw_call_id = str(getattr(item, "call_id", "") or "")
+                            item_id = str(getattr(item, "id", "") or raw_call_id)
+                            incoming_name = str(getattr(item, "name", "") or "")
+                            incoming_arguments = str(getattr(item, "arguments", "") or "")
+                            if not item_id:
+                                pending_tool_error = pending_tool_error or openai_tool_error_event(
+                                    req,
+                                    api_surface="responses",
+                                    code="OPENAI_TOOL_CALL_INVALID",
+                                    reason="missing call identity",
+                                    tool=incoming_name or None,
+                                    call_id=None,
+                                    argument_bytes=len(incoming_arguments.encode("utf-8")),
+                                    fragment_count=1,
+                                )
+                                continue
+                            existing = tool_calls_map.get(item_id)
+                            if (
+                                existing
+                                and raw_call_id
+                                and existing.get("id")
+                                and existing["id"] != raw_call_id
+                            ):
+                                pending_tool_error = pending_tool_error or openai_tool_error_event(
+                                    req,
+                                    api_surface="responses",
+                                    code="OPENAI_TOOL_CALL_INVALID",
+                                    reason="conflicting call identity",
+                                    tool=str(existing.get("name") or incoming_name) or None,
+                                    call_id=None,
+                                    argument_bytes=len(
+                                        existing.get("arguments", "").encode("utf-8")
+                                    ),
+                                    fragment_count=tool_call_fragment_counts.get(item_id, 1),
+                                )
+                                continue
+                            tool_calls_map[item_id] = {
+                                "id": raw_call_id or item_id,
+                                "name": incoming_name,
+                                "arguments": incoming_arguments,
+                            }
+                            tool_call_fragment_counts[item_id] = (
+                                tool_call_fragment_counts.get(item_id, 0) + 1
+                            )
                             if event_type == "response.output_item.done":
                                 tc = tool_calls_map.get(item_id)
-                                if tc and tc["name"] and not tc.get("yielded"):
-                                    arguments = parse_openai_tool_arguments(
-                                        tc["arguments"]
+                                if tc and (not tc["id"] or not tc["name"]):
+                                    argument_bytes = len(str(tc["arguments"]).encode("utf-8"))
+                                    pending_tool_error = (
+                                        pending_tool_error
+                                        or openai_tool_error_event(
+                                            req,
+                                            api_surface="responses",
+                                            code="OPENAI_TOOL_CALL_INVALID",
+                                            reason="missing call identity",
+                                            tool=str(tc["name"] or "") or None,
+                                            call_id=str(tc["id"] or "") or None,
+                                            argument_bytes=argument_bytes,
+                                            fragment_count=tool_call_fragment_counts[item_id],
+                                        )
                                     )
+                                    continue
+                                if tc and tc["name"] and not tc.get("yielded"):
+                                    arguments = parse_openai_tool_arguments(str(tc["arguments"]))
+                                    argument_bytes = len(str(tc["arguments"]).encode("utf-8"))
                                     if arguments is None:
-                                        await dependency_circuit_breaker.record_success(
-                                            dependency_key
+                                        pending_tool_error = (
+                                            pending_tool_error
+                                            or openai_tool_error_event(
+                                                req,
+                                                api_surface="responses",
+                                                code="OPENAI_TOOL_ARGUMENTS_INVALID",
+                                                reason="malformed JSON arguments",
+                                                call_id=str(tc["id"]),
+                                                tool=str(tc["name"]),
+                                                argument_bytes=argument_bytes,
+                                                fragment_count=tool_call_fragment_counts[item_id],
+                                            )
                                         )
-                                        emitted_event = True
-                                        yield StreamEvent(
-                                            type="error",
-                                            code="OPENAI_TOOL_ARGUMENTS_INVALID",
-                                            message=(
-                                                "Provider returned invalid tool arguments"
-                                            ),
-                                            retryable=False,
-                                        )
-                                        return
+                                        tc["yielded"] = "invalid"
+                                        continue
+                                    observe_openai_tool_arguments(
+                                        "responses", "incremental", argument_bytes
+                                    )
                                     tool_calls_count += 1
                                     emitted_event = True
                                     yield StreamEvent(
                                         type="tool_call",
-                                        call_id=tc["id"],
-                                        tool=tc["name"],
+                                        call_id=str(tc["id"]),
+                                        tool=str(tc["name"]),
                                         arguments=arguments,
                                         provider_state=(
                                             {
@@ -289,6 +352,9 @@ class OpenAIResponsesAdapter(LLMAdapter):
                             tool_calls_map[item_id]["arguments"] += (
                                 getattr(chunk, "delta", "") or ""
                             )
+                            tool_call_fragment_counts[item_id] = (
+                                tool_call_fragment_counts.get(item_id, 0) + 1
+                            )
                         continue
 
                     if event_type == "response.function_call_arguments.done":
@@ -297,6 +363,9 @@ class OpenAIResponsesAdapter(LLMAdapter):
                             tool_calls_map[item_id]["arguments"] = (
                                 getattr(chunk, "arguments", "")
                                 or tool_calls_map[item_id]["arguments"]
+                            )
+                            tool_call_fragment_counts[item_id] = (
+                                tool_call_fragment_counts.get(item_id, 0) + 1
                             )
                         continue
 
@@ -314,6 +383,12 @@ class OpenAIResponsesAdapter(LLMAdapter):
                         }
                         if reasoning_tokens:
                             usage["reasoning_tokens"] = reasoning_tokens
+                        if pending_tool_error is not None:
+                            pending_tool_error.usage = usage
+                            emitted_event = True
+                            yield pending_tool_error
+                            await dependency_circuit_breaker.record_success(dependency_key)
+                            return
                         yield StreamEvent(
                             type="final",
                             usage=usage,
@@ -321,6 +396,9 @@ class OpenAIResponsesAdapter(LLMAdapter):
                         emitted_event = True
                         continue
 
+                if pending_tool_error is not None:
+                    emitted_event = True
+                    yield pending_tool_error
                 await dependency_circuit_breaker.record_success(dependency_key)
                 return
             except CircuitOpenError as exc:

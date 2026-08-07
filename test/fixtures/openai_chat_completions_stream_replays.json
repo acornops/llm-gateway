@@ -172,5 +172,97 @@
         }
       }
     ]
+  },
+  {
+    "name": "cumulative-document-arguments-and-repeated-name",
+    "model": "gpt-4o-mini",
+    "chunks": [
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "call_document",
+                  "function": {
+                    "name": "acornops_create_document",
+                    "arguments": "{\"title\":\"Release notes\""
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "function": {
+                    "name": "acornops_create_document",
+                    "arguments": "{\"title\":\"Release notes\",\"markdown\":\"## Résumé\\n\\n```json\\n{\\\"path\\\":\\\"C:\\\\\\\\tmp\\\"}\\n```\\n\\n“quoted”\",\"format\":\"markdown\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "function": {
+                    "arguments": "{\"title\":\"Release notes\",\"markdown\":\"## Résumé\\n\\n```json\\n{\\\"path\\\":\\\"C:\\\\\\\\tmp\\\"}\\n```\\n\\n“quoted”\",\"format\":\"markdown\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": null
+      },
+      {
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 5
+        }
+      }
+    ],
+    "expected_events": [
+      {
+        "type": "tool_call",
+        "call_id": "call_document",
+        "tool": "acornops_create_document",
+        "arguments": {
+          "title": "Release notes",
+          "markdown": "## Résumé\n\n```json\n{\"path\":\"C:\\\\tmp\"}\n```\n\n“quoted”",
+          "format": "markdown"
+        }
+      },
+      {
+        "type": "final",
+        "usage": {
+          "input_tokens": 12,
+          "output_tokens": 5,
+          "tool_calls": 1
+        }
+      }
+    ]
   }
 ]

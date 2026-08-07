@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -7,7 +8,10 @@ from provider_replay_fixtures import load_replay_cases, to_namespace
 
 from app.llm.adapters.common import build_openai_chat_completion_tools
 from app.llm.adapters.openai_chat_completions_adapter import (
+    MAX_TOOL_ARGUMENT_BYTES,
     OpenAIChatCompletionsAdapter,
+    _accumulate_tool_call,
+    _tool_call_events,
 )
 from app.llm.service import NativeToolSpec, NormalizedLLMRequest, ReasoningConfig, ToolSpec
 
@@ -373,6 +377,75 @@ async def test_chat_completions_adapter_retries_without_reasoning_effort(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("error_message", "first_parameter", "second_parameter"),
+    [
+        (
+            "Unsupported parameter: 'stream_options'.",
+            "stream_options",
+            None,
+        ),
+        (
+            "Unknown parameter: 'max_completion_tokens'.",
+            "max_completion_tokens",
+            "max_tokens",
+        ),
+    ],
+    ids=["stream-options", "max-tokens-name"],
+)
+async def test_chat_completions_adapter_degrades_optional_compatible_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    error_message: str,
+    first_parameter: str,
+    second_parameter: str | None,
+) -> None:
+    calls: list[dict] = []
+
+    class FakeBadRequestError(Exception):
+        pass
+
+    async def stream_response():
+        yield SimpleNamespace(choices=[], usage=None)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise FakeBadRequestError(error_message)
+            return stream_response()
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.AsyncOpenAI",
+        FakeClient,
+    )
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_chat_completions_adapter.BadRequestError",
+        FakeBadRequestError,
+    )
+
+    events = [
+        event
+        async for event in OpenAIChatCompletionsAdapter().stream(
+            _build_request(
+                tools=[ToolSpec(name="lookup_pod", description="Look up a pod.")]
+            ),
+            "fake-key",
+        )
+    ]
+
+    assert any(event.type == "final" for event in events)
+    assert first_parameter in calls[0]
+    assert first_parameter not in calls[1]
+    assert calls[1]["tools"][0]["function"]["name"] == "lookup_pod"
+    if second_parameter:
+        assert calls[1][second_parameter] == 128
+
+
+@pytest.mark.anyio
 async def test_chat_completions_adapter_reports_summary_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -564,7 +637,7 @@ async def test_chat_completions_adapter_does_not_retry_after_output(
                 },
             },
             "OPENAI_TOOL_ARGUMENTS_INVALID",
-            "Provider returned invalid tool arguments",
+            "Provider returned malformed JSON tool arguments; no tool was executed",
         ),
         (
             {
@@ -573,7 +646,7 @@ async def test_chat_completions_adapter_does_not_retry_after_output(
                 "function": {"name": "lookup_pod", "arguments": "[]"},
             },
             "OPENAI_TOOL_ARGUMENTS_INVALID",
-            "Provider returned invalid tool arguments",
+            "Provider returned malformed JSON tool arguments; no tool was executed",
         ),
         (
             {
@@ -581,7 +654,7 @@ async def test_chat_completions_adapter_does_not_retry_after_output(
                 "function": {"name": "lookup_pod", "arguments": "{}"},
             },
             "OPENAI_TOOL_CALL_INVALID",
-            "Provider returned an invalid tool call",
+            "Provider returned an invalid tool call; no tool was executed",
         ),
         (
             {
@@ -590,7 +663,7 @@ async def test_chat_completions_adapter_does_not_retry_after_output(
                 "function": {"arguments": "{}"},
             },
             "OPENAI_TOOL_CALL_INVALID",
-            "Provider returned an invalid tool call",
+            "Provider returned an invalid tool call; no tool was executed",
         ),
     ],
     ids=["malformed-arguments", "non-object-arguments", "missing-id", "missing-name"],
@@ -643,6 +716,184 @@ async def test_chat_completions_adapter_rejects_invalid_tool_calls(
             "type": "error",
             "code": expected_code,
             "message": expected_message,
+            **({"call_id": tool_call["id"]} if tool_call.get("id") else {}),
+            **(
+                {"tool": tool_call["function"]["name"]}
+                if tool_call["function"].get("name")
+                else {}
+            ),
+            "retryable": expected_code == "OPENAI_TOOL_ARGUMENTS_INVALID",
+        }
+    ]
+
+
+def test_chat_completions_invalid_argument_log_omits_document_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_marker = "DOCUMENT-CONTENT-MUST-NOT-BE-LOGGED"
+    log_warning = Mock()
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_tool_diagnostics.logger.warning",
+        log_warning,
+    )
+
+    events = _tool_call_events(
+        {
+            0: {
+                "id": "call-document",
+                "name": "acornops_create_document",
+                "arguments": f'{{"markdown":"{secret_marker}',
+                "fragment_count": 2,
+                "outcome": "incremental",
+                "invalid_arguments": False,
+            }
+        },
+        req=_build_request(),
+        usage=None,
+        accumulation_error=None,
+    )
+
+    assert events[0].code == "OPENAI_TOOL_ARGUMENTS_INVALID"
+    assert secret_marker not in repr(log_warning.call_args_list)
+
+
+def test_chat_completions_canonically_serializes_object_arguments() -> None:
+    tool_calls: dict[int, dict[str, object]] = {}
+    fragment = SimpleNamespace(
+        index=0,
+        id="call_object",
+        function=SimpleNamespace(
+            name="lookup_pod",
+            arguments={"namespace": "default", "name": "api"},
+        ),
+    )
+
+    assert _accumulate_tool_call(tool_calls, fragment) is None
+    events = _tool_call_events(
+        tool_calls,
+        req=_build_request(),
+        usage=None,
+        accumulation_error=None,
+    )
+
+    assert events[0].arguments == {"namespace": "default", "name": "api"}
+
+
+def test_chat_completions_rejects_non_finite_object_arguments() -> None:
+    tool_calls: dict[int, dict[str, object]] = {}
+    fragment = SimpleNamespace(
+        index=0,
+        id="call_object",
+        function=SimpleNamespace(name="lookup_pod", arguments={"restarts": float("nan")}),
+    )
+
+    assert _accumulate_tool_call(tool_calls, fragment) is None
+    assert tool_calls[0]["invalid_arguments"] is True
+
+    string_calls: dict[int, dict[str, object]] = {}
+    string_fragment = SimpleNamespace(
+        index=0,
+        id="call_string",
+        function=SimpleNamespace(name="lookup_pod", arguments='{"restarts":NaN}'),
+    )
+    assert _accumulate_tool_call(string_calls, string_fragment) is None
+    events = _tool_call_events(
+        string_calls,
+        req=_build_request(),
+        usage=None,
+        accumulation_error=None,
+    )
+    assert events[0].code == "OPENAI_TOOL_ARGUMENTS_INVALID"
+
+
+def test_chat_completions_rejects_unpaired_unicode_surrogates() -> None:
+    tool_calls: dict[int, dict[str, object]] = {}
+    fragment = SimpleNamespace(
+        index=0,
+        id="call_unicode",
+        function=SimpleNamespace(name="lookup_pod", arguments='{"name":"\ud800"}'),
+    )
+
+    assert _accumulate_tool_call(tool_calls, fragment) is None
+    assert tool_calls[0]["invalid_arguments"] is True
+
+
+def test_chat_completions_accepts_schema_maximum_unicode_document_arguments() -> None:
+    arguments = json.dumps(
+        {"title": "Unicode", "markdown": "😀" * 262_144},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    tool_calls: dict[int, dict[str, object]] = {}
+    fragment = SimpleNamespace(
+        index=0,
+        id="call_unicode_document",
+        function=SimpleNamespace(
+            name="acornops_create_document",
+            arguments=arguments,
+        ),
+    )
+
+    assert len(arguments.encode("utf-8")) < MAX_TOOL_ARGUMENT_BYTES
+    assert _accumulate_tool_call(tool_calls, fragment) is None
+    assert tool_calls[0]["invalid_arguments"] is False
+
+
+def test_chat_completions_rejects_arguments_over_accumulator_limit() -> None:
+    tool_calls: dict[int, dict[str, object]] = {}
+    fragment = SimpleNamespace(
+        index=0,
+        id="call_oversized",
+        function=SimpleNamespace(
+            name="acornops_create_document",
+            arguments="x" * (MAX_TOOL_ARGUMENT_BYTES + 1),
+        ),
+    )
+
+    assert _accumulate_tool_call(tool_calls, fragment) is None
+    assert tool_calls[0]["invalid_arguments"] is True
+
+
+def test_chat_completions_rejects_conflicting_call_ids_without_logging_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_marker = "DOCUMENT-CONTENT-MUST-NOT-BE-LOGGED"
+    tool_calls: dict[int, dict[str, object]] = {}
+    first = SimpleNamespace(
+        index=0,
+        id="call_one",
+        function=SimpleNamespace(
+            name="acornops_create_document",
+            arguments='{"markdown":"',
+        ),
+    )
+    conflicting = SimpleNamespace(
+        index=0,
+        id="call_two",
+        function=SimpleNamespace(name="", arguments=f'{secret_marker}"}}'),
+    )
+    assert _accumulate_tool_call(tool_calls, first) is None
+    accumulation_error = _accumulate_tool_call(tool_calls, conflicting)
+    log_warning = Mock()
+    monkeypatch.setattr(
+        "app.llm.adapters.openai_tool_diagnostics.logger.warning",
+        log_warning,
+    )
+
+    events = _tool_call_events(
+        tool_calls,
+        req=_build_request(),
+        usage=None,
+        accumulation_error=accumulation_error,
+    )
+
+    assert [event.model_dump(exclude_none=True) for event in events] == [
+        {
+            "type": "error",
+            "code": "OPENAI_TOOL_CALL_INVALID",
+            "message": "Provider returned an invalid tool call; no tool was executed",
+            "tool": "acornops_create_document",
             "retryable": False,
         }
     ]
+    assert secret_marker not in repr(log_warning.call_args_list)
