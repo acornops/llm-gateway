@@ -97,6 +97,7 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
         auth_header_name=server.auth_header_name,
         auth_header_prefix=server.auth_header_prefix,
         public_headers=server.public_headers,
+        credential_transitioning=bool(getattr(server, "credential_transitioning", False)),
         connection_status=server.connection_status
         if server.connection_status in ("unknown", "ok", "error")
         else "unknown",
@@ -119,31 +120,19 @@ def _build_server_response(server: McpServer, tools: list[Tool]) -> McpServerRes
 async def _resolve_tools_for_server(
     workspace_id: str,
     destination_id: str,
-    server_url: str,
+    *,
+    server_id: str,
     target_type: str | None = None,
-    server_id: str | None = None,
     scope_type: str = "target",
 ) -> list[Tool]:
     registry_scope = registry_scope_options(scope_type, target_type)
-    resolved_server_id = server_id
-    if resolved_server_id is None:
-        server = await mcp_server_registry.get_server_by_url(
-            workspace_id,
-            destination_id,
-            server_url,
-            enabled_only=False,
-            **registry_scope,
-        )
-        if server is None:
-            return []
-        resolved_server_id = str(server.id)
     tools = await tool_registry.list_tools(
         workspace_id,
         destination_id,
         include_disabled=True,
         **registry_scope,
     )
-    return [tool for tool in tools if str(tool.server_id) == resolved_server_id]
+    return [tool for tool in tools if str(tool.server_id) == server_id]
 
 
 async def merge_connection_discovery(server: McpServer, tools: list[Any]) -> list[str]:
@@ -151,7 +140,6 @@ async def merge_connection_discovery(server: McpServer, tools: list[Any]) -> lis
     existing = await _resolve_tools_for_server(
         server.workspace_id,
         destination_id,
-        server.server_url,
         server_id=str(server.id),
         **registry_scope,
     )
@@ -165,7 +153,6 @@ async def merge_connection_discovery(server: McpServer, tools: list[Any]) -> lis
         await _apply_tools_for_server(
             server.workspace_id,
             destination_id,
-            server.server_url,
             newly_observed,
             server_id=str(server.id),
             remove_disabled=False,
@@ -390,27 +377,14 @@ def _effective_patch_value(
 async def _apply_tools_for_server(
     workspace_id: str,
     destination_id: str,
-    server_url: str,
     tools: list[ToolConfigRequest | ToolConfigUpdateRequest],
     *,
+    server_id: str,
     target_type: str | None = None,
-    server_id: str | None = None,
     remove_disabled: bool = True,
     scope_type: str = "target",
 ) -> None:
     registry_scope = registry_scope_options(scope_type, target_type)
-    resolved_server_id = server_id
-    if resolved_server_id is None:
-        server = await mcp_server_registry.get_server_by_url(
-            workspace_id,
-            destination_id,
-            server_url,
-            enabled_only=False,
-            **registry_scope,
-        )
-        if server is None:
-            raise HTTPException(status_code=404, detail="MCP server not found")
-        resolved_server_id = str(server.id)
     for tool in tools:
         provided_fields = getattr(tool, "model_fields_set", {"capability"})
         capability_provided = "capability" in provided_fields
@@ -421,7 +395,7 @@ async def _apply_tools_for_server(
                 destination_id,
                 tool.name,
                 include_disabled=True,
-                server_id=resolved_server_id,
+                server_id=server_id,
                 **registry_scope,
             )
 
@@ -458,7 +432,7 @@ async def _apply_tools_for_server(
                 tool.name,
                 workspace_id,
                 destination_id,
-                server_id=resolved_server_id,
+                server_id=server_id,
                 **registry_scope,
             )
             continue
@@ -482,7 +456,6 @@ async def _apply_tools_for_server(
         try:
             await tool_registry.upsert_tool(
                 tool_name=tool.name,
-                mcp_server_url=server_url,
                 workspace_id=workspace_id,
                 destination_id=destination_id,
                 timeout_ms=timeout_ms,
@@ -494,7 +467,7 @@ async def _apply_tools_for_server(
                 capability=capability,
                 version=version,
                 source=source,
-                server_id=resolved_server_id,
+                server_id=server_id,
                 review_state=review_state,
                 risk_level=risk_level,
                 auto_allowed=auto_allowed,

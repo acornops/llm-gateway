@@ -77,6 +77,16 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                 assert response.status_code == 201, response.text
                 created.append(response.json())
 
+            activated = await ac.put(
+                f"/api/v1/internal/mcp/users/{user_id}/lifecycle",
+                json={
+                    "workspace_id": workspace_id,
+                    "membership_generation": 1,
+                    "status": "active",
+                },
+            )
+            assert activated.status_code == 204, activated.text
+
             for server, installation in zip(created, installations, strict=True):
                 connected = await ac.put(
                     f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
@@ -84,6 +94,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                         "workspace_id": workspace_id,
                         "owner_type": "user",
                         "owner_id": user_id,
+                        "membership_generation": 1,
                         "credential": installation["credential"],
                         "consent_granted": True,
                     },
@@ -148,6 +159,11 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     exp=4_102_444_800,
                     sub=user_id,
                     user_id=user_id,
+                    principal={
+                        "type": "user",
+                        "id": user_id,
+                        "membership_generation": 1,
+                    },
                     permission_mode="read_only",
                     run_id=f"run-{uuid4()}",
                     workspace_id=workspace_id,
@@ -200,7 +216,11 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
 
                     connection = await ac.get(
                         f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
-                        params={"workspace_id": workspace_id, "owner_type": "user"},
+                        params={
+                            "workspace_id": workspace_id,
+                            "owner_type": "user",
+                            "membership_generation": 1,
+                        },
                     )
                     assert connection.status_code == 200, connection.text
                     assert connection.json()["status"] == "error"
@@ -222,6 +242,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     "workspace_id": workspace_id,
                     "owner_type": "user",
                     "owner_id": user_id,
+                    "membership_generation": 1,
                     "credential": "revoked-credential",
                     "consent_granted": True,
                 },
@@ -236,6 +257,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     "workspace_id": workspace_id,
                     "owner_type": "user",
                     "owner_id": user_id,
+                    "membership_generation": 1,
                 },
             )
             assert retry.status_code == 200, retry.text
@@ -247,6 +269,7 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                     "workspace_id": workspace_id,
                     "owner_type": "user",
                     "owner_id": user_id,
+                    "membership_generation": 1,
                     "credential": "bearer-credential",
                     "consent_granted": True,
                 },
@@ -258,7 +281,11 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                 is_agent = installation["scope_type"] == "agent"
                 await ac.delete(
                     f"/api/v1/internal/mcp/servers/{server['id']}/connections/{user_id}",
-                    params={"workspace_id": workspace_id, "owner_type": "user"},
+                    params={
+                        "workspace_id": workspace_id,
+                        "owner_type": "user",
+                        "membership_generation": 1,
+                    },
                 )
                 await ac.delete(
                     f"/api/v1/internal/mcp/servers/{server['id']}",
@@ -274,4 +301,5 @@ async def test_target_and_agent_credentials_use_independent_header_formats() -> 
                         ),
                     },
                 )
+            await ac.delete(f"/api/v1/internal/mcp/workspaces/{workspace_id}")
             app.dependency_overrides.clear()

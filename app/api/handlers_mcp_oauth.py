@@ -22,17 +22,19 @@ from app.api.mcp_admin_schemas import (
 )
 from app.api.mcp_admin_validation import registered_server_request_context
 from app.api.mcp_connection_responses import connection_response
+from app.api.mcp_lifecycle_guard import assert_guarded_user_active, guarded_server_operation
 from app.auth.service_token import require_admin_service_token
 from app.mcp.connections import ConnectionOwner, mcp_connection_store
 from app.mcp.header_policy import build_mcp_request_headers
 from app.mcp.oauth.errors import McpOAuthError
+from app.mcp.oauth.flow_store import oauth_flow_store
 from app.mcp.oauth.service import (
     complete_authorization,
     prepare_authorization,
     start_authorization,
 )
 from app.mcp.registry.store import mcp_server_registry
-from app.mcp.remote_policy import require_remote_mcp_enabled
+from app.mcp.remote_policy import require_mcp_oauth_enabled, require_remote_mcp_enabled
 from app.mcp.tool_definition_policy import McpToolDefinitionConflictError
 from app.observability.metrics import (
     GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL,
@@ -203,6 +205,7 @@ async def prepare_mcp_oauth(
     response.headers["Cache-Control"] = "no-store"
     if request.owner_id != owner_id:
         raise HTTPException(status_code=422, detail="Connection owner does not match route")
+    require_mcp_oauth_enabled()
     require_remote_mcp_enabled()
     server = await _oauth_server(request.workspace_id, server_id)
     await _check_mutation_rate_limit(
@@ -211,13 +214,24 @@ async def prepare_mcp_oauth(
         ConnectionOwner("user", owner_id),
     )
     try:
-        handle, preparation = await prepare_authorization(
-            server=server,
-            workspace_id=request.workspace_id,
-            owner_id=owner_id,
-            browser_binding_hash=request.browser_binding_hash,
-            return_path=request.return_path,
-        )
+        async with guarded_server_operation(
+            request.workspace_id,
+            server_id,
+            expected_credential_epoch=int(getattr(server, "credential_epoch", 1) or 1),
+        ) as current_server:
+            await assert_guarded_user_active(
+                request.workspace_id,
+                owner_id,
+                request.membership_generation,
+            )
+            handle, preparation = await prepare_authorization(
+                server=current_server,
+                workspace_id=request.workspace_id,
+                owner_id=owner_id,
+                membership_generation=request.membership_generation,
+                browser_binding_hash=request.browser_binding_hash,
+                return_path=request.return_path,
+            )
     except McpOAuthError as error:
         GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL.labels(
             stage="prepare",
@@ -255,22 +269,36 @@ async def start_mcp_oauth(
     response.headers["Cache-Control"] = "no-store"
     if request.owner_id != owner_id:
         raise HTTPException(status_code=422, detail="Connection owner does not match route")
-    await _oauth_server(request.workspace_id, server_id)
+    require_mcp_oauth_enabled()
+    require_remote_mcp_enabled()
     await _check_mutation_rate_limit(
         request.workspace_id,
         server_id,
         ConnectionOwner("user", owner_id),
     )
     try:
-        authorization_url, _state, metadata_changed = await start_authorization(
-            preparation_handle=request.preparation_handle,
-            workspace_id=request.workspace_id,
-            server_id=server_id,
-            owner_id=owner_id,
-            browser_binding_hash=request.browser_binding_hash,
-            issuer=request.issuer,
-            consent_granted=request.consent_granted,
-        )
+        preparation = await oauth_flow_store.get_preparation(request.preparation_handle)
+        async with guarded_server_operation(
+            request.workspace_id,
+            server_id,
+            expected_credential_epoch=preparation.credential_epoch,
+        ):
+            await _oauth_server(request.workspace_id, server_id)
+            await assert_guarded_user_active(
+                request.workspace_id,
+                owner_id,
+                request.membership_generation,
+            )
+            authorization_url, state, metadata_changed = await start_authorization(
+                preparation_handle=request.preparation_handle,
+                workspace_id=request.workspace_id,
+                server_id=server_id,
+                owner_id=owner_id,
+                membership_generation=request.membership_generation,
+                browser_binding_hash=request.browser_binding_hash,
+                issuer=request.issuer,
+                consent_granted=request.consent_granted,
+            )
     except McpOAuthError as error:
         GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL.labels(
             stage="start",
@@ -285,6 +313,7 @@ async def start_mcp_oauth(
     ).inc()
     return McpOAuthStartResponse(
         authorization_url=authorization_url,
+        state=state,
         metadata_changed=metadata_changed,
     )
 
@@ -299,17 +328,31 @@ async def complete_mcp_oauth(
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpOAuthCompleteResponse:
     response.headers["Cache-Control"] = "no-store"
+    require_mcp_oauth_enabled()
+    require_remote_mcp_enabled()
     try:
-        flow, _bundle, connection = await complete_authorization(
-            code=request.code,
-            state=request.state,
-            issuer=request.issuer,
-            provider_error=request.provider_error,
-            owner_id=request.owner_id,
-            browser_binding_hash=request.browser_binding_hash,
-            verify_connection=_verify_completed_authorization,
-        )
-        server = await _oauth_server(flow.workspace_id, flow.server_id)
+        flow_snapshot = await oauth_flow_store.get_flow(request.state)
+        async with guarded_server_operation(
+            flow_snapshot.workspace_id,
+            flow_snapshot.server_id,
+            expected_credential_epoch=flow_snapshot.credential_epoch,
+        ):
+            await assert_guarded_user_active(
+                flow_snapshot.workspace_id,
+                flow_snapshot.owner_id,
+                request.membership_generation,
+            )
+            flow, _bundle, connection = await complete_authorization(
+                code=request.code,
+                state=request.state,
+                issuer=request.issuer,
+                provider_error=request.provider_error,
+                owner_id=request.owner_id,
+                membership_generation=request.membership_generation,
+                browser_binding_hash=request.browser_binding_hash,
+                verify_connection=_verify_completed_authorization,
+            )
+            server = await _oauth_server(flow.workspace_id, flow.server_id)
     except McpOAuthError as error:
         GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL.labels(
             stage="complete",

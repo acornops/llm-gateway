@@ -144,6 +144,12 @@ GATEWAY_MCP_SECRET_CLEANUP_TOTAL = Counter(
     ["reason", "outcome"],
 )
 
+GATEWAY_MCP_USER_LIFECYCLE_CONNECTIONS_DRAINED_TOTAL = Counter(
+    "gateway_mcp_user_lifecycle_connections_drained_total",
+    "Individual MCP connections drained by generation-bound user lifecycle reconciliation",
+    ["reason"],
+)
+
 GATEWAY_MCP_OAUTH_OPERATIONS_TOTAL = Counter(
     "gateway_mcp_oauth_operations_total",
     "MCP OAuth operation outcomes by bounded stage and registration method",

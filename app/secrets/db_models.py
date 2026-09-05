@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, UUID, Column, DateTime, Integer, LargeBinary, String
+from sqlalchemy import JSON, UUID, Column, DateTime, Index, Integer, LargeBinary, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
@@ -10,6 +10,13 @@ Base = declarative_base()
 
 class Secret(Base):
     __tablename__ = "gateway_secrets"
+    __table_args__ = (
+        Index(
+            "ix_gateway_secrets_tenant_scope_name",
+            "tenant_scope",
+            "secret_name",
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_scope = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False)

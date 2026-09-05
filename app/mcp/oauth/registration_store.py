@@ -12,9 +12,12 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import settings
+from app.mcp.identity import canonical_mcp_server_id
 from app.mcp.oauth.models import OAuthEndpointSnapshot, OAuthRegistrationMethod
 from app.mcp.registry.models import McpOAuthRegistration, McpServer
 from app.outbound_tls import sqlalchemy_connection_config
+
+_ADVISORY_LOCK_POOL_SIZE = 2
 
 
 class OAuthRegistrationStore:
@@ -23,11 +26,24 @@ class OAuthRegistrationStore:
     def __init__(self, database_url: str) -> None:
         database_url, connect_args = sqlalchemy_connection_config(database_url)
         self.engine = create_async_engine(database_url, connect_args=connect_args)
+        self._supports_advisory_locks = self.engine.dialect.name == "postgresql"
+        self._advisory_lock_engine = (
+            create_async_engine(
+                database_url,
+                connect_args=connect_args,
+                pool_size=_ADVISORY_LOCK_POOL_SIZE,
+                max_overflow=0,
+            )
+            if self._supports_advisory_locks
+            else None
+        )
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
         self._locks: dict[tuple[str, str, str], tuple[asyncio.Lock, int]] = {}
         self._locks_guard = asyncio.Lock()
 
     async def close(self) -> None:
+        if self._advisory_lock_engine is not None:
+            await self._advisory_lock_engine.dispose()
         await self.engine.dispose()
 
     @asynccontextmanager
@@ -39,13 +55,13 @@ class OAuthRegistrationStore:
     ) -> AsyncIterator[None]:
         """Serialize registration across gateway replicas in production."""
 
-        identity = (workspace_id, server_id, issuer)
+        identity = (workspace_id, canonical_mcp_server_id(server_id), issuer)
         async with self._locks_guard:
             lock, users = self._locks.get(identity, (asyncio.Lock(), 0))
             self._locks[identity] = (lock, users + 1)
         try:
             async with lock:
-                if (settings.NODE_ENV or settings.APP_ENV).strip().lower() != "production":
+                if not self._supports_advisory_locks:
                     yield
                     return
                 material = "\0".join(identity).encode()
@@ -54,8 +70,9 @@ class OAuthRegistrationStore:
                     byteorder="big",
                     signed=True,
                 )
+                assert self._advisory_lock_engine is not None
                 async with (
-                    self.engine.connect() as connection,
+                    self._advisory_lock_engine.connect() as connection,
                     connection.begin(),
                 ):
                     await connection.execute(

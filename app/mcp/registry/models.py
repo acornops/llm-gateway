@@ -3,11 +3,11 @@ import uuid
 from sqlalchemy import (
     JSON,
     UUID,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
-    ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -23,6 +23,13 @@ from app.secrets.db_models import Base
 class Tool(Base):
     __tablename__ = "gateway_tools"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["server_id", "mcp_server_url"],
+            ["gateway_mcp_servers.id", "gateway_mcp_servers.server_url"],
+            name="fk_gateway_tools_server_endpoint",
+            onupdate="CASCADE",
+            ondelete="CASCADE",
+        ),
         UniqueConstraint(
             "server_id",
             "tool_name",
@@ -35,7 +42,6 @@ class Tool(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     server_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("gateway_mcp_servers.id", ondelete="CASCADE"),
         nullable=False,
     )
     workspace_id = Column(String, nullable=False)
@@ -93,17 +99,29 @@ class McpServer(Base):
             name="uq_gateway_mcp_servers_ws_agent_url",
         ),
         UniqueConstraint("id", "workspace_id", name="uq_gateway_mcp_servers_id_workspace"),
+        UniqueConstraint("id", "server_url", name="uq_gateway_mcp_servers_id_server_url"),
         Index("ix_gateway_mcp_servers_workspace_target", "workspace_id", "target_id"),
         Index("ix_gateway_mcp_servers_workspace_agent", "workspace_id", "agent_id"),
         Index(
-            "uq_gateway_mcp_servers_builtin_destination",
+            "uq_gateway_mcp_servers_builtin_target_destination",
             "workspace_id",
-            "scope_type",
             "target_id",
             "target_type",
             unique=True,
-            postgresql_where=text("provenance_type='builtin'"),
-            sqlite_where=text("provenance_type='builtin'"),
+            postgresql_where=text(
+                "provenance_type='builtin' AND scope_type='target'"
+            ),
+            sqlite_where=text("provenance_type='builtin' AND scope_type='target'"),
+        ),
+        Index(
+            "uq_gateway_mcp_servers_builtin_agent_destination",
+            "workspace_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text(
+                "provenance_type='builtin' AND scope_type='agent'"
+            ),
+            sqlite_where=text("provenance_type='builtin' AND scope_type='agent'"),
         ),
         CheckConstraint(
             "provenance_type IN ('manual','catalog','builtin')",
@@ -130,6 +148,7 @@ class McpServer(Base):
     public_headers = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     credential_mode = Column(String, nullable=False, default="none")
     credential_transitioning = Column(Boolean, nullable=False, default=False)
+    credential_epoch = Column(Integer, nullable=False, default=1)
     catalog_source_id = Column(UUID(as_uuid=True), nullable=True)
     catalog_artifact_name = Column(String, nullable=True)
     catalog_version = Column(String, nullable=True)
@@ -145,6 +164,58 @@ class McpServer(Base):
     last_discovery_error = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class McpLifecycleFence(Base):
+    """Durable terminal tombstone for an MCP workspace or destination."""
+
+    __tablename__ = "gateway_mcp_lifecycle_fences"
+    __table_args__ = (
+        CheckConstraint(
+            "scope_type IN ('workspace','agent','target')",
+            name="ck_gateway_mcp_lifecycle_fence_scope_type",
+        ),
+        CheckConstraint(
+            "(scope_type = 'workspace' AND destination_id IS NULL AND target_type IS NULL) OR "
+            "(scope_type = 'agent' AND destination_id IS NOT NULL AND target_type IS NULL) OR "
+            "(scope_type = 'target' AND destination_id IS NOT NULL AND target_type IS NOT NULL)",
+            name="ck_gateway_mcp_lifecycle_fence_scope_shape",
+        ),
+        Index("ix_gateway_mcp_lifecycle_fences_workspace", "workspace_id"),
+    )
+
+    workspace_id = Column(String, primary_key=True)
+    fence_key = Column(String, primary_key=True)
+    scope_type = Column(String, nullable=False)
+    destination_id = Column(String, nullable=True)
+    target_type = Column(String, nullable=True)
+    epoch = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class McpUserLifecycle(Base):
+    """Trusted control-plane membership generation for one workspace user."""
+
+    __tablename__ = "gateway_mcp_user_lifecycles"
+    __table_args__ = (
+        CheckConstraint(
+            "membership_generation > 0 AND membership_generation <= 9007199254740991",
+            name="ck_gateway_mcp_user_lifecycle_generation_positive",
+        ),
+        CheckConstraint(
+            "status IN ('active','removed','activating')",
+            name="ck_gateway_mcp_user_lifecycle_status",
+        ),
+        Index("ix_gateway_mcp_user_lifecycles_workspace", "workspace_id"),
+    )
+
+    workspace_id = Column(String, primary_key=True)
+    user_id = Column(String, primary_key=True)
+    membership_generation = Column(BigInteger, nullable=False)
+    status = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
 
 
 class ApprovalReceiptUse(Base):
@@ -182,6 +253,11 @@ class McpConnection(Base):
             name="ck_gateway_mcp_connection_owner_type",
         ),
         CheckConstraint(
+            "membership_generation IS NULL OR "
+            "(membership_generation > 0 AND membership_generation <= 9007199254740991)",
+            name="ck_gateway_mcp_connection_generation_positive",
+        ),
+        CheckConstraint(
             "(owner_type = 'installation' AND owner_id = 'installation') OR "
             "(owner_type = 'user' AND length(owner_id) > 0)",
             name="ck_gateway_mcp_connection_owner_id",
@@ -200,6 +276,7 @@ class McpConnection(Base):
     )
     owner_type = Column(String, nullable=False)
     owner_id = Column(String, nullable=False)
+    membership_generation = Column(BigInteger, nullable=True)
     status = Column(String, nullable=False, default="error")
     verified_tool_names = Column(
         JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list

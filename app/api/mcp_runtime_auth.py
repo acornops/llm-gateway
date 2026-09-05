@@ -12,6 +12,14 @@ from app.mcp.connections import (
     resolve_connection_owner,
 )
 from app.mcp.header_policy import build_mcp_request_headers
+from app.mcp.lifecycle import (
+    McpCredentialTransitioningError,
+    McpLifecycleEpochChangedError,
+    McpLifecycleFencedError,
+    McpLifecycleServerNotFoundError,
+    McpUserLifecycleStaleError,
+    mcp_lifecycle_store,
+)
 from app.mcp.oauth.errors import McpOAuthError
 from app.mcp.oauth.scopes import normalize_oauth_scopes
 from app.mcp.oauth.tokens import oauth_token_service
@@ -49,7 +57,7 @@ def _principal(claims: TokenClaims) -> tuple[str | None, str | None]:
     return claims.principal.type, claims.principal.id
 
 
-async def mark_connection_error(
+async def _mark_connection_error_locked(
     server,
     claims: TokenClaims,
     *,
@@ -65,6 +73,12 @@ async def mark_connection_error(
         return
     if owner is None:
         return
+    if owner.owner_type == "user":
+        await mcp_lifecycle_store.assert_user_active(
+            claims.workspace_id,
+            owner.owner_id,
+            getattr(claims.principal, "membership_generation", None),
+        )
     async with mcp_connection_store.mutation_lock(
         claims.workspace_id,
         str(server.id),
@@ -76,6 +90,12 @@ async def mark_connection_error(
             owner,
         )
         if connection is None:
+            return
+        if (
+            owner.owner_type == "user"
+            and getattr(connection, "membership_generation", None)
+            != getattr(claims.principal, "membership_generation", None)
+        ):
             return
         if (
             expected_connection_id is not None
@@ -138,6 +158,46 @@ async def mark_connection_error(
         GATEWAY_MCP_RUNTIME_AUTH_REJECTIONS_TOTAL.labels(scope_type=claims.scope.type).inc()
 
 
+async def mark_connection_error(
+    server,
+    claims: TokenClaims,
+    *,
+    auth_error: str | None = None,
+    required_scopes: list[str] | None = None,
+    expected_connection_id: str | None = None,
+    expected_credential_fingerprint: str | None = None,
+) -> None:
+    """Persist an auth rejection only while its server snapshot is current.
+
+    A teardown or trust transition that wins the lifecycle fence makes this
+    stale post-response update a no-op, preventing connection rows or secret
+    state from being recreated after terminal cleanup.
+    """
+
+    try:
+        async with mcp_lifecycle_store.server_operation(
+            claims.workspace_id,
+            str(server.id),
+            expected_credential_epoch=int(getattr(server, "credential_epoch", 1) or 1),
+        ) as current_server:
+            await _mark_connection_error_locked(
+                current_server,
+                claims,
+                auth_error=auth_error,
+                required_scopes=required_scopes,
+                expected_connection_id=expected_connection_id,
+                expected_credential_fingerprint=expected_credential_fingerprint,
+            )
+    except (
+        McpCredentialTransitioningError,
+        McpLifecycleEpochChangedError,
+        McpLifecycleFencedError,
+        McpLifecycleServerNotFoundError,
+        McpUserLifecycleStaleError,
+    ):
+        return
+
+
 async def connection_request_headers(
     server,
     claims: TokenClaims,
@@ -175,7 +235,38 @@ async def connection_request_headers(
         return McpRequestHeaders(
             build_mcp_request_headers(server, None, platform_headers=platform_headers)
         )
+    membership_generation = getattr(claims.principal, "membership_generation", None)
+    if owner.owner_type == "user":
+        try:
+            await mcp_lifecycle_store.assert_user_active(
+                claims.workspace_id,
+                owner.owner_id,
+                membership_generation,
+            )
+        except McpUserLifecycleStaleError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "MCP_USER_LIFECYCLE_STALE",
+                    "message": "The workspace membership generation is no longer active.",
+                    "retryable": False,
+                },
+            ) from exc
     connection = await mcp_connection_store.get(claims.workspace_id, str(server.id), owner)
+    if (
+        connection is not None
+        and owner.owner_type == "user"
+        and getattr(connection, "membership_generation", None)
+        != membership_generation
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MCP_USER_LIFECYCLE_STALE",
+                "message": "The workspace membership generation is no longer active.",
+                "retryable": False,
+            },
+        )
     if not mcp_connection_store.is_ready(connection):
         GATEWAY_MCP_READINESS_FAILURES_TOTAL.labels(
             scope_type=claims.scope.type, reason="connection_not_ready"

@@ -5,6 +5,7 @@ from urllib.parse import urlparse, urlunparse
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from app.mcp.header_policy import validate_public_headers
+from app.secrets.mcp_names import matches_generated_catalog_secret_name
 from app.target_types import TargetType
 
 ArtifactKind = Literal["mcp_server", "agent_skill"]
@@ -59,6 +60,18 @@ class CatalogSourceCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_auth(self) -> Self:
+        if (
+            self.management_mode == "workspace"
+            and self.auth_secret_name
+            and matches_generated_catalog_secret_name(self.auth_secret_name)
+        ):
+            raise ValueError(
+                "auth_secret_name uses a gateway-managed catalog secret namespace"
+            )
+        if self.auth_secret_name and self.auth_secret_value:
+            raise ValueError(
+                "auth_secret_name cannot be supplied with a write-only credential"
+            )
         if self.auth_type == "none" and any(
             (self.auth_secret_name, self.auth_secret_value, self.auth_header_name)
         ):

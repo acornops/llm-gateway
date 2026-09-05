@@ -137,6 +137,7 @@ async def resolve_registered_tool(
     target_type: str | None = None,
     scope_type: str = "target",
     registry: ToolRegistry = tool_registry,
+    fresh: bool = False,
 ):
     if req.tool_ref is None:
         return None
@@ -151,6 +152,7 @@ async def resolve_registered_tool(
         destination_id,
         req.tool_ref.tool_name,
         server_id=server_id,
+        bypass_cache=fresh,
         **registry_scope,
     )
     if tool is None:

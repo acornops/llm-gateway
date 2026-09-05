@@ -3,9 +3,6 @@ from urllib.parse import parse_qsl, urlparse
 
 from fastapi import HTTPException
 
-from app.api.mcp_admin_schemas import McpServerCreateRequest
-from app.config.settings import settings
-
 _SECRET_QUERY_KEYS = {
     "access_token",
     "api_key",
@@ -48,7 +45,10 @@ def validate_remote_mcp_endpoint_contract(value: str) -> None:
         raise HTTPException(status_code=400, detail="MCP endpoint must not include credentials")
     if parsed.fragment:
         raise HTTPException(status_code=400, detail="MCP endpoint must not include a fragment")
-    query_keys = {key.strip().lower() for key, _value in parse_qsl(parsed.query)}
+    query_keys = {
+        key.strip().lower()
+        for key, _value in parse_qsl(parsed.query, keep_blank_values=True)
+    }
     if query_keys & _SECRET_QUERY_KEYS:
         raise HTTPException(
             status_code=400,
@@ -128,16 +128,3 @@ def registry_request_headers(
         headers["x-target-id"] = destination_id
         headers["x-target-type"] = registry_scope["target_type"]
     return headers
-
-
-def is_builtin_bridge_registration(request: McpServerCreateRequest) -> bool:
-    return (
-        request.server_url == settings.BUILTIN_TARGET_MCP_SERVER_URL
-        and request.auth_type == "none"
-        and request.credential_mode == "none"
-        and request.auth_header_name is None
-        and request.auth_header_prefix is None
-        and request.public_headers is None
-        and len(request.tools) > 0
-        and all(tool.source == "builtin" for tool in request.tools)
-    )

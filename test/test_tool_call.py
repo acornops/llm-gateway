@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.handlers_tool_call import (
     BUILTIN_MCP_BRIDGE_NOT_CONFIGURED,
+    _builtin_dispatch_url,
     _mark_unknown_write_contract,
     _tool_execution_error_response,
     _tool_transport_error_response,
@@ -49,6 +50,39 @@ BASE_CLAIMS = {
         "max_output_tokens": 4096,
     },
 }
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"server_url": "https://attacker.example.test/mcp"},
+        {"auth_type": "bearer_token"},
+        {"credential_mode": "workspace"},
+        {"auth_header_name": "Authorization"},
+        {"auth_header_prefix": "Bearer "},
+        {"public_headers": {"x-forwarded-secret": "1"}},
+        {"credential_transitioning": True},
+    ],
+)
+def test_builtin_dispatch_rejects_any_noncanonical_trust_field(override) -> None:
+    values = {
+        "id": EXAMPLE_SERVER_ID,
+        "workspace_id": EXAMPLE_WORKSPACE_ID,
+        "server_url": "http://control-plane:8081/internal/v1/mcp",
+        "auth_type": "none",
+        "credential_mode": "none",
+        "auth_header_name": None,
+        "auth_header_prefix": None,
+        "public_headers": {},
+        "credential_transitioning": False,
+    }
+    values.update(override)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _builtin_dispatch_url(SimpleNamespace(**values))
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == BUILTIN_MCP_BRIDGE_NOT_CONFIGURED
 
 
 def test_post_dispatch_write_timeout_is_not_retryable():
@@ -232,16 +266,83 @@ async def test_tool_call_contract():
                 assert data["context_meta"]["strategy"] == "mcp_content"
                 assert data["artifact_eligible"] is False
                 assert data["is_error"] is False
-                mock_get_tool.assert_awaited_once_with(
+                assert mock_get_tool.await_count == 1
+                mock_get_tool.assert_awaited_with(
                     EXAMPLE_WORKSPACE_ID,
                     EXAMPLE_TARGET_ID,
                     "get_weather",
                     target_type="kubernetes",
                     scope_type="target",
                     server_id=EXAMPLE_SERVER_ID,
+                    bypass_cache=True,
                 )
             finally:
                 app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_fresh_schema_under_server_lock_is_the_only_argument_authority() -> None:
+    mock_claims = build_token_claims()
+    stale_tool = reviewed_tool(
+        input_schema={
+            "type": "object",
+            "required": ["removed_argument"],
+        }
+    )
+    current_tool = reviewed_tool(
+        input_schema={
+            "type": "object",
+            "properties": {"new_argument": {"type": "string"}},
+            "required": ["new_argument"],
+        }
+    )
+
+    async def cached_or_fresh(*_args, **kwargs):
+        return current_tool if kwargs.get("bypass_cache") else stale_tool
+
+    get_tool = AsyncMock(side_effect=cached_or_fresh)
+    call_tool = AsyncMock(
+        return_value={"content": [{"type": "text", "text": "ok"}], "isError": False}
+    )
+    with (
+        patch(
+            "app.api.handlers_tool_call.tool_registry.get_tool",
+            new=get_tool,
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new=AsyncMock(return_value=enabled_server()),
+        ),
+        patch(
+            "app.api.handlers_tool_call.mcp_transport.call_tool",
+            new=call_tool,
+        ),
+    ):
+        from app.auth.claims import TokenClaims
+        from app.auth.jwt_validator import validator
+
+        async def override_validate():
+            return TokenClaims(**mock_claims)
+
+        app.dependency_overrides[validator.validate] = override_validate
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/v1/mcp/tool-call",
+                    json=build_tool_call_payload(
+                        arguments={"new_argument": "accepted"}
+                    ),
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert get_tool.await_count == 1
+    assert get_tool.await_args.kwargs["bypass_cache"] is True
+    call_tool.assert_awaited_once()
 
 
 @pytest.mark.anyio
@@ -275,6 +376,11 @@ async def test_tool_call_rejects_permission_and_scope_mismatches(
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool", new_callable=AsyncMock
         ) as mock_call_tool,
+        patch(
+            "app.api.handlers_tool_call.mcp_server_registry.get_server",
+            new_callable=AsyncMock,
+            return_value=enabled_server(),
+        ),
     ):
         mock_get_tool.return_value = reviewed_tool()
         from app.auth.claims import TokenClaims
@@ -356,6 +462,7 @@ async def test_tool_call_sanitizes_server_auth_backend_failures():
         review_state="approved",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
@@ -520,7 +627,7 @@ async def test_tool_call_validates_input_schema():
         patch(
             "app.api.handlers_tool_call.mcp_server_registry.get_server",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=enabled_server(),
         ),
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool", new_callable=AsyncMock
@@ -564,13 +671,14 @@ async def test_tool_call_merges_public_and_secret_headers():
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
         tool_name="get_weather",
-        mcp_server_url="http://mock-mcp:8002",
+        mcp_server_url="http://stale-mcp:8002",
         enabled=True,
         timeout_ms=10000,
         capability="read",
         review_state="approved",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
@@ -633,6 +741,7 @@ async def test_tool_call_merges_public_and_secret_headers():
                 )
 
             assert response.status_code == 200
+            assert mock_call_tool.await_args.args[0] == "http://mock-mcp:8002"
             mock_connection_headers.assert_awaited_once_with(
                 mock_server,
                 ANY,
@@ -673,16 +782,18 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
         source="builtin",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
         server_name="acornops-target-agent",
         server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
-        auth_type="bearer_token",
-        auth_header_name="Authorization",
-        auth_header_prefix="Bearer ",
-        public_headers={"x-public-header": "true", "x-run-id": "spoofed"},
+        auth_type="none",
+        credential_mode="none",
+        auth_header_name=None,
+        auth_header_prefix=None,
+        public_headers={},
         provenance_type="builtin",
     )
 
@@ -763,6 +874,7 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         capability="read",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
@@ -770,6 +882,11 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
         server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
         auth_type="none",
+        credential_mode="none",
+        credential_transitioning=False,
+        auth_header_name=None,
+        auth_header_prefix=None,
+        public_headers={},
         provenance_type="builtin",
     )
 
@@ -822,14 +939,16 @@ async def test_workspace_workflow_builtin_tool_requires_registry_entry_and_forwa
             assert payload["model_context"] == {"tools": ["mcp.tools.list"]}
             assert payload["artifact_eligible"] is False
             assert payload["is_error"] is False
-            mock_get_tool.assert_awaited_once_with(
+            assert mock_get_tool.await_count == 1
+            mock_get_tool.assert_awaited_with(
                 EXAMPLE_WORKSPACE_ID,
                 "agent-1",
                 "mcp.tools.list",
                 scope_type="agent",
                 server_id=EXAMPLE_SERVER_ID,
+                bypass_cache=True,
             )
-            mock_get_server.assert_awaited_once()
+            assert mock_get_server.await_count == 2
             mock_call_tool.assert_not_awaited()
             assert mock_builtin_call.await_args.args[0] == "http://control-plane:8081/internal/v1/mcp"
             assert mock_builtin_call.await_args.args[1] == "mcp.tools.list"
@@ -867,6 +986,7 @@ async def test_workspace_only_workflow_does_not_fall_through_to_target_registry(
         patch(
             "app.api.handlers_tool_call.mcp_server_registry.get_server",
             new_callable=AsyncMock,
+            return_value=None,
         ) as mock_get_server,
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool",
@@ -902,14 +1022,13 @@ async def test_workspace_only_workflow_does_not_fall_through_to_target_registry(
                 )
 
             assert response.status_code == 404
-            mock_get_tool.assert_awaited_once_with(
+            mock_get_tool.assert_not_awaited()
+            mock_get_server.assert_awaited_once_with(
                 EXAMPLE_WORKSPACE_ID,
                 "agent-1",
-                "records.list",
+                EXAMPLE_SERVER_ID,
                 scope_type="agent",
-                server_id=EXAMPLE_SERVER_ID,
             )
-            mock_get_server.assert_not_awaited()
             mock_call_tool.assert_not_awaited()
             mock_builtin_call.assert_not_awaited()
         finally:
@@ -936,7 +1055,7 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         scope_type="agent",
         agent_id="agent-1",
         tool_name="records.list",
-        mcp_server_url="https://mcp.example.com/v1",
+        mcp_server_url="https://stale-mcp.example.com/v1",
         enabled=True,
         timeout_ms=10000,
         source="mcp",
@@ -944,6 +1063,7 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
         review_state="approved",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
@@ -998,6 +1118,7 @@ async def test_workspace_workflow_tool_call_executes_enabled_remote_registry_too
             assert response.status_code == 200
             assert response.json()["is_error"] is False
             mock_builtin_call.assert_not_awaited()
+            assert mock_call_tool.await_args.args[0] == "https://mcp.example.com/v1"
             headers = mock_call_tool.await_args.args[4]
             assert headers["x-workspace-id"] == EXAMPLE_WORKSPACE_ID
             assert headers["x-workflow-execution-id"] == "workflow-execution-1"
@@ -1045,6 +1166,7 @@ async def test_workspace_workflow_write_tool_forwards_only_declared_arguments():
         },
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         scope_type="agent",
         agent_id="agent-1",
@@ -1157,6 +1279,7 @@ async def test_builtin_source_does_not_forward_run_token_to_non_builtin_server()
         capability="read",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
@@ -1223,6 +1346,7 @@ async def test_tool_call_rejects_invalid_secret_header_value():
         review_state="approved",
     )
     mock_server = McpServer(
+        id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",

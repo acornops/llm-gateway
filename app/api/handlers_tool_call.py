@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as jsonschema_validate
 
+from app.api.mcp_lifecycle_guard import guarded_server_operation
 from app.api.mcp_runtime_auth import (
     connection_request_headers,
     mark_connection_error,
@@ -47,6 +48,34 @@ MCP_SERVER_DISABLED = "MCP server is disabled for this target"
 MCP_SERVER_AUTH_NOT_CONFIGURED = "MCP server authentication is not configured"
 BUILTIN_MCP_BRIDGE_NOT_CONFIGURED = "Builtin MCP bridge is not configured for this target"
 WORKFLOW_BUILTIN_TOOL_TIMEOUT_MS = 10000
+
+
+def _builtin_dispatch_url(server) -> str:
+    """Return the pinned bridge only for an exact secret-free built-in row."""
+
+    canonical_url = settings.BUILTIN_TARGET_MCP_SERVER_URL
+    if any(
+        (
+            server.server_url != canonical_url,
+            getattr(server, "auth_type", "none") != "none",
+            getattr(server, "credential_mode", "none") != "none",
+            getattr(server, "auth_header_name", None) is not None,
+            getattr(server, "auth_header_prefix", None) is not None,
+            bool(getattr(server, "public_headers", None)),
+            bool(getattr(server, "credential_transitioning", False)),
+        )
+    ):
+        logger.error(
+            "tool_call_builtin_bridge_trust_invalid",
+            workspace_id=getattr(server, "workspace_id", None),
+            server_id=str(getattr(server, "id", "")),
+            server_url=loggable_mcp_server_origin(server.server_url),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED,
+        )
+    return canonical_url
 
 
 def _enforce_reviewed_authority(tool, server, req: ToolCallRequest, claims: TokenClaims) -> bool:
@@ -97,6 +126,38 @@ async def _authorize_tool_dispatch(tool, server, req: ToolCallRequest, claims: T
             else 403,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
+
+
+def _enforce_current_tool_operation(
+    tool,
+    req: ToolCallRequest,
+    claims: TokenClaims,
+) -> None:
+    current_operation = "read" if tool.capability == "read" else "write"
+    token_operation = claims.permissions.allowed_tool_operations.get(req.tool)
+    if (
+        current_operation == "write"
+        and token_operation != "write"
+        or current_operation == "read"
+        and token_operation not in (None, "read")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MCP_TOOL_AUTHORITY_CHANGED",
+                "message": "The MCP tool authority changed after this run was authorized.",
+                "serverId": str(tool.server_id),
+                "toolName": tool.tool_name,
+            },
+        )
+    if current_operation == "write" and not req.tool_call_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "WRITE_IDEMPOTENCY_KEY_REQUIRED",
+                "message": "Write tool calls require a stable tool_call_id",
+            },
+        )
 
 
 @router.post("/tool-call", response_model=ToolCallResponse)
@@ -155,94 +216,119 @@ async def execute_tool_call(
     dispatch_target_id = req.target_id
     dispatch_target_type = req.target_type
     target_tool_arguments = dict(req.arguments)
-    agent_tool = None
+    agent_server = None
     if claims.agent_id:
-        agent_tool = await resolve_registered_tool(
-            req,
-            destination_id=claims.agent_id,
+        agent_server = await mcp_server_registry.get_server(
+            req.workspace_id,
+            claims.agent_id,
+            req.tool_ref.server_id,
             scope_type="agent",
-            registry=tool_registry,
         )
-    if agent_tool is not None:
-        tool = agent_tool
-        if not tool_ref_is_permitted(tool, req, claims):
-            raise HTTPException(
-                status_code=403, detail=f"Tool {req.tool} is not permitted for this run"
-            )
-        if tool.input_schema:
-            try:
-                jsonschema_validate(instance=req.arguments, schema=tool.input_schema)
-            except JsonSchemaValidationError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "TOOL_ARGS_INVALID",
-                        "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
-                    },
-                ) from exc
+    if agent_server is not None:
+        server = agent_server
         tool_arguments = dict(req.arguments)
-        if (
-            claims.permissions.allowed_tool_operations.get(req.tool) == "write"
-            and not req.tool_call_id
+        async with guarded_server_operation(
+            req.workspace_id,
+            str(server.id),
+            expected_credential_epoch=int(getattr(server, "credential_epoch", 1) or 1),
         ):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "WRITE_IDEMPOTENCY_KEY_REQUIRED",
-                    "message": "Write tool calls require a stable tool_call_id",
-                },
-            )
-        server = (
-            await mcp_server_registry.get_server(
+            current_server = await mcp_server_registry.get_server(
                 req.workspace_id,
                 claims.agent_id,
-                str(tool.server_id),
+                str(server.id),
                 scope_type="agent",
             )
-            if tool.server_id
-            else await mcp_server_registry.get_server_by_url(
-                req.workspace_id,
-                claims.agent_id,
-                tool.mcp_server_url,
+            if current_server is None:
+                raise HTTPException(status_code=404, detail="Agent MCP server not found")
+            current_tool = await resolve_registered_tool(
+                req,
+                destination_id=claims.agent_id,
                 scope_type="agent",
+                registry=tool_registry,
+                fresh=True,
             )
-        )
-        if server is None:
-            raise HTTPException(status_code=404, detail="Agent MCP server not found")
-        if not server.enabled:
-            raise HTTPException(status_code=403, detail="MCP server is disabled for this Agent")
-        is_builtin_tool = (
-            tool.source == "builtin" and getattr(server, "provenance_type", "manual") == "builtin"
-        )
-        if (tool.source == "builtin") != (
-            getattr(server, "provenance_type", "manual") == "builtin"
-        ):
-            raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
-
-        await _authorize_tool_dispatch(tool, server, req, claims)
-
-        request_headers: dict[str, str]
-        if is_builtin_tool:
-            request_headers = {"Authorization": f"Bearer {token_context.token}"}
-        else:
-            platform_headers = {
-                "x-workspace-id": req.workspace_id,
-                "x-agent-id": claims.agent_id,
-                "x-run-id": req.run_id,
-            }
-            if req.execution_id:
-                platform_headers["x-workflow-execution-id"] = req.execution_id
-            request_headers = await connection_request_headers(
-                server, claims, tool.tool_name, platform_headers=platform_headers
+            if current_tool is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Agent MCP tool {req.tool} not found or disabled",
+                )
+            if not tool_ref_is_permitted(current_tool, req, claims):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Tool {req.tool} is not permitted for this run",
+                )
+            if str(current_tool.server_id) != str(current_server.id):
+                raise HTTPException(status_code=404, detail="Agent MCP server not found")
+            if not current_server.enabled:
+                raise HTTPException(
+                    status_code=403,
+                    detail="MCP server is disabled for this Agent",
+                )
+            _enforce_current_tool_operation(current_tool, req, claims)
+            if current_tool.input_schema:
+                try:
+                    jsonschema_validate(
+                        instance=tool_arguments,
+                        schema=current_tool.input_schema,
+                    )
+                except JsonSchemaValidationError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "TOOL_ARGS_INVALID",
+                            "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
+                        },
+                    ) from exc
+            tool = current_tool
+            server = current_server
+            dispatch_server_url = server.server_url
+            if tool.mcp_server_url != dispatch_server_url:
+                logger.warning(
+                    "mcp_tool_server_url_mismatch",
+                    workspace_id=req.workspace_id,
+                    scope_type="agent",
+                    destination_id=claims.agent_id,
+                    server_id=str(server.id),
+                    tool_name=tool.tool_name,
+                    tool_url=loggable_mcp_server_origin(tool.mcp_server_url),
+                    server_url=loggable_mcp_server_origin(dispatch_server_url),
+                )
+            is_builtin_tool = (
+                tool.source == "builtin"
+                and getattr(server, "provenance_type", "manual") == "builtin"
             )
-
-        if not is_builtin_tool:
-            require_remote_mcp_enabled()
+            if (tool.source == "builtin") != (
+                getattr(server, "provenance_type", "manual") == "builtin"
+            ):
+                raise HTTPException(
+                    status_code=500,
+                    detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED,
+                )
+            if is_builtin_tool:
+                dispatch_server_url = _builtin_dispatch_url(server)
+            else:
+                require_remote_mcp_enabled()
+            await _authorize_tool_dispatch(tool, server, req, claims)
+            if is_builtin_tool:
+                request_headers: dict[str, str] = {
+                    "Authorization": f"Bearer {token_context.token}"
+                }
+            else:
+                platform_headers = {
+                    "x-workspace-id": req.workspace_id,
+                    "x-agent-id": claims.agent_id,
+                    "x-run-id": req.run_id,
+                }
+                if req.execution_id:
+                    platform_headers["x-workflow-execution-id"] = req.execution_id
+                request_headers = await connection_request_headers(
+                    server, claims, tool.tool_name, platform_headers=platform_headers
+                )
 
         try:
             if is_builtin_tool:
                 mcp_response = await post_builtin_mcp_tool(
-                    tool.mcp_server_url,
+                    dispatch_server_url,
                     tool.tool_name,
                     tool_arguments,
                     tool.timeout_ms,
@@ -252,7 +338,7 @@ async def execute_tool_call(
                 )
             else:
                 mcp_response = await mcp_transport.call_tool(
-                    tool.mcp_server_url,
+                    dispatch_server_url,
                     tool.tool_name,
                     tool_arguments,
                     tool.timeout_ms,
@@ -333,100 +419,126 @@ async def execute_tool_call(
             detail=f"Agent MCP tool {req.tool} not found or disabled",
         )
 
-    # Resolve tool from registry
-    tool = await resolve_registered_tool(
-        req,
-        destination_id=dispatch_target_id,
+    server = await mcp_server_registry.get_server(
+        req.workspace_id,
+        dispatch_target_id,
+        req.tool_ref.server_id,
         target_type=dispatch_target_type,
-        registry=tool_registry,
+        scope_type="target",
     )
-    if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool {req.tool} not found or disabled")
-    if not tool_ref_is_permitted(tool, req, claims):
-        raise HTTPException(
-            status_code=403, detail=f"Tool {req.tool} is not permitted for this run"
-        )
-
-    if tool.input_schema:
-        try:
-            jsonschema_validate(instance=target_tool_arguments, schema=tool.input_schema)
-        except JsonSchemaValidationError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "TOOL_ARGS_INVALID",
-                    "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
-                },
-            ) from exc
-
-    server = (
-        await mcp_server_registry.get_server(
-            req.workspace_id,
-            dispatch_target_id,
-            str(tool.server_id),
-            target_type=dispatch_target_type,
-            scope_type="target",
-        )
-        if tool.server_id
-        else await mcp_server_registry.get_server_by_url(
-            req.workspace_id,
-            dispatch_target_id,
-            tool.mcp_server_url,
-            target_type=dispatch_target_type,
-            scope_type="target",
-        )
-    )
-    if server and not server.enabled:
-        raise HTTPException(
-            status_code=403,
-            detail=MCP_SERVER_DISABLED,
-        )
-
     if server is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    is_builtin_tool = (
-        tool.source == "builtin"
-        and server is not None
-        and getattr(server, "provenance_type", "manual") == "builtin"
-    )
-    if (tool.source == "builtin") != (getattr(server, "provenance_type", "manual") == "builtin"):
-        logger.warning(
-            "tool_call_builtin_bridge_misconfigured",
-            workspace_id=req.workspace_id,
-            target_id=dispatch_target_id,
+    async with guarded_server_operation(
+        req.workspace_id,
+        str(server.id),
+        expected_credential_epoch=int(getattr(server, "credential_epoch", 1) or 1),
+    ):
+        current_server = await mcp_server_registry.get_server(
+            req.workspace_id,
+            dispatch_target_id,
+            str(server.id),
             target_type=dispatch_target_type,
-            tool=req.tool,
-            mcp_server_url=loggable_mcp_server_origin(tool.mcp_server_url),
-            server_name=server.server_name if server else None,
-            server_url=(loggable_mcp_server_origin(server.server_url) if server else None),
+            scope_type="target",
         )
-        raise HTTPException(status_code=500, detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED)
-
-    await _authorize_tool_dispatch(tool, server, req, claims)
-
-    if is_builtin_tool:
-        request_headers: dict[str, str] = {
-            "Authorization": f"Bearer {token_context.token}",
-        }
-    else:
-        platform_headers = {
-            "x-workspace-id": req.workspace_id,
-            "x-target-id": dispatch_target_id,
-            "x-target-type": dispatch_target_type,
-            "x-run-id": req.run_id,
-        }
-        request_headers = await connection_request_headers(
-            server, claims, tool.tool_name, platform_headers=platform_headers
+        if current_server is None:
+            raise HTTPException(status_code=404, detail="MCP server not found")
+        current_tool = await resolve_registered_tool(
+            req,
+            destination_id=dispatch_target_id,
+            target_type=dispatch_target_type,
+            registry=tool_registry,
+            fresh=True,
         )
-
-    if not is_builtin_tool:
-        require_remote_mcp_enabled()
+        if current_tool is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tool {req.tool} not found or disabled",
+            )
+        if not tool_ref_is_permitted(current_tool, req, claims):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Tool {req.tool} is not permitted for this run",
+            )
+        if str(current_tool.server_id) != str(current_server.id):
+            raise HTTPException(status_code=404, detail="MCP server not found")
+        if not current_server.enabled:
+            raise HTTPException(status_code=403, detail=MCP_SERVER_DISABLED)
+        _enforce_current_tool_operation(current_tool, req, claims)
+        if current_tool.input_schema:
+            try:
+                jsonschema_validate(
+                    instance=target_tool_arguments,
+                    schema=current_tool.input_schema,
+                )
+            except JsonSchemaValidationError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "TOOL_ARGS_INVALID",
+                        "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
+                    },
+                ) from exc
+        tool = current_tool
+        server = current_server
+        dispatch_server_url = server.server_url
+        if tool.mcp_server_url != dispatch_server_url:
+            logger.warning(
+                "mcp_tool_server_url_mismatch",
+                workspace_id=req.workspace_id,
+                scope_type="target",
+                destination_id=dispatch_target_id,
+                target_type=dispatch_target_type,
+                server_id=str(server.id),
+                tool_name=tool.tool_name,
+                tool_url=loggable_mcp_server_origin(tool.mcp_server_url),
+                server_url=loggable_mcp_server_origin(dispatch_server_url),
+            )
+        is_builtin_tool = (
+            tool.source == "builtin"
+            and getattr(server, "provenance_type", "manual") == "builtin"
+        )
+        if (tool.source == "builtin") != (
+            getattr(server, "provenance_type", "manual") == "builtin"
+        ):
+            logger.warning(
+                "tool_call_builtin_bridge_misconfigured",
+                workspace_id=req.workspace_id,
+                target_id=dispatch_target_id,
+                target_type=dispatch_target_type,
+                tool=req.tool,
+                mcp_server_url=loggable_mcp_server_origin(tool.mcp_server_url),
+                server_name=server.server_name,
+                server_url=loggable_mcp_server_origin(server.server_url),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=BUILTIN_MCP_BRIDGE_NOT_CONFIGURED,
+            )
+        if is_builtin_tool:
+            dispatch_server_url = _builtin_dispatch_url(server)
+        else:
+            require_remote_mcp_enabled()
+        await _authorize_tool_dispatch(tool, server, req, claims)
+        if is_builtin_tool:
+            request_headers: dict[str, str] = {
+                "Authorization": f"Bearer {token_context.token}",
+            }
+        else:
+            platform_headers = {
+                "x-workspace-id": req.workspace_id,
+                "x-target-id": dispatch_target_id,
+                "x-target-type": dispatch_target_type,
+                "x-run-id": req.run_id,
+            }
+            request_headers = await connection_request_headers(
+                server, claims, tool.tool_name, platform_headers=platform_headers
+            )
 
     # Execute tool call
     try:
         if is_builtin_tool:
             mcp_response = await post_builtin_mcp_tool(
-                tool.mcp_server_url,
+                dispatch_server_url,
                 tool.tool_name,
                 target_tool_arguments,
                 tool.timeout_ms,
@@ -438,7 +550,7 @@ async def execute_tool_call(
             )
         else:
             mcp_response = await mcp_transport.call_tool(
-                tool.mcp_server_url,
+                dispatch_server_url,
                 tool.tool_name,
                 target_tool_arguments,
                 tool.timeout_ms,

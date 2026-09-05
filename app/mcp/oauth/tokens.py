@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from app.config.settings import settings
 from app.mcp.connections import ConnectionOwner, mcp_connection_store
 from app.mcp.header_policy import MAX_HEADER_VALUE_LENGTH
+from app.mcp.identity import canonical_mcp_server_id
 from app.mcp.oauth.errors import McpOAuthError, oauth_error
 from app.mcp.oauth.models import OAuthEndpointSnapshot, OAuthTokenBundle
 from app.mcp.oauth.outbound import oauth_http_request
@@ -30,7 +31,8 @@ def oauth_token_secret_name(
 ) -> str:
     if not owner_id:
         raise ValueError("OAuth token owner is required")
-    return f"mcp_oauth_tokens::{workspace_id}::{server_id}::user::{owner_id}"
+    canonical_server_id = canonical_mcp_server_id(server_id)
+    return f"mcp_oauth_tokens::{workspace_id}::{canonical_server_id}::user::{owner_id}"
 
 
 def _token_scope(workspace_id: str) -> dict[str, str]:

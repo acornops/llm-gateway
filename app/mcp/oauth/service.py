@@ -98,6 +98,7 @@ async def prepare_authorization(
     server,
     workspace_id: str,
     owner_id: str,
+    membership_generation: int,
     browser_binding_hash: str,
     return_path: str,
 ) -> tuple[str, OAuthPreparationRecord]:
@@ -125,9 +126,13 @@ async def prepare_authorization(
                 server_id=server_id,
                 owner=owner,
                 status="pending_authorization",
+                membership_generation=membership_generation,
                 error_code=None,
             )
-        if existing is None:
+        if (
+            existing is None
+            or getattr(existing, "membership_generation", None) != membership_generation
+        ):
             raise oauth_error(
                 "MCP_OAUTH_INSTALLATION_NOT_FOUND",
                 "The MCP installation no longer exists.",
@@ -140,12 +145,14 @@ async def prepare_authorization(
         workspace_id=workspace_id,
         server_id=server_id,
         owner_id=owner_id,
+        membership_generation=membership_generation,
         browser_binding_hash=validated_binding_hash,
         return_path=validated_return_path,
         resource=discovery.resource,
         candidates=discovery.candidates,
         endpoint_snapshots=discovery.endpoint_snapshots,
         metadata_fingerprints=discovery.metadata_fingerprints,
+        credential_epoch=int(getattr(server, "credential_epoch", 1) or 1),
     )
     async with mcp_connection_store.mutation_lock(
         workspace_id,
@@ -153,7 +160,11 @@ async def prepare_authorization(
         owner,
     ):
         current = await mcp_connection_store.get(workspace_id, server_id, owner)
-        if current is None or str(current.id) != connection_id:
+        if (
+            current is None
+            or str(current.id) != connection_id
+            or getattr(current, "membership_generation", None) != membership_generation
+        ):
             raise oauth_error(
                 "MCP_OAUTH_INSTALLATION_NOT_FOUND",
                 "The MCP installation no longer exists.",
@@ -169,6 +180,7 @@ async def start_authorization(
     workspace_id: str,
     server_id: str,
     owner_id: str,
+    membership_generation: int,
     browser_binding_hash: str,
     issuer: str | None,
     consent_granted: bool,
@@ -187,6 +199,7 @@ async def start_authorization(
         preparation.workspace_id != workspace_id
         or preparation.server_id != server_id
         or preparation.owner_id != owner_id
+        or preparation.membership_generation != membership_generation
         or not secrets.compare_digest(
             preparation.browser_binding_hash,
             supplied_binding_hash,
@@ -197,9 +210,7 @@ async def start_authorization(
             "The OAuth request does not match the initiating connection.",
             status_code=400,
         )
-    candidate_by_issuer = {
-        candidate.issuer: candidate for candidate in preparation.candidates
-    }
+    candidate_by_issuer = {candidate.issuer: candidate for candidate in preparation.candidates}
     selected_issuer = issuer
     if selected_issuer is None and len(candidate_by_issuer) == 1:
         selected_issuer = next(iter(candidate_by_issuer))
@@ -224,7 +235,10 @@ async def start_authorization(
             server_id,
             owner,
         )
-        if connection is None:
+        if (
+            connection is None
+            or getattr(connection, "membership_generation", None) != membership_generation
+        ):
             raise oauth_error(
                 "MCP_OAUTH_FLOW_INVALID",
                 "The OAuth request is invalid or expired.",
@@ -249,8 +263,7 @@ async def start_authorization(
                 registration is not None
                 and (
                     registration.metadata_fingerprint != fingerprint
-                    or registration.client_metadata_fingerprint
-                    != client_metadata_fingerprint
+                    or registration.client_metadata_fingerprint != client_metadata_fingerprint
                 )
             )
             if not _registration_matches_client_metadata(
@@ -287,6 +300,47 @@ async def start_authorization(
                     status_code=404,
                 )
 
+        # Persist a non-ready state before retiring any usable token. A crash
+        # or flow-store failure after revocation must never leave the old
+        # verified-tool snapshot reporting connected while its token is gone.
+        # Omitting OAuth fields deliberately preserves the old provider binding
+        # long enough for retry-safe revocation.
+        pending_connection = await mcp_connection_store.set_state(
+            connection,
+            "pending_authorization",
+        )
+        if pending_connection is None:
+            raise oauth_error(
+                "MCP_OAUTH_INSTALLATION_NOT_FOUND",
+                "The MCP installation no longer exists.",
+                status_code=404,
+            )
+
+        # Reauthorization must retire the currently bound token bundle before
+        # the connection is rebound to new provider metadata. Otherwise a
+        # later overwrite of the deterministic secret can leave the previous
+        # provider tokens live, and the new binding can no longer safely
+        # identify them for revocation.
+        await oauth_token_service.revoke(
+            workspace_id=workspace_id,
+            server_id=server_id,
+            owner_id=owner_id,
+            connection=connection,
+        )
+        await oauth_token_service.delete_tokens(
+            workspace_id,
+            server_id,
+            owner_id,
+        )
+        # Only the most recently started authorization may complete. Retire
+        # every older preparation/callback state for this connection before
+        # publishing the replacement state to the browser.
+        await oauth_flow_store.delete_for_connection(
+            workspace_id,
+            server_id,
+            owner_id,
+        )
+
         pkce = PKCEParameters.generate()
         state = secrets.token_urlsafe(32)
         redirect_uri = callback_url()
@@ -294,6 +348,7 @@ async def start_authorization(
             workspace_id=workspace_id,
             server_id=server_id,
             owner_id=owner_id,
+            membership_generation=membership_generation,
             browser_binding_hash=preparation.browser_binding_hash,
             return_path=preparation.return_path,
             resource=preparation.resource,
@@ -305,6 +360,7 @@ async def start_authorization(
             redirect_uri=redirect_uri,
             endpoint_snapshot=endpoints,
             metadata_fingerprint=fingerprint,
+            credential_epoch=preparation.credential_epoch,
         )
         await oauth_flow_store.create_flow(state, flow)
         params = {
@@ -323,11 +379,13 @@ async def start_authorization(
             params,
         )
         updated = await mcp_connection_store.set_state(
-            connection,
+            pending_connection,
             "pending_authorization",
             oauth_issuer=selected_issuer,
             oauth_registration_method=candidate.registration_method,
             oauth_resource=preparation.resource,
+            oauth_client_id=client_id,
+            oauth_endpoint_snapshot=endpoints.model_dump(),
             oauth_scopes=scopes,
         )
         if updated is None:
@@ -351,6 +409,7 @@ async def complete_authorization(
     issuer: str | None,
     provider_error: str | None,
     owner_id: str,
+    membership_generation: int,
     browser_binding_hash: str,
     verify_connection: Callable[
         [OAuthFlowRecord, OAuthTokenBundle, object],
@@ -361,9 +420,13 @@ async def complete_authorization(
 
     flow = await oauth_flow_store.consume_flow(state)
     supplied_binding_hash = _require_browser_binding(browser_binding_hash)
-    if flow.owner_id != owner_id or not secrets.compare_digest(
-        flow.browser_binding_hash,
-        supplied_binding_hash,
+    if (
+        flow.owner_id != owner_id
+        or flow.membership_generation != membership_generation
+        or not secrets.compare_digest(
+            flow.browser_binding_hash,
+            supplied_binding_hash,
+        )
     ):
         raise oauth_error(
             "MCP_OAUTH_FLOW_BINDING_MISMATCH",
@@ -385,6 +448,7 @@ async def complete_authorization(
             connection is None
             or connection.status != "pending_authorization"
             or connection.oauth_issuer != flow.issuer
+            or getattr(connection, "membership_generation", None) != membership_generation
         ):
             raise oauth_error(
                 "MCP_OAUTH_FLOW_INVALID",
@@ -394,12 +458,8 @@ async def complete_authorization(
                 workspace_id=flow.workspace_id,
                 server_id=flow.server_id,
             )
-        issuer_required = (
-            flow.endpoint_snapshot.authorization_response_iss_parameter_supported
-        )
-        if (issuer_required and issuer is None) or (
-            issuer is not None and issuer != flow.issuer
-        ):
+        issuer_required = flow.endpoint_snapshot.authorization_response_iss_parameter_supported
+        if (issuer_required and issuer is None) or (issuer is not None and issuer != flow.issuer):
             await mcp_connection_store.set_state(
                 connection,
                 "pending_authorization",

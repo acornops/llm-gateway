@@ -8,11 +8,30 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.exc import IntegrityError
 
 from app.api.catalog_bootstrap import ensure_configured_sources
+from app.api.catalog_source_helpers import (
+    catalog_source_create_secret_name as _catalog_source_create_secret_name,
+)
+from app.api.catalog_source_helpers import (
+    catalog_source_owned_secret_names as _catalog_source_owned_secret_names,
+)
+from app.api.catalog_source_helpers import (
+    catalog_source_replacement_secret_name as _catalog_source_replacement_secret_name,
+)
+from app.api.catalog_source_helpers import patch_matches_persisted_source
+from app.api.catalog_source_helpers import (
+    source_mutation_snapshot as _source_mutation_snapshot,
+)
+from app.api.catalog_source_helpers import (
+    source_response as _source_response,
+)
+from app.api.mcp_lifecycle_guard import (
+    assert_guarded_workspace_active,
+    guarded_workspace_mutation,
+)
 from app.auth.service_token import require_admin_service_token
 from app.catalog.adapter import CatalogAdapterError, McpRegistryV01Adapter
-from app.catalog.models import CatalogBinding, CatalogSource
+from app.catalog.models import CatalogSource
 from app.catalog.schemas import (
-    CatalogBindingResponse,
     CatalogSourceCapabilities,
     CatalogSourceCreateRequest,
     CatalogSourceListResponse,
@@ -26,55 +45,36 @@ from app.observability.metrics import (
     GATEWAY_CATALOG_SYNCHRONIZATIONS_TOTAL,
 )
 from app.secrets.errors import SecretNotFoundError
+from app.secrets.mcp_names import matches_generated_catalog_secret_name
 from app.secrets.store import secret_store
 
 router = APIRouter()
 logger = structlog.get_logger()
 
 
-def _binding_response(binding: CatalogBinding) -> CatalogBindingResponse:
-    return CatalogBindingResponse(
-        id=str(binding.id),
-        artifact_kind=binding.artifact_kind,
-        adapter_type=binding.adapter_type,
-        adapter_base_path=binding.adapter_base_path,
-        sync_status=(
-            binding.sync_status
-            if binding.sync_status in {"pending", "syncing", "ready", "error"}
-            else "error"
-        ),
-        last_sync_at=binding.last_sync_at,
-        last_sync_error=binding.last_sync_error,
-    )
-
-
-def _source_response(
-    source: CatalogSource, bindings: list[CatalogBinding]
-) -> CatalogSourceResponse:
-    return CatalogSourceResponse(
-        id=str(source.id),
-        workspace_id=source.workspace_id,
-        display_name=source.display_name,
-        base_url=source.base_url,
-        auth_type=source.auth_type,
-        credential_configured=bool(source.auth_secret_name),
-        auth_header_name=source.auth_header_name,
-        network_route=source.network_route,
-        enabled=bool(source.enabled),
-        management_mode=source.management_mode,
-        bindings=[_binding_response(binding) for binding in bindings],
-        created_at=source.created_at,
-        updated_at=source.updated_at,
+async def _patch_matches_persisted_source(
+    request: CatalogSourcePatchRequest,
+    source: CatalogSource,
+    workspace_id: str,
+) -> bool:
+    return await patch_matches_persisted_source(
+        request,
+        source,
+        workspace_id,
+        secret_store=secret_store,
     )
 
 
 async def source_headers(source: CatalogSource) -> dict[str, str]:
+    if bool(getattr(source, "credential_transitioning", False)):
+        raise HTTPException(
+            status_code=409,
+            detail="Catalog source credential transition is incomplete",
+        )
     if source.auth_type == "none":
         return {}
     if not source.auth_secret_name:
-        raise HTTPException(
-            status_code=409, detail="Catalog source credential is not configured"
-        )
+        raise HTTPException(status_code=409, detail="Catalog source credential is not configured")
     try:
         credential = await secret_store.get_secret(
             source.auth_secret_name, {"workspace_id": source.workspace_id}
@@ -87,27 +87,16 @@ async def source_headers(source: CatalogSource) -> dict[str, str]:
         raise HTTPException(
             status_code=503, detail="Catalog credential backend is unavailable"
         ) from exc
-    header_name = (
-        "Authorization"
-        if source.auth_type == "bearer_token"
-        else source.auth_header_name
-    )
+    header_name = "Authorization" if source.auth_type == "bearer_token" else source.auth_header_name
     if not header_name:
-        raise HTTPException(
-            status_code=409, detail="Catalog source auth header is invalid"
-        )
+        raise HTTPException(status_code=409, detail="Catalog source auth header is invalid")
     return {
-        header_name: (
-            f"Bearer {credential}"
-            if source.auth_type == "bearer_token"
-            else credential
-        )
+        header_name: (f"Bearer {credential}" if source.auth_type == "bearer_token" else credential)
     }
 
 
-async def sync_source(
-    workspace_id: str, source_id: str, *, incremental: bool = True
-) -> int:
+async def sync_source(workspace_id: str, source_id: str, *, incremental: bool = True) -> int:
+    await assert_guarded_workspace_active(workspace_id)
     pair = await catalog_store.get_source_binding(workspace_id, source_id)
     if pair is None:
         raise HTTPException(status_code=404, detail="Catalog source not found")
@@ -150,16 +139,16 @@ async def list_catalog_sources(
     workspace_id: str = Query(..., min_length=1),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> CatalogSourceListResponse:
+    await assert_guarded_workspace_active(workspace_id)
     await ensure_configured_sources(workspace_id)
+    await assert_guarded_workspace_active(workspace_id)
     return CatalogSourceListResponse(
         items=[
             _source_response(source, bindings)
             for source, bindings in await catalog_store.list_sources(workspace_id)
         ],
         capabilities=CatalogSourceCapabilities(
-            workspace_managed_sources_enabled=(
-                settings.CATALOG_WORKSPACE_MANAGED_SOURCES_ENABLED
-            )
+            workspace_managed_sources_enabled=(settings.CATALOG_WORKSPACE_MANAGED_SOURCES_ENABLED)
         ),
     )
 
@@ -169,6 +158,7 @@ async def create_catalog_source(
     request: CatalogSourceCreateRequest,
     _token_ok: None = Depends(require_admin_service_token),
 ) -> CatalogSourceResponse:
+    await assert_guarded_workspace_active(request.workspace_id)
     if request.management_mode != "workspace":
         raise HTTPException(
             status_code=400,
@@ -188,21 +178,37 @@ async def create_catalog_source(
             status_code=400,
             detail="Only the mcp_registry_v0_1 /v0.1 adapter is available",
         )
+    source_id = uuid.uuid4()
     secret_name = request.auth_secret_name
     if request.auth_secret_value:
-        secret_name = secret_name or f"catalog_source::{uuid.uuid4()}"
+        secret_name = secret_name or _catalog_source_create_secret_name(source_id)
     probe_headers: dict[str, str] = {}
-    if request.auth_secret_value:
+    probe_credential = request.auth_secret_value
+    if probe_credential is None and request.auth_secret_name:
+        try:
+            probe_credential = await secret_store.get_secret(
+                request.auth_secret_name,
+                {"workspace_id": request.workspace_id},
+            )
+        except SecretNotFoundError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Catalog source credential is not configured",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog credential backend is unavailable",
+            ) from exc
+    if probe_credential:
         header_name = (
-            "Authorization"
-            if request.auth_type == "bearer_token"
-            else request.auth_header_name
+            "Authorization" if request.auth_type == "bearer_token" else request.auth_header_name
         )
         if header_name:
             probe_headers[header_name] = (
-                f"Bearer {request.auth_secret_value}"
+                f"Bearer {probe_credential}"
                 if request.auth_type == "bearer_token"
-                else request.auth_secret_value
+                else probe_credential
             )
     if request.enabled:
         try:
@@ -214,46 +220,72 @@ async def create_catalog_source(
         except CatalogAdapterError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     created_secret = bool(request.auth_secret_value and secret_name)
-    if request.auth_secret_value and secret_name:
-        await secret_store.put_secret(
-            secret_name,
-            request.auth_secret_value,
-            {"workspace_id": request.workspace_id},
-        )
-    try:
-        source, binding = await catalog_store.create_source(
-            workspace_id=request.workspace_id,
-            display_name=request.display_name,
-            base_url=request.base_url,
-            auth_type=request.auth_type,
-            auth_secret_name=secret_name,
-            auth_header_name=request.auth_header_name,
-            network_route=request.network_route,
-            enabled=request.enabled,
-            management_mode=request.management_mode,
-            artifact_kind=request.artifact_kind,
-            adapter_type=request.adapter_type,
-            adapter_base_path=request.adapter_base_path,
-        )
-    except IntegrityError as exc:
-        if created_secret and secret_name:
-            with suppress(Exception):
-                await secret_store.delete_secret(
-                    secret_name, {"workspace_id": request.workspace_id}
+    async with guarded_workspace_mutation(request.workspace_id):
+        if any(
+            source.display_name == request.display_name
+            for source, _bindings in await catalog_store.list_sources(request.workspace_id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Catalog source display name already exists",
+            )
+        try:
+            source, binding = await catalog_store.create_source(
+                source_id=source_id,
+                workspace_id=request.workspace_id,
+                display_name=request.display_name,
+                base_url=request.base_url,
+                auth_type=request.auth_type,
+                auth_secret_name=secret_name,
+                auth_header_name=request.auth_header_name,
+                network_route=request.network_route,
+                enabled=request.enabled,
+                management_mode=request.management_mode,
+                artifact_kind=request.artifact_kind,
+                adapter_type=request.adapter_type,
+                adapter_base_path=request.adapter_base_path,
+                credential_transitioning=created_secret,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Catalog source display name already exists",
+            ) from exc
+        if created_secret and secret_name and request.auth_secret_value:
+            try:
+                await secret_store.put_secret(
+                    secret_name,
+                    request.auth_secret_value,
+                    {"workspace_id": request.workspace_id},
                 )
-        raise HTTPException(
-            status_code=409, detail="Catalog source display name already exists"
-        ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Catalog credential persistence did not complete; the source "
+                        "remains fenced for repair or deletion"
+                    ),
+                ) from exc
+            finalized = await catalog_store.update_source(
+                request.workspace_id,
+                str(source.id),
+                {"credential_transitioning": False},
+            )
+            if finalized is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Catalog source credential finalization did not complete",
+                )
+            source, binding = finalized
     if source.enabled:
         with suppress(HTTPException):
-            await sync_source(
-                request.workspace_id, str(source.id), incremental=False
-            )
+            await sync_source(request.workspace_id, str(source.id), incremental=False)
         refreshed = await catalog_store.get_source_binding(
             request.workspace_id, str(source.id), request.artifact_kind
         )
         if refreshed:
             source, binding = refreshed
+    await assert_guarded_workspace_active(request.workspace_id)
     logger.info(
         "catalog_source_created",
         workspace_id=request.workspace_id,
@@ -271,15 +303,74 @@ async def update_catalog_source(
     workspace_id: str = Query(..., min_length=1),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> CatalogSourceResponse:
+    await assert_guarded_workspace_active(workspace_id)
     pair = await catalog_store.get_source_binding(workspace_id, source_id)
     if pair is None:
         raise HTTPException(status_code=404, detail="Catalog source not found")
     source, binding = pair
+    source_snapshot = _source_mutation_snapshot(source, binding)
     if source.management_mode == "bootstrap":
         raise HTTPException(
             status_code=409,
             detail="Deployment-managed catalog sources are configuration read-only",
         )
+
+    # A failed secret-backend cleanup leaves the desired credential/configuration
+    # durably fenced with a cursor to the old, gateway-owned secret. Retrying the
+    # PATCH completes that transition instead of rotating to yet another identity.
+    if bool(getattr(source, "credential_transitioning", False)):
+        async with guarded_workspace_mutation(workspace_id):
+            current_pair = await catalog_store.get_source_binding(workspace_id, source_id)
+            if current_pair is None:
+                raise HTTPException(status_code=404, detail="Catalog source not found")
+            source, binding = current_pair
+            request_matches_transition = await _patch_matches_persisted_source(
+                request, source, workspace_id
+            )
+            previous_secret_name = getattr(source, "previous_auth_secret_name", None)
+            if previous_secret_name:
+                try:
+                    with suppress(SecretNotFoundError):
+                        await secret_store.delete_secret(
+                            previous_secret_name,
+                            {"workspace_id": workspace_id},
+                        )
+                except Exception as exc:
+                    logger.exception(
+                        "catalog_source_old_credential_delete_failed",
+                        workspace_id=workspace_id,
+                        source_id=source_id,
+                        error_code="CATALOG_SOURCE_SECRET_DELETE_FAILED",
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Catalog credential backend is unavailable",
+                    ) from exc
+            recovered = await catalog_store.update_source(
+                workspace_id,
+                source_id,
+                {
+                    "credential_transitioning": False,
+                    "previous_auth_secret_name": None,
+                },
+            )
+            if recovered is None:
+                raise HTTPException(status_code=404, detail="Catalog source not found")
+            source, binding = recovered
+        if not request_matches_transition:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The previous catalog credential transition was recovered; "
+                    "retry this update against the current source"
+                ),
+            )
+        if source.enabled:
+            await sync_source(workspace_id, source_id, incremental=False)
+            refreshed = await catalog_store.get_source_binding(workspace_id, source_id)
+            if refreshed:
+                source, binding = refreshed
+        return _source_response(source, [binding])
 
     auth_was_supplied = "auth" in request.model_fields_set
     next_base_url = request.base_url or source.base_url
@@ -299,9 +390,7 @@ async def update_catalog_source(
             replacement_credential = request.auth.credential
             assert replacement_credential is not None
             next_auth_header_name = (
-                request.auth.header_name
-                if request.auth.type == "custom_header"
-                else None
+                request.auth.header_name if request.auth.type == "custom_header" else None
             )
             header_name = next_auth_header_name or "Authorization"
             probe_headers = {
@@ -332,12 +421,7 @@ async def update_catalog_source(
 
     old_secret_name = source.auth_secret_name
     if replacement_credential is not None:
-        next_secret_name = f"catalog_source::{uuid.uuid4()}"
-        await secret_store.put_secret(
-            next_secret_name,
-            replacement_credential,
-            {"workspace_id": workspace_id},
-        )
+        next_secret_name = _catalog_source_replacement_secret_name(source.id, old_secret_name)
 
     changes: dict[str, object] = {}
     if request.display_name is not None:
@@ -354,54 +438,109 @@ async def update_catalog_source(
                 "auth_type": next_auth_type,
                 "auth_header_name": next_auth_header_name,
                 "auth_secret_name": next_secret_name,
+                "credential_transitioning": True,
+                "previous_auth_secret_name": (
+                    old_secret_name
+                    if old_secret_name
+                    and matches_generated_catalog_secret_name(old_secret_name)
+                    and old_secret_name != next_secret_name
+                    else None
+                ),
             }
         )
-    try:
-        updated = await catalog_store.update_source(
-            workspace_id,
-            source_id,
-            changes,
-            clear_artifacts=configuration_changed,
-        )
-    except IntegrityError as exc:
-        if next_secret_name and next_secret_name != old_secret_name:
-            with suppress(Exception):
-                await secret_store.delete_secret(
-                    next_secret_name, {"workspace_id": workspace_id}
-                )
-        raise HTTPException(
-            status_code=409, detail="Catalog source display name already exists"
-        ) from exc
-    if updated is None:
-        if next_secret_name and next_secret_name != old_secret_name:
-            with suppress(Exception):
-                await secret_store.delete_secret(
-                    next_secret_name, {"workspace_id": workspace_id}
-                )
-        raise HTTPException(status_code=404, detail="Catalog source not found")
-    source, binding = updated
-
-    if old_secret_name and old_secret_name != source.auth_secret_name:
-        try:
-            await secret_store.delete_secret(
-                old_secret_name, {"workspace_id": workspace_id}
-            )
-        except Exception as exc:
-            logger.exception(
-                "catalog_source_old_credential_delete_failed",
-                workspace_id=workspace_id,
-                source_id=source_id,
-                error_code="CATALOG_SOURCE_SECRET_DELETE_FAILED",
-            )
+    async with guarded_workspace_mutation(workspace_id):
+        current_pair = await catalog_store.get_source_binding(workspace_id, source_id)
+        if current_pair is None:
+            raise HTTPException(status_code=404, detail="Catalog source not found")
+        current_source, current_binding = current_pair
+        if _source_mutation_snapshot(current_source, current_binding) != source_snapshot:
             raise HTTPException(
-                status_code=503, detail="Catalog credential backend is unavailable"
+                status_code=409,
+                detail="Catalog source changed while the update was being prepared",
+            )
+        source, binding = current_source, current_binding
+        if replacement_credential is not None and next_secret_name:
+            await secret_store.put_secret(
+                next_secret_name,
+                replacement_credential,
+                {"workspace_id": workspace_id},
+            )
+        try:
+            updated = await catalog_store.update_source(
+                workspace_id,
+                source_id,
+                changes,
+                clear_artifacts=configuration_changed,
+            )
+        except IntegrityError as exc:
+            if next_secret_name and next_secret_name != old_secret_name:
+                try:
+                    await secret_store.delete_secret(
+                        next_secret_name, {"workspace_id": workspace_id}
+                    )
+                except SecretNotFoundError:
+                    pass
+                except Exception as cleanup_exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Catalog credential backend is unavailable",
+                    ) from cleanup_exc
+            raise HTTPException(
+                status_code=409,
+                detail="Catalog source display name already exists",
             ) from exc
+        if updated is None:
+            if next_secret_name and next_secret_name != old_secret_name:
+                try:
+                    await secret_store.delete_secret(
+                        next_secret_name, {"workspace_id": workspace_id}
+                    )
+                except SecretNotFoundError:
+                    pass
+                except Exception as cleanup_exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Catalog credential backend is unavailable",
+                    ) from cleanup_exc
+            raise HTTPException(status_code=404, detail="Catalog source not found")
+        source, binding = updated
+        previous_secret_name = getattr(source, "previous_auth_secret_name", None)
+        if previous_secret_name:
+            try:
+                with suppress(SecretNotFoundError):
+                    await secret_store.delete_secret(
+                        previous_secret_name, {"workspace_id": workspace_id}
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "catalog_source_old_credential_delete_failed",
+                    workspace_id=workspace_id,
+                    source_id=source_id,
+                    error_code="CATALOG_SOURCE_SECRET_DELETE_FAILED",
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Catalog credential backend is unavailable",
+                ) from exc
+        if auth_was_supplied:
+            finalized = await catalog_store.update_source(
+                workspace_id,
+                source_id,
+                {
+                    "credential_transitioning": False,
+                    "previous_auth_secret_name": None,
+                },
+            )
+            if finalized is None:
+                raise HTTPException(status_code=404, detail="Catalog source not found")
+            source, binding = finalized
 
     if configuration_changed and source.enabled:
         await sync_source(workspace_id, source_id, incremental=False)
         refreshed = await catalog_store.get_source_binding(workspace_id, source_id)
         if refreshed:
             source, binding = refreshed
+    await assert_guarded_workspace_active(workspace_id)
     logger.info(
         "catalog_source_updated",
         workspace_id=workspace_id,
@@ -419,9 +558,7 @@ async def sync_catalog_source(
     full: bool = Query(default=False),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> dict[str, int]:
-    artifact_count = await sync_source(
-        workspace_id, source_id, incremental=not full
-    )
+    artifact_count = await sync_source(workspace_id, source_id, incremental=not full)
     logger.info(
         "catalog_source_synchronized",
         workspace_id=workspace_id,
@@ -438,32 +575,45 @@ async def delete_catalog_source(
     workspace_id: str = Query(..., min_length=1),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> None:
-    pair = await catalog_store.get_source_binding(workspace_id, source_id)
-    if pair is None:
-        raise HTTPException(status_code=404, detail="Catalog source not found")
-    source, _binding = pair
-    if source.management_mode == "bootstrap":
-        raise HTTPException(
-            status_code=409,
-            detail="Deployment-managed catalog sources cannot be deleted",
-        )
-    if source.auth_secret_name:
-        try:
-            await secret_store.delete_secret(
-                source.auth_secret_name, {"workspace_id": workspace_id}
-            )
-        except Exception as exc:
-            logger.exception(
-                "catalog_source_credential_delete_failed",
-                workspace_id=workspace_id,
-                source_id=source_id,
-                error_code="CATALOG_SOURCE_SECRET_DELETE_FAILED",
-            )
+    async with guarded_workspace_mutation(workspace_id):
+        pair = await catalog_store.get_source_binding(workspace_id, source_id)
+        if pair is None:
+            raise HTTPException(status_code=404, detail="Catalog source not found")
+        source, _binding = pair
+        if source.management_mode == "bootstrap":
             raise HTTPException(
-                status_code=503, detail="Catalog credential backend is unavailable"
-            ) from exc
-    if not await catalog_store.delete_source(workspace_id, source_id):
-        raise HTTPException(status_code=404, detail="Catalog source not found")
+                status_code=409,
+                detail="Deployment-managed catalog sources cannot be deleted",
+            )
+        owned_secret_names = _catalog_source_owned_secret_names(source.id)
+        owned_secret_names.update({
+            name
+            for name in (
+                source.auth_secret_name,
+                getattr(source, "previous_auth_secret_name", None),
+            )
+            if name and matches_generated_catalog_secret_name(name)
+        })
+        if owned_secret_names:
+            try:
+                for secret_name in owned_secret_names:
+                    with suppress(SecretNotFoundError):
+                        await secret_store.delete_secret(
+                            secret_name, {"workspace_id": workspace_id}
+                        )
+            except Exception as exc:
+                logger.exception(
+                    "catalog_source_credential_delete_failed",
+                    workspace_id=workspace_id,
+                    source_id=source_id,
+                    error_code="CATALOG_SOURCE_SECRET_DELETE_FAILED",
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Catalog credential backend is unavailable",
+                ) from exc
+        if not await catalog_store.delete_source(workspace_id, source_id):
+            raise HTTPException(status_code=404, detail="Catalog source not found")
     logger.info(
         "catalog_source_deleted",
         workspace_id=workspace_id,

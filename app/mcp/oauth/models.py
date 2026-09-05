@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.mcp.user_lifecycle_contract import MAX_MCP_MEMBERSHIP_GENERATION
+
 OAuthRegistrationMethod = Literal["cimd", "dcr"]
 
 
@@ -52,12 +54,18 @@ class OAuthPreparationRecord(BaseModel):
     workspace_id: str
     server_id: str
     owner_id: str
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     browser_binding_hash: str
     return_path: str
     resource: str
     candidates: list[OAuthIssuerCandidate]
     endpoint_snapshots: dict[str, OAuthEndpointSnapshot]
     metadata_fingerprints: dict[str, str]
+    credential_epoch: int = Field(default=1, ge=1)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +76,11 @@ class OAuthFlowRecord(BaseModel):
     workspace_id: str
     server_id: str
     owner_id: str
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     browser_binding_hash: str
     return_path: str
     resource: str
@@ -79,6 +92,7 @@ class OAuthFlowRecord(BaseModel):
     redirect_uri: str
     endpoint_snapshot: OAuthEndpointSnapshot
     metadata_fingerprint: str
+    credential_epoch: int = Field(default=1, ge=1)
 
     model_config = ConfigDict(extra="forbid")
 

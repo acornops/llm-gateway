@@ -13,11 +13,13 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import settings
+from app.mcp.identity import canonical_mcp_server_id
 from app.mcp.registry.models import McpConnection, McpServer
 from app.outbound_tls import sqlalchemy_connection_config
 
 ConnectionOwnerType = Literal["installation", "user"]
 INSTALLATION_OWNER_ID = "installation"
+_ADVISORY_LOCK_POOL_SIZE = 5
 
 
 class ConnectionOwnerError(ValueError):
@@ -36,7 +38,7 @@ def credential_secret_name(
     owner: ConnectionOwner,
 ) -> str:
     """Return the only valid secret identity for an MCP connection owner."""
-    base = f"mcp_credential::{workspace_id}::{server_id}"
+    base = f"mcp_credential::{workspace_id}::{canonical_mcp_server_id(server_id)}"
     if owner.owner_type == "installation":
         if owner.owner_id != INSTALLATION_OWNER_ID:
             raise ConnectionOwnerError("installation owner ID is not canonical")
@@ -70,6 +72,17 @@ class McpConnectionStore:
     def __init__(self, database_url: str) -> None:
         database_url, connect_args = sqlalchemy_connection_config(database_url)
         self.engine = create_async_engine(database_url, connect_args=connect_args)
+        self._supports_advisory_locks = self.engine.dialect.name == "postgresql"
+        self._advisory_lock_engine = (
+            create_async_engine(
+                database_url,
+                connect_args=connect_args,
+                pool_size=_ADVISORY_LOCK_POOL_SIZE,
+                max_overflow=0,
+            )
+            if self._supports_advisory_locks
+            else None
+        )
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
         self._mutation_locks: dict[
             tuple[str, str, str, str],
@@ -78,6 +91,8 @@ class McpConnectionStore:
         self._mutation_locks_guard = asyncio.Lock()
 
     async def close(self) -> None:
+        if self._advisory_lock_engine is not None:
+            await self._advisory_lock_engine.dispose()
         await self.engine.dispose()
 
     @asynccontextmanager
@@ -88,14 +103,14 @@ class McpConnectionStore:
         owner: ConnectionOwner,
     ) -> AsyncIterator[None]:
         """Serialize one connection owner across gateway replicas."""
+        server_id = canonical_mcp_server_id(server_id)
         key = (workspace_id, server_id, owner.owner_type, owner.owner_id)
         async with self._mutation_locks_guard:
             lock, users = self._mutation_locks.get(key, (asyncio.Lock(), 0))
             self._mutation_locks[key] = (lock, users + 1)
         try:
             async with lock:
-                runtime_env = (settings.NODE_ENV or settings.APP_ENV).strip().lower()
-                if runtime_env != "production":
+                if not self._supports_advisory_locks:
                     yield
                     return
                 lock_material = "\0".join(key).encode()
@@ -104,8 +119,9 @@ class McpConnectionStore:
                     byteorder="big",
                     signed=True,
                 )
+                assert self._advisory_lock_engine is not None
                 async with (
-                    self.engine.connect() as connection,
+                    self._advisory_lock_engine.connect() as connection,
                     connection.begin(),
                 ):
                     await connection.execute(
@@ -155,6 +171,7 @@ class McpConnectionStore:
         server_id: str,
         owner: ConnectionOwner,
         status: str,
+        membership_generation: int | None = None,
         verified_tool_names: list[str] | None = None,
         error_code: str | None = None,
         oauth_issuer: str | None = None,
@@ -208,6 +225,9 @@ class McpConnectionStore:
                 )
                 session.add(connection)
             connection.status = status
+            connection.membership_generation = (
+                membership_generation if owner.owner_type == "user" else None
+            )
             connection.verified_tool_names = sorted(set(verified_tool_names or []))
             connection.verified_at = datetime.now(UTC) if status == "connected" else None
             connection.error_code = error_code if status != "connected" else None

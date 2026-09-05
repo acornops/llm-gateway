@@ -9,8 +9,10 @@ from app.internal_model_tools import is_reserved_internal_tool_name
 from app.mcp.header_policy import (
     validate_auth_header_name,
     validate_auth_header_value,
+    validate_public_auth_header_collision,
     validate_public_headers,
 )
+from app.mcp.user_lifecycle_contract import MAX_MCP_MEMBERSHIP_GENERATION
 from app.target_types import KUBERNETES_TARGET_TYPE, TARGET_TYPE_EXAMPLES, TargetType
 
 McpScopeType = Literal["agent", "target"]
@@ -199,6 +201,11 @@ class McpServerCreateRequest(BaseModel):
             raise ValueError("auth fields are not allowed when auth_type is none")
         if self.auth_type == "custom_header" and not self.auth_header_name:
             raise ValueError("auth_header_name is required for custom_header auth")
+        validate_public_auth_header_collision(
+            self.public_headers,
+            self.auth_type,
+            self.auth_header_name,
+        )
         if self.auth_type == "oauth":
             if self.credential_mode != "individual":
                 raise ValueError("OAuth MCP installations require individual credentials")
@@ -234,16 +241,13 @@ class McpServerCreateRequest(BaseModel):
 
 
 class McpServerUpdateRequest(BaseModel):
-    server_url: str | None = Field(default=None, min_length=1)
-    server_name: str | None = None
+    server_name: str | None = Field(default=None, min_length=1)
     enabled: bool | None = None
     auth_type: Literal["none", "bearer_token", "custom_header", "oauth"] | None = None
     credential_mode: Literal["none", "workspace", "individual"] | None = None
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
-    tools: list[ToolConfigUpdateRequest] | None = None
-    remove_tools: list[str] = Field(default_factory=list)
     expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("public_headers")
@@ -263,6 +267,11 @@ class McpServerUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_constructed_auth_header_value(self) -> Self:
+        if not any(
+            field != "expected_revision" and getattr(self, field) is not None
+            for field in self.model_fields_set
+        ):
+            raise ValueError("MCP server update must include a value")
         if self.auth_type == "none" and any(
             (
                 self.auth_header_name,
@@ -281,17 +290,43 @@ class McpServerUpdateRequest(BaseModel):
                 "auth_type": "bearer_token",
                 "auth_header_name": "Authorization",
                 "auth_header_prefix": "Bearer ",
-                "tools": [
-                    {
-                        "name": "records.list",
-                        "timeout_ms": 10000,
-                        "enabled": True,
-                    }
-                ],
-                "remove_tools": ["records.removed"],
             }
         },
     )
+
+
+class McpBuiltinServerSyncRequest(BaseModel):
+    """Authoritative platform-owned built-in server definition."""
+
+    workspace_id: str = Field(min_length=1, examples=[EXAMPLE_WORKSPACE_ID])
+    scope_type: McpScopeType = "target"
+    agent_id: str | None = Field(default=None, min_length=1)
+    target_id: str | None = Field(default=None, min_length=1)
+    target_type: McpRegistryTargetType | None = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    server_id: str | None = Field(default=None, min_length=1)
+    server_name: str = Field(min_length=1)
+    enabled: bool = True
+    tools: list[ToolConfigRequest] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_platform_definition(self) -> Self:
+        if self.scope_type == "agent":
+            if not self.agent_id:
+                raise ValueError("agent scope requires agent_id")
+            if self.target_id or self.target_type:
+                raise ValueError("agent scope does not accept target_id or target_type")
+        elif not self.target_id or self.target_type is None:
+            raise ValueError("target scope requires target_id and a concrete target_type")
+        if any(tool.source != "builtin" for tool in self.tools):
+            raise ValueError("platform built-in synchronization accepts built-in tools only")
+        if any(tool.review_state != "approved" for tool in self.tools):
+            raise ValueError("platform built-in tools must be approved")
+        tool_names = [tool.name for tool in self.tools]
+        if len(tool_names) != len(set(tool_names)):
+            raise ValueError("platform built-in tool names must be unique")
+        return self
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class McpServerResponse(BaseModel):
@@ -309,6 +344,7 @@ class McpServerResponse(BaseModel):
     auth_header_name: str | None = None
     auth_header_prefix: str | None = None
     public_headers: dict[str, str] | None = None
+    credential_transitioning: bool = False
     connection_status: Literal["unknown", "ok", "error"] = "unknown"
     last_discovery_at: datetime | None = None
     last_discovery_error: str | None = None
@@ -340,6 +376,12 @@ class McpConnectionUpsertRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
     owner_type: Literal["installation", "user"]
     owner_id: str = Field(min_length=1)
+    membership_generation: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     credential: str = Field(min_length=1, max_length=8192)
     consent_granted: Literal[True]
 
@@ -351,6 +393,14 @@ class McpConnectionUpsertRequest(BaseModel):
         if any(unicodedata.category(character) == "Cc" for character in value):
             raise ValueError("credential must not contain control characters")
         return value
+
+    @model_validator(mode="after")
+    def _validate_owner_generation(self) -> Self:
+        if self.owner_type == "user" and self.membership_generation is None:
+            raise ValueError("user connections require membership_generation")
+        if self.owner_type == "installation" and self.membership_generation is not None:
+            raise ValueError("installation connections do not accept membership_generation")
+        return self
 
     model_config = ConfigDict(extra="forbid")
 
@@ -390,6 +440,20 @@ class McpConnectionVerifyRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
     owner_type: Literal["installation", "user"]
     owner_id: str = Field(min_length=1)
+    membership_generation: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
+
+    @model_validator(mode="after")
+    def _validate_owner_generation(self) -> Self:
+        if self.owner_type == "user" and self.membership_generation is None:
+            raise ValueError("user connections require membership_generation")
+        if self.owner_type == "installation" and self.membership_generation is not None:
+            raise ValueError("installation connections do not accept membership_generation")
+        return self
 
     model_config = ConfigDict(extra="forbid")
 
@@ -397,6 +461,20 @@ class McpConnectionVerifyRequest(BaseModel):
 class McpPrincipalReference(BaseModel):
     type: Literal["user", "service_identity"]
     id: str = Field(min_length=1, max_length=256)
+    membership_generation: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
+
+    @model_validator(mode="after")
+    def _validate_principal_generation(self) -> Self:
+        if self.type == "user" and self.membership_generation is None:
+            raise ValueError("user principals require membership_generation")
+        if self.type == "service_identity" and self.membership_generation is not None:
+            raise ValueError("service identities do not accept membership_generation")
+        return self
 
     model_config = ConfigDict(extra="forbid")
 
@@ -457,6 +535,11 @@ class McpOAuthIssuerCandidateResponse(BaseModel):
 class McpOAuthPrepareRequest(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=256)
     owner_id: str = Field(min_length=1, max_length=256)
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     return_path: str = Field(min_length=1, max_length=2048)
 
@@ -473,6 +556,11 @@ class McpOAuthPrepareResponse(BaseModel):
 class McpOAuthStartRequest(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=256)
     owner_id: str = Field(min_length=1, max_length=256)
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     preparation_handle: str = Field(min_length=32, max_length=256)
     issuer: str | None = Field(default=None, max_length=2048)
@@ -483,6 +571,7 @@ class McpOAuthStartRequest(BaseModel):
 
 class McpOAuthStartResponse(BaseModel):
     authorization_url: str
+    state: str
     metadata_changed: bool
 
 
@@ -492,6 +581,11 @@ class McpOAuthCompleteRequest(BaseModel):
     issuer: str | None = Field(default=None, max_length=2048)
     provider_error: str | None = Field(default=None, max_length=256)
     owner_id: str = Field(min_length=1, max_length=256)
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
     browser_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -508,3 +602,15 @@ class McpOAuthCompleteResponse(BaseModel):
     return_path: str
     workspace_id: str
     server_id: str
+
+
+class McpUserLifecycleRequest(BaseModel):
+    workspace_id: str = Field(min_length=1, max_length=256)
+    membership_generation: int = Field(
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
+    status: Literal["active", "removed"]
+
+    model_config = ConfigDict(extra="forbid")

@@ -48,9 +48,11 @@ _RESERVED_HEADER_NAMES = {
     "te",
     "trailer",
     "x-workspace-id",
+    "x-agent-id",
     "x-target-id",
     "x-target-type",
     "x-run-id",
+    "x-workflow-execution-id",
     "x-tool-name",
     *MCP_TRANSPORT_HEADER_NAMES,
 }
@@ -118,6 +120,20 @@ def validate_auth_header_name(name: str | None) -> str | None:
     return name
 
 
+def validate_public_auth_header_collision(
+    public_headers: Mapping[str, str] | None,
+    auth_type: str,
+    auth_header_name: str | None,
+) -> None:
+    """Reject ambiguous duplicate custom credential headers before persistence."""
+
+    if auth_type != "custom_header" or not auth_header_name:
+        return
+    normalized_auth = _validate_header_name(auth_header_name)
+    if any(_validate_header_name(name) == normalized_auth for name in (public_headers or {})):
+        raise ValueError("public_headers must not duplicate the custom authentication header")
+
+
 def build_mcp_request_headers(
     server: Any,
     credential: str | None,
@@ -131,6 +147,7 @@ def build_mcp_request_headers(
     returned mapping because it can contain plaintext credentials.
     """
     headers = validate_public_headers(dict(server.public_headers or {})) or {}
+    validate_public_auth_header_collision(headers, server.auth_type, server.auth_header_name)
     headers.update(dict(platform_headers or {}))
     auth_type = getattr(server, "auth_type", "none")
     if auth_type == "none":

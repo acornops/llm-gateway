@@ -2,6 +2,7 @@ import pytest_asyncio
 
 from app.catalog.store import catalog_store
 from app.mcp.connections import mcp_connection_store
+from app.mcp.lifecycle import mcp_lifecycle_store
 from app.mcp.oauth.registration_store import oauth_registration_store
 from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.secrets.store import secret_store
@@ -14,6 +15,7 @@ async def close_global_async_stores_after_test():
 
     await catalog_store.close()
     await mcp_connection_store.close()
+    await mcp_lifecycle_store.close()
     await mcp_server_registry.close()
     await tool_registry.close()
     await oauth_registration_store.close()

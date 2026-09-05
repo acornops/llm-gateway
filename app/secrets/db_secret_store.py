@@ -14,6 +14,11 @@ from app.secrets.crypto import crypto
 from app.secrets.db_models import Secret
 from app.secrets.errors import SecretNotFoundError
 from app.secrets.interface import SecretStore
+from app.secrets.mcp_names import (
+    McpSecretOwnerType,
+    matches_generated_catalog_secret_name,
+    matches_mcp_secret_name,
+)
 
 logger = structlog.get_logger()
 SECRET_CACHE_INVALIDATION_CHANNEL = "gateway:secret-cache-invalidation"
@@ -170,6 +175,169 @@ class DbSecretStore(SecretStore):
 
         self._evict_secret_cache(secret_name)
         await self._publish_secret_invalidation(secret_name)
+
+    async def _mcp_secret_names(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> list[str]:
+        scope = {"workspace_id": workspace_id}
+        async with self.async_session() as session:
+            names = list(
+                (
+                    await session.execute(
+                        select(Secret.secret_name).where(Secret.tenant_scope == scope)
+                    )
+                ).scalars()
+            )
+        return sorted(
+            {
+                name
+                for name in names
+                if matches_mcp_secret_name(
+                    name,
+                    workspace_id,
+                    server_id=server_id,
+                    owner_type=owner_type,
+                    owner_id=owner_id,
+                )
+            }
+        )
+
+    async def count_mcp_secrets(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> int:
+        return len(
+            await self._mcp_secret_names(
+                workspace_id,
+                server_id=server_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+            )
+        )
+
+    async def purge_mcp_secrets(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> int:
+        names = await self._mcp_secret_names(
+            workspace_id,
+            server_id=server_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+        )
+        if not names:
+            return 0
+        scope = {"workspace_id": workspace_id}
+        async with self.async_session() as session:
+            await session.execute(
+                delete(Secret).where(
+                    Secret.tenant_scope == scope,
+                    Secret.secret_name.in_(names),
+                )
+            )
+            await session.commit()
+        for name in names:
+            self._evict_secret_cache(name)
+            await self._publish_secret_invalidation(name)
+        return len(names)
+
+    async def _all_mcp_secret_rows(
+        self, owner_type: McpSecretOwnerType
+    ) -> list[tuple[object, str]]:
+        """Inventory exact MCP identities across workspace scopes."""
+
+        async with self.async_session() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(Secret.id, Secret.tenant_scope, Secret.secret_name)
+                    )
+                ).all()
+            )
+        matched: list[tuple[object, str]] = []
+        for secret_id, scope, name in rows:
+            workspace_id = scope.get("workspace_id") if isinstance(scope, dict) else None
+            if (
+                isinstance(workspace_id, str)
+                and isinstance(name, str)
+                and matches_mcp_secret_name(
+                    name,
+                    workspace_id,
+                    owner_type=owner_type,
+                )
+            ):
+                matched.append((secret_id, name))
+        return matched
+
+    async def count_all_mcp_user_secrets(self) -> int:
+        return len(await self._all_mcp_secret_rows("user"))
+
+    async def count_all_mcp_installation_secrets(self) -> int:
+        return len(await self._all_mcp_secret_rows("installation"))
+
+    async def purge_all_mcp_user_secrets(self) -> int:
+        rows = await self._all_mcp_secret_rows("user")
+        if not rows:
+            return 0
+        secret_ids = [secret_id for secret_id, _ in rows]
+        async with self.async_session() as session:
+            for offset in range(0, len(secret_ids), 500):
+                await session.execute(
+                    delete(Secret).where(
+                        Secret.id.in_(secret_ids[offset : offset + 500])
+                    )
+                )
+            await session.commit()
+        for _secret_id, name in rows:
+            self._evict_secret_cache(name)
+            await self._publish_secret_invalidation(name)
+        return len(rows)
+
+    async def _generated_catalog_secret_names(self, workspace_id: str) -> list[str]:
+        scope = {"workspace_id": workspace_id}
+        async with self.async_session() as session:
+            names = list(
+                (
+                    await session.execute(
+                        select(Secret.secret_name).where(Secret.tenant_scope == scope)
+                    )
+                ).scalars()
+            )
+        return sorted({name for name in names if matches_generated_catalog_secret_name(name)})
+
+    async def count_generated_catalog_secrets(self, workspace_id: str) -> int:
+        return len(await self._generated_catalog_secret_names(workspace_id))
+
+    async def purge_generated_catalog_secrets(self, workspace_id: str) -> int:
+        names = await self._generated_catalog_secret_names(workspace_id)
+        if not names:
+            return 0
+        scope = {"workspace_id": workspace_id}
+        async with self.async_session() as session:
+            await session.execute(
+                delete(Secret).where(
+                    Secret.tenant_scope == scope,
+                    Secret.secret_name.in_(names),
+                )
+            )
+            await session.commit()
+        for name in names:
+            self._evict_secret_cache(name)
+            await self._publish_secret_invalidation(name)
+        return len(names)
 
     def _evict_secret_cache(self, secret_name: str) -> None:
         for cache_key in list(self._cache):

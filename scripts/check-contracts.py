@@ -14,6 +14,7 @@ DOC = read("docs/contracts/README.md")
 MANIFEST = json.loads(read("docs/contracts/manifest.json"))
 MANIFEST_TEXT = json.dumps(MANIFEST, sort_keys=True)
 CANONICAL_JSON_VECTORS = read("docs/contracts/canonical-json-vectors.json")
+MCP_ENDPOINT_VECTORS = read("docs/contracts/mcp-endpoint-vectors.json")
 MAIN_SOURCE = read("app/main.py")
 ROUTER_SOURCE = read("app/api/router.py")
 LLM_SERVICE_SOURCE = read("app/llm/service.py")
@@ -24,9 +25,17 @@ TOOL_HANDLER_SOURCE = read("app/api/handlers_tool_call.py") + read("app/api/tool
 INTERNAL_MODEL_TOOLS_SOURCE = read("app/internal_model_tools.py")
 MCP_ADMIN_SOURCE = (
     read("app/api/handlers_mcp_admin.py")
+    + read("app/api/handlers_mcp_builtin_sync.py")
     + read("app/api/handlers_mcp_connections.py")
+    + read("app/api/handlers_mcp_lifecycle.py")
     + read("app/api/handlers_mcp_oauth.py")
+    + read("app/api/handlers_mcp_tool_admin.py")
+    + read("app/api/mcp_lifecycle_guard.py")
     + read("app/api/mcp_admin_schemas.py")
+    + read("app/mcp/lifecycle.py")
+    + read("app/mcp/oauth/flow_store.py")
+    + read("app/mcp/registry/models.py")
+    + read("app/mcp/user_lifecycle_contract.py")
 )
 MCP_ADMIN_HELPER_SOURCE = read("app/api/mcp_admin_helpers.py")
 MCP_OAUTH_SOURCE = (
@@ -64,6 +73,33 @@ if control_plane_vectors.exists():
         "Control-plane and LLM-gateway canonical JSON vectors must be byte-identical",
     )
 
+control_plane_mcp_endpoint_vectors = (
+    ROOT.parent / "control-plane/docs/contracts/mcp-endpoint-vectors.json"
+)
+if control_plane_mcp_endpoint_vectors.exists():
+    expect(
+        control_plane_mcp_endpoint_vectors.read_text() == MCP_ENDPOINT_VECTORS,
+        "Control-plane and LLM-gateway MCP endpoint vectors must be byte-identical",
+    )
+
+control_plane_manifest = ROOT.parent / "control-plane/docs/contracts/manifest.json"
+if control_plane_manifest.exists():
+    mirrored_control_plane = json.loads(control_plane_manifest.read_text())
+    expect(
+        mirrored_control_plane["counterparts"]["llm-gateway"][
+            "lifecycleTeardownContract"
+        ]
+        == CONTROL_PLANE_CONTRACT["lifecycleTeardownContract"],
+        "Control-plane and LLM-gateway lifecycle teardown contracts must match",
+    )
+    expect(
+        mirrored_control_plane["counterparts"]["llm-gateway"].get(
+            "userLifecycleContract"
+        )
+        == CONTROL_PLANE_CONTRACT["userLifecycleContract"],
+        "Control-plane and LLM-gateway user lifecycle contracts must match",
+    )
+
 
 expect_in(README, "[`docs/contracts/README.md`](docs/contracts/README.md)", "README contract link")
 expect_in(
@@ -95,6 +131,18 @@ for needle in (
         "Bounded catalog import observability",
     )
 expect(MANIFEST["repo"] == "llm-gateway", "Manifest repo")
+
+for needle in (
+    '@router.put("/users/{user_id}/lifecycle", status_code=204)',
+    '"MCP_USER_LIFECYCLE_STALE"',
+    '"MCP_USER_LIFECYCLE_CONFLICT"',
+    '"MCP_USER_LIFECYCLE_TEARDOWN_FAILED"',
+    "membership_generation",
+    "MAX_MCP_MEMBERSHIP_GENERATION = 9_007_199_254_740_991",
+    "delete_user_lifecycles_for_workspace",
+    "delete_for_user",
+):
+    expect_in(MCP_ADMIN_SOURCE, needle, "Generation-bound MCP user lifecycle contract")
 
 for heading in (
     "# LLM-Gateway Contracts",

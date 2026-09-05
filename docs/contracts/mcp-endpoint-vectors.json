@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "accept": [
+    { "url": "https://mcp.example.com/v1/tools" }
+  ],
+  "reject": [
+    { "url": "http://mcp.example.com/v1/tools", "reason": "non_https" },
+    { "url": "https://user:password@mcp.example.com/v1/tools", "reason": "userinfo" },
+    { "url": "https://mcp.example.com/v1/tools#debug", "reason": "fragment" },
+    { "url": "https://mcp.example.com:99999/v1/tools", "reason": "invalid_port" },
+    { "url": "https://:443/v1/tools", "reason": "missing_hostname" },
+    { "url": "https:///v1/tools", "reason": "missing_hostname" },
+    { "url": "https://mcp.example.com/v1/tools?api_key=secret", "reason": "sensitive_query" },
+    { "url": "https://mcp.example.com/v1/tools?token=", "reason": "sensitive_query" }
+  ]
+}

@@ -1,7 +1,25 @@
+import json
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 
 from app.api.mcp_admin_validation import validate_remote_mcp_endpoint_contract
+
+ENDPOINT_VECTORS = json.loads(
+    (Path(__file__).parents[1] / "docs/contracts/mcp-endpoint-vectors.json").read_text()
+)
+
+
+@pytest.mark.parametrize("vector", ENDPOINT_VECTORS["reject"])
+def test_shared_mcp_endpoint_rejection_vectors(vector: dict[str, str]) -> None:
+    with pytest.raises(HTTPException):
+        validate_remote_mcp_endpoint_contract(vector["url"])
+
+
+@pytest.mark.parametrize("vector", ENDPOINT_VECTORS["accept"])
+def test_shared_mcp_endpoint_acceptance_vectors(vector: dict[str, str]) -> None:
+    validate_remote_mcp_endpoint_contract(vector["url"])
 
 
 @pytest.mark.parametrize(

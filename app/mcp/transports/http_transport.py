@@ -439,7 +439,12 @@ class McpHttpTransport:
                 server_url=loggable_mcp_server_origin(url),
                 exception_type=error.__class__.__name__,
             )
-            return self._error_payload("MCP server blocked by egress policy")
+            return self._transport_error_payload(
+                "MCP server blocked by egress policy",
+                code="MCP_EGRESS_BLOCKED",
+                dispatch_outcome="not_started",
+                retryable=False,
+            )
 
         dependency_key = f"mcp:discovery:{url.rstrip('/')}"
         attempts = max(1, settings.MCP_DISCOVERY_RETRY_ATTEMPTS)

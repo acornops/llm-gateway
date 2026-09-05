@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import (
     JSON,
     UUID,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -33,6 +34,9 @@ class CatalogSource(Base):
     auth_type = Column(String, nullable=False, default="none")
     auth_secret_name = Column(String, nullable=True)
     auth_header_name = Column(String, nullable=True)
+    authority_generation = Column(BigInteger, nullable=False, default=1)
+    credential_transitioning = Column(Boolean, nullable=False, default=False)
+    previous_auth_secret_name = Column(String, nullable=True)
     network_route = Column(String, nullable=False, default="direct")
     enabled = Column(Boolean, nullable=False, default=True)
     management_mode = Column(String, nullable=False, default="workspace")
@@ -57,6 +61,7 @@ class CatalogBinding(Base):
     artifact_kind = Column(String, nullable=False)
     adapter_type = Column(String, nullable=False)
     adapter_base_path = Column(String, nullable=False, default="/v0.1")
+    sync_generation = Column(BigInteger, nullable=False, default=1)
     sync_status = Column(String, nullable=False, default="pending")
     last_sync_started_at = Column(DateTime(timezone=True), nullable=True)
     last_sync_at = Column(DateTime(timezone=True), nullable=True)

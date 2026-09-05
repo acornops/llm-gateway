@@ -21,6 +21,7 @@ from app.errors.codes import ErrorCode
 from app.errors.envelope import ErrorEnvelope
 from app.mcp.approval_receipts import approval_receipt_cleanup_loop, approval_receipt_store
 from app.mcp.connections import mcp_connection_store
+from app.mcp.lifecycle import mcp_lifecycle_store
 from app.mcp.oauth.flow_store import oauth_flow_store
 from app.mcp.oauth.registration_store import oauth_registration_store
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI):
     await tool_registry.close()
     await mcp_server_registry.close()
     await mcp_connection_store.close()
+    await mcp_lifecycle_store.close()
     await oauth_registration_store.close()
     await oauth_flow_store.close()
     await approval_receipt_store.close()

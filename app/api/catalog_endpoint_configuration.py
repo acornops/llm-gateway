@@ -6,12 +6,18 @@ from dataclasses import dataclass
 import structlog
 from fastapi import HTTPException
 
+from app.api.mcp_admin_validation import validate_remote_mcp_endpoint_contract
 from app.catalog.models import CatalogArtifact
 from app.catalog.schemas import CatalogMcpImportBase
 from app.mcp.egress_policy import McpEgressPolicyError, validate_mcp_server_url
-from app.mcp.header_policy import validate_public_headers
+from app.mcp.header_policy import (
+    validate_public_auth_header_collision,
+    validate_public_headers,
+)
 
 logger = structlog.get_logger()
+
+_CREDENTIAL_MODES = ("none", "workspace", "individual")
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,38 @@ class ResolvedCatalogEndpoint:
     credential_header_name: str | None
     credential_auth_type: str
     credential_auth_header_prefix: str
+
+
+def _supported_credential_modes(
+    endpoint: dict[str, object],
+    *,
+    requires_credential: bool,
+) -> tuple[str, ...]:
+    inferred_modes = ("workspace", "individual") if requires_credential else ("none",)
+    declared_modes = endpoint.get("supportedCredentialModes")
+    if declared_modes is None:
+        return inferred_modes
+    if not isinstance(declared_modes, list) or not declared_modes:
+        raise HTTPException(status_code=422, detail="Endpoint has no supported credential mode")
+    if any(mode not in _CREDENTIAL_MODES for mode in declared_modes):
+        raise HTTPException(
+            status_code=422,
+            detail="Endpoint declares an unsupported credential mode",
+        )
+
+    supported_modes = tuple(dict.fromkeys(declared_modes))
+    if requires_credential:
+        if "none" in supported_modes:
+            raise HTTPException(
+                status_code=422,
+                detail="Credential-bearing endpoints cannot support credential mode none",
+            )
+    elif supported_modes != ("none",):
+        raise HTTPException(
+            status_code=422,
+            detail="Credential-free endpoints must use credential mode none",
+        )
+    return supported_modes
 
 
 async def resolve_catalog_endpoint(
@@ -109,6 +147,7 @@ async def resolve_catalog_endpoint(
             status_code=422,
             detail="Endpoint URL contains unresolved configuration fields",
         )
+    validate_remote_mcp_endpoint_contract(resolved_url)
     try:
         await validate_mcp_server_url(resolved_url)
     except McpEgressPolicyError as exc:
@@ -132,24 +171,31 @@ async def resolve_catalog_endpoint(
     secret_header_names = {
         item for item in endpoint.get("secretHeaderNames") or [] if isinstance(item, str)
     }
+    if len(secret_header_names) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Endpoint requires multiple credentials and is not supported",
+        )
     credential_header_name = sorted(secret_header_names)[0] if secret_header_names else None
     credential_auth_type = (
-        "bearer_token"
-        if credential_header_name is None or credential_header_name.lower() == "authorization"
+        "none"
+        if credential_header_name is None
+        else "bearer_token"
+        if credential_header_name.lower() == "authorization"
         else "custom_header"
     )
-    declared_modes = endpoint.get("supportedCredentialModes")
-    if isinstance(declared_modes, list):
-        supported_modes = tuple(
-            mode for mode in declared_modes if mode in ("workspace", "individual")
-        )
-    else:
-        supported_modes = ("none",)
-    if not supported_modes:
-        raise HTTPException(status_code=422, detail="Endpoint has no supported credential mode")
+    supported_modes = _supported_credential_modes(
+        endpoint,
+        requires_credential=credential_header_name is not None,
+    )
     recommended_mode = endpoint.get("recommendedCredentialMode")
+    if recommended_mode is not None and recommended_mode not in supported_modes:
+        raise HTTPException(
+            status_code=422,
+            detail="Endpoint recommends an unsupported credential mode",
+        )
     credential_mode = request.credential_mode or (
-        recommended_mode if recommended_mode in supported_modes else supported_modes[0]
+        recommended_mode if isinstance(recommended_mode, str) else supported_modes[0]
     )
     if credential_mode not in supported_modes:
         raise HTTPException(
@@ -159,6 +205,11 @@ async def resolve_catalog_endpoint(
     merged_headers = {**(request.public_headers or {}), **configured_headers}
     try:
         validate_public_headers(merged_headers)
+        validate_public_auth_header_collision(
+            merged_headers,
+            credential_auth_type,
+            credential_header_name,
+        )
     except ValueError as exc:
         logger.warning("catalog_public_header_rejected", reason=str(exc))
         raise HTTPException(
@@ -175,6 +226,8 @@ async def resolve_catalog_endpoint(
         credential_auth_header_prefix=(
             endpoint["credentialAuthHeaderPrefix"]
             if isinstance(endpoint.get("credentialAuthHeaderPrefix"), str)
-            else "Bearer " if credential_auth_type == "bearer_token" else ""
+            else "Bearer "
+            if credential_auth_type == "bearer_token"
+            else ""
         ),
     )

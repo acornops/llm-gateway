@@ -1,16 +1,14 @@
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.exc import IntegrityError
 
-from app.api.handlers_mcp_connections import (
-    cleanup_server_connections,
-)
+from app.api.handlers_mcp_builtin_sync import router as mcp_builtin_sync_router
 from app.api.handlers_mcp_connections import (
     router as mcp_connections_router,
 )
+from app.api.handlers_mcp_lifecycle import router as mcp_lifecycle_router
 from app.api.handlers_mcp_tool_admin import router as mcp_tool_admin_router
 from app.api.mcp_admin_helpers import (
     _apply_tools_for_server,
@@ -38,19 +36,27 @@ from app.api.mcp_admin_schemas import (
     McpServerCreateRequest,
     McpServerResponse,
     McpServerUpdateRequest,
-    ToolConfigRequest,
     ToolConfigResponse,
 )
 from app.api.mcp_admin_validation import (
-    is_builtin_bridge_registration,
     registry_destination,
     registry_scope_options,
     validate_remote_mcp_endpoint_contract,
 )
+from app.api.mcp_connection_cleanup import cleanup_server_connections
+from app.api.mcp_connection_test import run_mcp_server_connection_test
+from app.api.mcp_lifecycle_guard import (
+    guarded_destination_operation,
+    guarded_destination_read,
+    guarded_server_mutation,
+    guarded_server_operation,
+)
+from app.api.mcp_trust_reconciliation import reconcile_credential_free_trust
 from app.auth.service_token import require_admin_service_token
-from app.config.settings import settings
 from app.examples import EXAMPLE_MCP_SERVER_ID, EXAMPLE_WORKSPACE_ID
 from app.mcp.egress_policy import McpEgressPolicyError, validate_mcp_server_url
+from app.mcp.header_policy import validate_public_auth_header_collision
+from app.mcp.lifecycle import McpDestination
 from app.mcp.logging import loggable_mcp_server_origin
 from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.mcp.remote_policy import require_remote_mcp_enabled
@@ -58,11 +64,14 @@ from app.target_types import TARGET_TYPE_EXAMPLES
 
 router = APIRouter()
 router.include_router(mcp_connections_router)
+router.include_router(mcp_builtin_sync_router)
 router.include_router(mcp_tool_admin_router)
+router.include_router(mcp_lifecycle_router)
 logger = structlog.get_logger()
 
 
 @router.get("/servers", response_model=list[McpServerResponse], response_model_exclude_none=True)
+@guarded_destination_read()
 async def list_mcp_servers(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str | None = Query(default=None, min_length=1),
@@ -75,15 +84,12 @@ async def list_mcp_servers(
         scope_type, target_id, target_type, agent_id
     )
     registry_scope = registry_scope_options(scope_type, destination_target_type)
-    servers = await mcp_server_registry.list_servers(
-        workspace_id, destination_id, **registry_scope
-    )
+    servers = await mcp_server_registry.list_servers(workspace_id, destination_id, **registry_scope)
     response: list[McpServerResponse] = []
     for server in servers:
         server_tools = await _resolve_tools_for_server(
             workspace_id,
             destination_id,
-            server.server_url,
             server_id=str(server.id),
             **registry_scope,
         )
@@ -92,6 +98,7 @@ async def list_mcp_servers(
 
 
 @router.get("/tools", response_model=list[ToolConfigResponse], response_model_exclude_none=True)
+@guarded_destination_read()
 async def list_mcp_tools(
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
     target_id: str | None = Query(default=None, min_length=1),
@@ -114,14 +121,23 @@ async def list_mcp_tools(
     )
     response: list[ToolConfigResponse] = []
     for tool in tools:
-        server = await mcp_server_registry.get_server_by_url(
+        server = await mcp_server_registry.get_server(
             workspace_id,
             destination_id,
-            tool.mcp_server_url,
-            enabled_only=False,
+            str(tool.server_id),
             **registry_scope,
         )
-        if not include_server_disabled and server and not server.enabled:
+        if server is None:
+            logger.warning(
+                "mcp_orphan_tool_omitted",
+                workspace_id=workspace_id,
+                scope_type=scope_type,
+                destination_id=destination_id,
+                server_id=str(tool.server_id),
+                tool_name=tool.tool_name,
+            )
+            continue
+        if not include_server_disabled and not server.enabled:
             continue
         response.append(_build_tool_response(tool))
     return response
@@ -141,108 +157,129 @@ async def create_mcp_server(
         request.scope_type, request.target_id, request.target_type, request.agent_id
     )
     registry_scope = registry_scope_options(request.scope_type, destination_target_type)
-    is_builtin_bridge = is_builtin_bridge_registration(request)
-    if any(tool.source == "builtin" for tool in request.tools) and not is_builtin_bridge:
+    if any(tool.source == "builtin" for tool in request.tools):
         raise HTTPException(
-            status_code=400, detail="Only the platform built-in bridge may register built-in tools"
+            status_code=409,
+            detail="Platform built-in definitions must use the built-in synchronization endpoint",
         )
-    if not is_builtin_bridge:
-        validate_remote_mcp_endpoint_contract(request.server_url)
-        try:
-            await validate_mcp_server_url(request.server_url)
-        except McpEgressPolicyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    discover_on_create = len(request.tools) == 0 and request.credential_mode == "none"
+    if discover_on_create:
+        require_remote_mcp_enabled()
+    validate_remote_mcp_endpoint_contract(request.server_url)
+    try:
+        await validate_mcp_server_url(request.server_url)
+    except McpEgressPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     auth_header_name = _auth_header_name_for(request.auth_type, request.auth_header_name)
     auth_header_prefix = _auth_header_prefix_for(request.auth_type, request.auth_header_prefix)
 
-    try:
-        server = await mcp_server_registry.create_server(
-            workspace_id=request.workspace_id,
-            destination_id=destination_id,
-            server_name=request.server_name,
-            server_url=request.server_url,
-            enabled=request.enabled,
-            auth_type=request.auth_type,
-            auth_header_name=auth_header_name,
-            auth_header_prefix=auth_header_prefix,
-            public_headers=request.public_headers,
-            credential_mode=request.credential_mode,
-            provenance_type="builtin" if is_builtin_bridge else "manual",
-            endpoint_configuration=None,
-            **registry_scope,
-        )
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="MCP server name or URL already exists in target",
-        ) from exc
-
-    tools_to_apply = request.tools
-    discovery_error: str | None = None
-    # Authenticated installations have no usable credential until the resolved
-    # owner creates its connection. That connection flow owns the
-    # first authenticated discovery and its connected/error state.
-    if len(tools_to_apply) == 0 and request.credential_mode == "none":
-        if not is_builtin_bridge:
-            require_remote_mcp_enabled()
+    destination = McpDestination(
+        workspace_id=request.workspace_id,
+        scope_type=request.scope_type,
+        destination_id=destination_id,
+        target_type=destination_target_type,
+    )
+    async with guarded_destination_operation(destination):
         try:
-            tools_to_apply, discovery_error, _discovery_error_code = await _discover_server_tools(
-                request.workspace_id, destination_id, server
-            )
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-            discovery_error = detail or "MCP server discovery failed."
-            logger.warning(
-                "mcp_tool_discovery_validation_failed",
+            server = await mcp_server_registry.create_server(
                 workspace_id=request.workspace_id,
-                scope_type=request.scope_type,
                 destination_id=destination_id,
                 server_name=request.server_name,
-                server_url=loggable_mcp_server_origin(request.server_url),
-                error_code="MCP_DISCOVERY_VALIDATION_FAILED",
+                server_url=request.server_url,
+                enabled=request.enabled,
+                auth_type=request.auth_type,
+                auth_header_name=auth_header_name,
+                auth_header_prefix=auth_header_prefix,
+                public_headers=request.public_headers,
+                credential_mode=request.credential_mode,
+                provenance_type="manual",
+                endpoint_configuration=None,
+                **registry_scope,
             )
-            tools_to_apply = []
-        except Exception:
-            logger.exception(
-                "mcp_tool_discovery_failed",
-                workspace_id=request.workspace_id,
-                scope_type=request.scope_type,
-                destination_id=destination_id,
-                server_name=request.server_name,
-                server_url=loggable_mcp_server_origin(request.server_url),
-            )
-            discovery_error = "MCP server discovery failed."
-            tools_to_apply = []
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="MCP server name or URL already exists in target",
+            ) from exc
+        server_id = str(server.id)
 
-        updated_server = await _record_discovery_status(
+    async with guarded_server_operation(
+        request.workspace_id,
+        server_id,
+    ):
+        # The lifecycle guard is an authority/serialization boundary, not a
+        # response DTO contract. Reload the complete registry row under that
+        # guard and keep using the canonical ID captured at creation.
+        server = await mcp_server_registry.get_server(
             request.workspace_id,
             destination_id,
-            str(server.id),
-            discovery_error,
+            server_id,
             **registry_scope,
         )
-        if updated_server is not None:
-            server = updated_server
+        if server is None:
+            raise HTTPException(status_code=404, detail="MCP server not found")
+        tools_to_apply = request.tools
+        discovery_error: str | None = None
+        # Authenticated installations have no usable credential until the resolved
+        # owner creates its connection. That connection flow owns the
+        # first authenticated discovery and its connected/error state.
+        if discover_on_create:
+            try:
+                tools_to_apply, discovery_error, _discovery_error_code = (
+                    await _discover_server_tools(request.workspace_id, destination_id, server)
+                )
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                discovery_error = detail or "MCP server discovery failed."
+                logger.warning(
+                    "mcp_tool_discovery_validation_failed",
+                    workspace_id=request.workspace_id,
+                    scope_type=request.scope_type,
+                    destination_id=destination_id,
+                    server_name=request.server_name,
+                    server_url=loggable_mcp_server_origin(request.server_url),
+                    error_code="MCP_DISCOVERY_VALIDATION_FAILED",
+                )
+                tools_to_apply = []
+            except Exception:
+                logger.exception(
+                    "mcp_tool_discovery_failed",
+                    workspace_id=request.workspace_id,
+                    scope_type=request.scope_type,
+                    destination_id=destination_id,
+                    server_name=request.server_name,
+                    server_url=loggable_mcp_server_origin(request.server_url),
+                )
+                discovery_error = "MCP server discovery failed."
+                tools_to_apply = []
 
-    await _apply_tools_for_server(
-        request.workspace_id,
-        destination_id,
-        server.server_url,
-        tools_to_apply,
-        server_id=str(server.id),
-        remove_disabled=len(request.tools) > 0,
-        **registry_scope,
-    )
+            updated_server = await _record_discovery_status(
+                request.workspace_id,
+                destination_id,
+                server_id,
+                discovery_error,
+                **registry_scope,
+            )
+            if updated_server is not None:
+                server = updated_server
 
-    server_tools = await _resolve_tools_for_server(
-        request.workspace_id,
-        destination_id,
-        request.server_url,
-        server_id=str(server.id),
-        **registry_scope,
-    )
-    return _build_server_response(server, server_tools)
+        await _apply_tools_for_server(
+            request.workspace_id,
+            destination_id,
+            tools_to_apply,
+            server_id=server_id,
+            remove_disabled=len(request.tools) > 0,
+            **registry_scope,
+        )
+
+        server_tools = await _resolve_tools_for_server(
+            request.workspace_id,
+            destination_id,
+            server_id=server_id,
+            **registry_scope,
+        )
+        return _build_server_response(server, server_tools)
 
 
 @router.patch(
@@ -250,6 +287,7 @@ async def create_mcp_server(
     response_model=McpServerResponse,
     response_model_exclude_none=True,
 )
+@guarded_server_mutation(allow_transitioning=True)
 async def update_mcp_server(
     request: McpServerUpdateRequest,
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
@@ -273,6 +311,38 @@ async def update_mcp_server(
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
+    if getattr(server, "provenance_type", "manual") == "builtin":
+        supplied_fields = request.model_fields_set
+        if request.enabled is None or not supplied_fields.issubset(
+            {"enabled", "expected_revision"}
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Built-in MCP servers allow enablement changes only",
+            )
+        patch: dict[str, Any] = {"enabled": request.enabled}
+        if request.expected_revision is not None:
+            patch["expected_revision"] = request.expected_revision
+        try:
+            updated = await mcp_server_registry.update_server(
+                workspace_id,
+                destination_id,
+                server_id,
+                patch,
+                **registry_scope,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="MCP server not found")
+        server_tools = await _resolve_tools_for_server(
+            workspace_id,
+            destination_id,
+            server_id=str(updated.id),
+            **registry_scope,
+        )
+        return _build_server_response(updated, server_tools)
+
     next_auth_type = request.auth_type if request.auth_type is not None else server.auth_type
     if next_auth_type == "custom_header":
         if request.auth_header_name is not None:
@@ -291,6 +361,8 @@ async def update_mcp_server(
             request.auth_header_prefix
             if request.auth_header_prefix is not None
             else server.auth_header_prefix
+            if server.auth_type == "custom_header"
+            else ""
         )
     elif next_auth_type in ("bearer_token", "oauth"):
         next_auth_header_prefix = "Bearer "
@@ -314,6 +386,16 @@ async def update_mcp_server(
             status_code=400,
             detail="auth_header_name is required for custom_header auth",
         )
+    try:
+        validate_public_auth_header_collision(
+            request.public_headers
+            if request.public_headers is not None
+            else server.public_headers,
+            next_auth_type,
+            next_auth_header_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if next_auth_type == "oauth" and request_has_auth_fields:
         raise HTTPException(
             status_code=400,
@@ -338,16 +420,6 @@ async def update_mcp_server(
             detail="OAuth MCP installations require individual credentials",
         )
     patch: dict[str, Any] = {}
-    if request.server_url is not None:
-        if (
-            getattr(server, "provenance_type", "manual") != "builtin"
-            or request.server_url != settings.BUILTIN_TARGET_MCP_SERVER_URL
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Only a built-in server may rotate to the configured built-in endpoint",
-            )
-        patch["server_url"] = request.server_url
     if request.server_name is not None:
         patch["server_name"] = request.server_name
     if request.enabled is not None:
@@ -370,63 +442,98 @@ async def update_mcp_server(
                 patch["auth_header_prefix"] = next_auth_header_prefix
     if request.public_headers is not None:
         patch["public_headers"] = request.public_headers
-    if request.tools is not None:
-        requested_sources = {tool.source for tool in request.tools if tool.source is not None}
-        if (
-            "builtin" in requested_sources
-            and getattr(server, "provenance_type", "manual") != "builtin"
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Manual and catalog servers cannot claim built-in tool source",
-            )
-        if "mcp" in requested_sources and getattr(server, "provenance_type", "manual") == "builtin":
-            raise HTTPException(
-                status_code=400, detail="Built-in servers may contain built-in tools only"
-            )
     if request.expected_revision is not None:
         patch["expected_revision"] = request.expected_revision
 
-    if patch:
-        trust_changed = any(
-            (
-                request.server_url is not None and request.server_url != server.server_url,
-                next_auth_type != server.auth_type,
-                next_auth_header_name != server.auth_header_name,
-                next_auth_header_prefix != server.auth_header_prefix,
-                next_credential_mode != server.credential_mode,
-                request.public_headers is not None
-                and request.public_headers != (server.public_headers or {}),
-            )
+    trust_changed = any(
+        (
+            next_auth_type != server.auth_type,
+            next_auth_header_name != server.auth_header_name,
+            next_auth_header_prefix != server.auth_header_prefix,
+            next_credential_mode != server.credential_mode,
+            request.public_headers is not None
+            and request.public_headers != (server.public_headers or {}),
         )
-        if trust_changed:
+    )
+    if (
+        patch
+        and next_credential_mode == "none"
+        and (
+            trust_changed
+            or bool(getattr(server, "credential_transitioning", False))
+        )
+    ):
+        # The kill switch must win before transition persistence, credential
+        # cleanup, DNS validation, or credential-free discovery side effects.
+        require_remote_mcp_enabled()
+
+    if patch:
+        transition_required = trust_changed or bool(
+            getattr(server, "credential_transitioning", False)
+        )
+        credential_free_reconciliation = False
+        if transition_required:
             reason = (
                 "mode_transition"
                 if next_credential_mode != server.credential_mode
                 else "trust_change"
+                if trust_changed
+                else "trust_change_recovery"
             )
-            transition_patch: dict[str, Any] = {
-                "credential_transitioning": True,
-                "connection_status": "error",
-                "last_discovery_at": None,
-                "last_discovery_error": "Credential configuration update in progress.",
-            }
-            if request.expected_revision is not None:
-                transition_patch["expected_revision"] = request.expected_revision
+            persisted_request_matches = all(
+                getattr(server, key, None) == value
+                for key, value in patch.items()
+                if key != "expected_revision"
+            )
+            recovery_retry = (
+                bool(getattr(server, "credential_transitioning", False))
+                and not trust_changed
+                and persisted_request_matches
+            )
+            if recovery_retry:
+                # Resume the durably applied transition without replaying its stale revision.
+                patch = {}
+            else:
+                transition_patch: dict[str, Any] = {
+                    **patch,
+                    "credential_transitioning": True,
+                    "credential_epoch": int(getattr(server, "credential_epoch", 1) or 1) + 1,
+                    "connection_status": "error",
+                    "last_discovery_at": None,
+                    "last_discovery_error": "Credential configuration update in progress.",
+                }
+                try:
+                    transitioning = await mcp_server_registry.update_server(
+                        workspace_id,
+                        destination_id,
+                        server_id,
+                        transition_patch,
+                        **registry_scope,
+                    )
+                except IntegrityError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="MCP server name or URL already exists in target",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                if not transitioning:
+                    raise HTTPException(status_code=404, detail="MCP server not found")
+                server = transitioning
             try:
-                transitioning = await mcp_server_registry.update_server(
-                    workspace_id,
-                    destination_id,
-                    server_id,
-                    transition_patch,
-                    **registry_scope,
+                await cleanup_server_connections(workspace_id, server_id, reason=reason)
+            except Exception as exc:
+                logger.exception(
+                    "mcp_connection_cleanup_failed_for_trust_change",
+                    workspace_id=workspace_id,
+                    scope_type=scope_type,
+                    server_id=server_id,
+                    reason=reason,
                 )
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            if not transitioning:
-                raise HTTPException(status_code=404, detail="MCP server not found")
-            patch.pop("expected_revision", None)
-            await cleanup_server_connections(workspace_id, server_id, reason=reason)
+                raise HTTPException(
+                    status_code=503,
+                    detail="MCP credential cleanup did not complete; retry this update",
+                ) from exc
             logger.info(
                 "mcp_connections_invalidated_for_trust_change",
                 workspace_id=workspace_id,
@@ -434,114 +541,60 @@ async def update_mcp_server(
                 server_id=server_id,
                 reason=reason,
             )
-            patch["credential_transitioning"] = False
-            patch["connection_status"] = "unknown"
-            patch["last_discovery_at"] = None
-            patch["last_discovery_error"] = None
-        try:
-            updated = await mcp_server_registry.update_server(
+            # Tool review authority is bound to the endpoint plus its request
+            # authentication context. Reconnection/discovery must recreate
+            # every definition disabled and pending review after any trust
+            # transition; compatible names must not inherit old approvals.
+            await tool_registry.remove_server_tools_not_in(
                 workspace_id,
                 destination_id,
-                server_id,
-                patch,
+                server_id=server_id,
+                tool_names=set(),
                 **registry_scope,
             )
-        except IntegrityError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="MCP server name or URL already exists in target",
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if not updated:
-            raise HTTPException(status_code=404, detail="MCP server not found")
-        server = updated
-
-    if request.tools:
-        await _apply_tools_for_server(
-            workspace_id,
-            destination_id,
-            server.server_url,
-            request.tools,
-            server_id=str(server.id),
-            **registry_scope,
-        )
-    elif not request.remove_tools:
-        # Recovery path: if a server has no tools mapped, try discovery on update.
-        current_tools = await _resolve_tools_for_server(
-            workspace_id,
-            destination_id,
-            server.server_url,
-            server_id=str(server.id),
-            **registry_scope,
-        )
-        if len(current_tools) == 0 and server.credential_mode == "none":
-            if getattr(server, "provenance_type", "manual") != "builtin":
-                require_remote_mcp_enabled()
-            discovery_error: str | None = None
+            credential_free_reconciliation = next_credential_mode == "none"
+            patch = (
+                {}
+                if credential_free_reconciliation
+                else {
+                    "credential_transitioning": False,
+                    "connection_status": "unknown",
+                    "last_discovery_at": None,
+                    "last_discovery_error": None,
+                }
+            )
+        if patch:
             try:
-                (
-                    discovered_tools,
-                    discovery_error,
-                    _discovery_error_code,
-                ) = await _discover_server_tools(workspace_id, destination_id, server)
-                if len(discovered_tools) > 0:
-                    await _apply_tools_for_server(
-                        workspace_id,
-                        destination_id,
-                        server.server_url,
-                        discovered_tools,
-                        server_id=str(server.id),
-                        remove_disabled=False,
-                        **registry_scope,
-                    )
-            except HTTPException as exc:
-                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-                discovery_error = detail or "MCP server discovery failed."
-                logger.warning(
-                    "mcp_tool_discovery_validation_failed_on_update",
-                    workspace_id=workspace_id,
-                    scope_type=scope_type,
-                    destination_id=destination_id,
-                    server_name=server.server_name,
-                    server_url=loggable_mcp_server_origin(server.server_url),
-                    error_code="MCP_DISCOVERY_VALIDATION_FAILED",
+                updated = await mcp_server_registry.update_server(
+                    workspace_id,
+                    destination_id,
+                    server_id,
+                    patch,
+                    **registry_scope,
                 )
-            except Exception:
-                logger.exception(
-                    "mcp_tool_discovery_failed_on_update",
-                    workspace_id=workspace_id,
-                    scope_type=scope_type,
-                    destination_id=destination_id,
-                    server_name=server.server_name,
-                    server_url=loggable_mcp_server_origin(server.server_url),
-                )
-                discovery_error = "MCP server discovery failed."
+            except IntegrityError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="MCP server name or URL already exists in target",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if not updated:
+                raise HTTPException(status_code=404, detail="MCP server not found")
+            server = updated
 
-            updated_server = await _record_discovery_status(
-                workspace_id,
-                destination_id,
-                str(server.id),
-                discovery_error,
-                **registry_scope,
-            )
-            if updated_server is not None:
-                server = updated_server
-
-    if request.remove_tools:
-        for tool_name in request.remove_tools:
-            await tool_registry.remove_tool(
-                tool_name,
-                workspace_id,
-                destination_id,
-                server_id=str(server.id),
-                **registry_scope,
+        if credential_free_reconciliation:
+            server = await reconcile_credential_free_trust(
+                workspace_id=workspace_id,
+                destination_id=destination_id,
+                server_id=server_id,
+                server=server,
+                registry_scope=registry_scope,
             )
 
     server_tools = await _resolve_tools_for_server(
         workspace_id,
         destination_id,
-        server.server_url,
         server_id=str(server.id),
         **registry_scope,
     )
@@ -549,6 +602,7 @@ async def update_mcp_server(
 
 
 @router.post("/servers/{server_id}/test", response_model=McpServerConnectionTestResponse)
+@guarded_server_mutation()
 async def test_mcp_server_connection(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
@@ -558,68 +612,19 @@ async def test_mcp_server_connection(
     agent_id: str | None = Query(default=None),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> McpServerConnectionTestResponse:
-    destination_id, destination_target_type = registry_destination(
-        scope_type, target_id, target_type, agent_id
-    )
-    registry_scope = registry_scope_options(scope_type, destination_target_type)
-    server = await mcp_server_registry.get_server(
-        workspace_id,
-        destination_id,
-        server_id,
-        **registry_scope,
-    )
-    if not server:
-        raise HTTPException(status_code=404, detail="MCP server not found")
-
-    if server.credential_mode != "none":
-        raise HTTPException(
-            status_code=409,
-            detail="Use the connection verify endpoint for authenticated discovery",
-        )
-    if getattr(server, "provenance_type", "manual") != "builtin":
-        require_remote_mcp_enabled()
-
-    discovered_tools: list[ToolConfigRequest] = []
-    discovery_error: str | None = None
-    try:
-        discovered_tools, discovery_error, _discovery_error_code = await _discover_server_tools(
-            workspace_id, destination_id, server
-        )
-        if discovery_error is None:
-            await merge_connection_discovery(server, discovered_tools)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-        discovery_error = detail or "MCP server discovery failed."
-    except Exception:
-        logger.exception(
-            "mcp_tool_discovery_test_failed",
-            workspace_id=workspace_id,
-            scope_type=scope_type,
-            destination_id=destination_id,
-            server_name=server.server_name,
-            server_url=loggable_mcp_server_origin(server.server_url),
-        )
-        discovery_error = "MCP server discovery failed."
-
-    updated_server = await _record_discovery_status(
-        workspace_id,
-        destination_id,
-        server_id,
-        discovery_error,
-        **registry_scope,
-    )
-    if updated_server is not None:
-        server = updated_server
-
-    timestamp = server.last_discovery_at or datetime.now(UTC)
-    discovered_tool_names = sorted({tool.name for tool in discovered_tools})
-    return McpServerConnectionTestResponse(
-        server_id=str(server.id),
-        server_name=server.server_name,
-        server_url=server.server_url,
-        connection_status="error" if discovery_error else "ok",
-        last_discovery_at=timestamp,
-        discovered_tool_count=len(discovered_tool_names),
-        discovered_tools=discovered_tool_names,
-        error=discovery_error,
+    return await run_mcp_server_connection_test(
+        server_id=server_id,
+        workspace_id=workspace_id,
+        target_id=target_id,
+        target_type=target_type,
+        scope_type=scope_type,
+        agent_id=agent_id,
+        registry_destination=registry_destination,
+        registry_scope_options=registry_scope_options,
+        server_registry=mcp_server_registry,
+        require_remote_mcp_enabled=require_remote_mcp_enabled,
+        discover_server_tools=_discover_server_tools,
+        merge_connection_discovery=merge_connection_discovery,
+        record_discovery_status=_record_discovery_status,
+        logger=logger,
     )

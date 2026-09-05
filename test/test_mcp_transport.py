@@ -254,6 +254,22 @@ async def test_rejects_an_unreadable_additional_ca_bundle(
 
 
 @pytest.mark.anyio
+async def test_list_tools_preserves_egress_blocked_error_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.mcp.transports.http_transport.settings.ADDITIONAL_CA_BUNDLE_FILE",
+        "/missing/acornops-additional-ca.pem",
+    )
+
+    payload = await McpHttpTransport().list_tools("http://mcp.example/mcp", 1000)
+
+    assert isinstance(payload, McpToolTransportError)
+    assert payload.code == "MCP_EGRESS_BLOCKED"
+    assert payload.dispatch_outcome == "not_started"
+
+
+@pytest.mark.anyio
 async def test_supports_a_stateless_streamable_http_server() -> None:
     server = StrictStreamableMcpServer(issue_session=False)
 

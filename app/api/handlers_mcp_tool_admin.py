@@ -2,10 +2,11 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
-from app.api.handlers_mcp_connections import cleanup_server_connections
 from app.api.mcp_admin_helpers import _build_tool_response, _resolve_tools_for_server
 from app.api.mcp_admin_schemas import ToolConfigResponse, ToolUpdateRequest
 from app.api.mcp_admin_validation import registry_destination, registry_scope_options
+from app.api.mcp_connection_cleanup import cleanup_server_connections
+from app.api.mcp_lifecycle_guard import guarded_server_mutation
 from app.auth.service_token import require_admin_service_token
 from app.examples import EXAMPLE_MCP_SERVER_ID, EXAMPLE_WORKSPACE_ID
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -19,6 +20,7 @@ router = APIRouter()
     response_model=ToolConfigResponse,
     response_model_exclude_none=True,
 )
+@guarded_server_mutation()
 async def update_mcp_tool(
     request: ToolUpdateRequest,
     tool_name: str = Path(..., min_length=1),
@@ -27,7 +29,7 @@ async def update_mcp_tool(
     target_type: str | None = Query(default=None, min_length=1, examples=TARGET_TYPE_EXAMPLES),
     scope_type: Literal["agent", "target"] = Query(default="target"),
     agent_id: str | None = Query(default=None),
-    server_id: str | None = Query(default=None),
+    server_id: str = Query(..., min_length=1),
     _token_ok: None = Depends(require_admin_service_token),
 ) -> ToolConfigResponse:
     destination_id, destination_target_type = registry_destination(
@@ -44,6 +46,13 @@ async def update_mcp_tool(
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="Tool not found")
+    if existing.source == "builtin" and (
+        request.enabled is None or request.model_fields_set != {"enabled"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Built-in MCP tools allow enablement changes only",
+        )
     review_state = request.review_state or getattr(existing, "review_state", "pending")
     target_approval = (
         scope_type == "target"
@@ -80,7 +89,6 @@ async def update_mcp_tool(
         )
     updated = await tool_registry.upsert_tool(
         tool_name=existing.tool_name,
-        mcp_server_url=existing.mcp_server_url,
         workspace_id=workspace_id,
         destination_id=destination_id,
         timeout_ms=request.timeout_ms if request.timeout_ms is not None else existing.timeout_ms,
@@ -112,6 +120,7 @@ async def update_mcp_tool(
 
 
 @router.delete("/servers/{server_id}", status_code=204)
+@guarded_server_mutation(allow_transitioning=True)
 async def delete_mcp_server(
     server_id: str = Path(..., examples=[EXAMPLE_MCP_SERVER_ID]),
     workspace_id: str = Query(..., min_length=1, examples=[EXAMPLE_WORKSPACE_ID]),
@@ -130,12 +139,13 @@ async def delete_mcp_server(
     )
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
+    if getattr(server, "provenance_type", "manual") == "builtin":
+        raise HTTPException(status_code=409, detail="Built-in MCP servers cannot be deleted")
 
     await cleanup_server_connections(workspace_id, server_id)
     server_tools = await _resolve_tools_for_server(
         workspace_id,
         destination_id,
-        server.server_url,
         server_id=str(server.id),
         **registry_scope,
     )

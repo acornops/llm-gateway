@@ -178,6 +178,8 @@ jobs:
           until docker exec "$(docker ps -qf "name=postgres")" pg_isready -U gateway_user -d gateway; do
             sleep 1
           done
+          docker exec "$(docker ps -qf "name=postgres")" \
+            createdb -U gateway_user gateway_mcp_migration_test
           until test -s .integration-certs/mock-mcp-cert.pem && curl --fail --silent --cacert .integration-certs/mock-mcp-cert.pem https://localhost:8002/health >/dev/null; do
             sleep 1
           done
@@ -185,6 +187,7 @@ jobs:
         run: |
           export PYTHONPATH=$PYTHONPATH:.
           export DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway
+          export MCP_MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway_mcp_migration_test
           export AUTH_JWKS_URL=http://localhost:8003/jwks.json
           export AUTH_ISSUER=llm-gateway
           export AUTH_AUDIENCE=execution-gateway
@@ -194,6 +197,7 @@ jobs:
         run: |
           export PYTHONPATH=$PYTHONPATH:.
           export DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway
+          export MCP_MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://gateway_user:gateway_password@localhost:5432/gateway_mcp_migration_test
           export AUTH_JWKS_URL=http://localhost:8003/jwks.json
           export AUTH_ISSUER=llm-gateway
           export AUTH_AUDIENCE=execution-gateway

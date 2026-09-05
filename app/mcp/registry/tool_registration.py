@@ -10,7 +10,6 @@ async def resolve_tool_registration(
     session: AsyncSession,
     *,
     tool_name: str,
-    mcp_server_url: str,
     workspace_id: str,
     scope_type: str,
     destination_id: str,
@@ -41,7 +40,6 @@ async def resolve_tool_registration(
         or (scope_type == "agent" and server.agent_id != destination_id)
         or (scope_type == "target" and server.target_id != destination_id)
         or server.target_type != (target_type if scope_type == "target" else None)
-        or server.server_url != mcp_server_url
     ):
         raise ValueError("MCP server destination does not match tool registration")
 

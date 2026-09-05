@@ -1,8 +1,11 @@
 import uuid
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.mcp.registry.models import McpServer, Tool
 from app.mcp.registry.store import McpServerRegistry, ToolRegistry
 from app.secrets.db_models import Base
 
@@ -46,7 +49,6 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
         )
         created = await registry.upsert_tool(
             tool_name="github.search",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -86,7 +88,6 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
 
         updated = await registry.upsert_tool(
             tool_name="github.search",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -114,7 +115,6 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
 
         await registry.upsert_tool(
             tool_name="tool.one",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -123,7 +123,6 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
         )
         await registry.upsert_tool(
             tool_name="tool.two",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -144,7 +143,7 @@ async def test_tool_registry_crud_and_source_cleanup(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp_path):
+async def test_server_url_rotation_rebinds_existing_tools(tmp_path):
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'server-url-rotation.db'}"
     await _create_schema(database_url)
     registry = ToolRegistry(database_url)
@@ -159,7 +158,6 @@ async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp
         )
         await registry.upsert_tool(
             tool_name="list_resources",
-            mcp_server_url=old_url,
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -184,25 +182,22 @@ async def test_tool_registry_updates_existing_tool_after_server_url_rotation(tmp
         )
         assert rotated is not None
 
-        updated = await registry.upsert_tool(
+        persisted = await registry.list_tools(
+            "ws-1", "cluster-a", target_type="kubernetes"
+        )
+        assert len(persisted) == 1
+        assert persisted[0].mcp_server_url == new_url
+
+
+        canonicalized = await registry.upsert_tool(
             tool_name="list_resources",
-            mcp_server_url=new_url,
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
             server_id=str(server.id),
             source="builtin",
         )
-        assert updated.mcp_server_url == new_url
-
-        refreshed = await registry.get_tool(
-            "ws-1",
-            "cluster-a",
-            "list_resources",
-            target_type="kubernetes",
-        )
-        assert refreshed is not None
-        assert refreshed.mcp_server_url == new_url
+        assert canonicalized.mcp_server_url == new_url
     finally:
         await registry.close()
         await server_registry.close()
@@ -223,7 +218,6 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
         )
         first = await registry.upsert_tool(
             tool_name="github.search",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -232,7 +226,6 @@ async def test_tool_registry_allows_same_tool_name_from_distinct_servers(tmp_pat
 
         second = await registry.upsert_tool(
             tool_name="github.search",
-            mcp_server_url="http://server-b",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -264,7 +257,6 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
         )
         await registry.upsert_tool(
             tool_name="github.search",
-            mcp_server_url="http://server-a",
             workspace_id="ws-1",
             destination_id="cluster-a",
             target_type="kubernetes",
@@ -274,7 +266,6 @@ async def test_tool_registry_rejects_target_type_mismatch_for_existing_tool(tmp_
         with pytest.raises(ValueError, match="destination does not match"):
             await registry.upsert_tool(
                 tool_name="github.search",
-                mcp_server_url="http://server-a",
                 workspace_id="ws-1",
                 destination_id="cluster-a",
                 target_type="virtual_machine",
@@ -428,6 +419,147 @@ async def test_mcp_server_registry_isolates_agent_and_target_destinations(tmp_pa
                 str(target.id),
                 {"enabled": False, "expected_revision": 99},
                 target_type="kubernetes",
+            )
+    finally:
+        await registry.close()
+
+
+@pytest.mark.anyio
+async def test_builtin_sync_preserves_enablement_and_rolls_back_partial_failure(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'builtin-sync.db'}"
+    await _create_schema(database_url)
+    registry = McpServerRegistry(database_url)
+
+    def definition(name: str, *, enabled: bool = True, description: str | None = None):
+        return {
+            "name": name,
+            "enabled": enabled,
+            "timeout_ms": 10000,
+            "input_schema": {"type": "object"},
+            "output_schema": None,
+            "artifact_policy": "never",
+            "description": description,
+            "capability": "read",
+            "version": "v1",
+            "review_state": "approved",
+            "risk_level": "read_only",
+            "auto_allowed": False,
+        }
+
+    try:
+        created = await registry.sync_builtin_server(
+            workspace_id="ws-1",
+            destination_id="agent-1",
+            scope_type="agent",
+            server_id=None,
+            server_name="acornops-target-agent",
+            server_url="http://control-plane:8081/internal/v1/mcp",
+            enabled=True,
+            tools=[definition("kept"), definition("stale")],
+        )
+        async with registry.async_session() as session:
+            persisted_server = await session.get(McpServer, created.id)
+            assert persisted_server is not None
+            persisted_server.enabled = False
+            kept = (
+                await session.execute(
+                    select(Tool).where(
+                        Tool.server_id == created.id,
+                        Tool.tool_name == "kept",
+                    )
+                )
+            ).scalars().one()
+            kept.enabled = False
+            await session.commit()
+
+        synced = await registry.sync_builtin_server(
+            workspace_id="ws-1",
+            destination_id="agent-1",
+            scope_type="agent",
+            server_id=str(created.id),
+            server_name="canonical-name",
+            server_url="http://control-plane:8081/internal/v1/mcp",
+            enabled=True,
+            tools=[
+                definition("kept", enabled=True, description="new definition"),
+                definition("new", enabled=True),
+            ],
+        )
+        assert synced.enabled is False
+        async with registry.async_session() as session:
+            tools = list(
+                (
+                    await session.execute(
+                        select(Tool)
+                        .where(Tool.server_id == created.id)
+                        .order_by(Tool.tool_name)
+                    )
+                ).scalars()
+            )
+        assert [tool.tool_name for tool in tools] == ["kept", "new"]
+        assert tools[0].enabled is False
+        assert tools[0].description == "new definition"
+        assert tools[1].enabled is True
+
+        malformed = definition("kept", description="must roll back")
+        malformed.pop("timeout_ms")
+        with pytest.raises(KeyError):
+            await registry.sync_builtin_server(
+                workspace_id="ws-1",
+                destination_id="agent-1",
+                scope_type="agent",
+                server_id=str(created.id),
+                server_name="must-not-commit",
+                server_url="http://control-plane:8081/internal/v1/mcp",
+                enabled=True,
+                tools=[malformed],
+            )
+        persisted = await registry.get_server(
+            "ws-1", "agent-1", str(created.id), scope_type="agent"
+        )
+        assert persisted is not None
+        assert persisted.server_name == "canonical-name"
+        async with registry.async_session() as session:
+            names = list(
+                (
+                    await session.execute(
+                        select(Tool.tool_name)
+                        .where(Tool.server_id == created.id)
+                        .order_by(Tool.tool_name)
+                    )
+                ).scalars()
+            )
+        assert names == ["kept", "new"]
+    finally:
+        await registry.close()
+
+
+@pytest.mark.anyio
+async def test_agent_destination_allows_only_one_builtin_server(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'builtin-agent-unique.db'}"
+    await _create_schema(database_url)
+    registry = McpServerRegistry(database_url)
+    try:
+        await registry.create_server(
+            workspace_id="ws-1",
+            destination_id="agent-1",
+            scope_type="agent",
+            server_name="builtin-a",
+            server_url="http://control-plane:8081/internal/v1/mcp/a",
+            enabled=True,
+            auth_type="none",
+            provenance_type="builtin",
+        )
+        with pytest.raises(IntegrityError):
+            await registry.create_server(
+                workspace_id="ws-1",
+                destination_id="agent-1",
+                scope_type="agent",
+                server_name="builtin-b",
+                server_url="http://control-plane:8081/internal/v1/mcp/b",
+                enabled=True,
+                auth_type="none",
+                provenance_type="builtin",
             )
     finally:
         await registry.close()

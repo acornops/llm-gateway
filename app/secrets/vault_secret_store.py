@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import json
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 import structlog
@@ -19,6 +19,11 @@ from app.resilience.outbound import (
 )
 from app.secrets.errors import SecretNotFoundError
 from app.secrets.interface import SecretStore
+from app.secrets.mcp_names import (
+    McpSecretOwnerType,
+    matches_generated_catalog_secret_name,
+    matches_mcp_secret_name,
+)
 
 logger = structlog.get_logger()
 SECRET_CACHE_INVALIDATION_CHANNEL = "gateway:secret-cache-invalidation"
@@ -103,6 +108,13 @@ class VaultSecretStore(SecretStore):
     def _metadata_path_for_scope(self, secret_name: str, tenant_scope: dict[str, str]) -> str:
         data_path = self._path_for_scope(secret_name, tenant_scope)
         return data_path.replace(f"/v1/{self._mount}/data/", f"/v1/{self._mount}/metadata/", 1)
+
+    def _metadata_list_path(self, *parts: str) -> str:
+        path_parts = self._path_prefix.split("/") if self._path_prefix else []
+        path_parts.extend(parts)
+        encoded = "/".join(quote(part, safe="") for part in path_parts)
+        suffix = f"/{encoded}" if encoded else ""
+        return f"/v1/{self._mount}/metadata{suffix}"
 
     async def _record_dependency_reachable(self, dependency_key: str) -> None:
         await dependency_circuit_breaker.record_success(dependency_key)
@@ -210,10 +222,165 @@ class VaultSecretStore(SecretStore):
         self._evict_secret_cache(secret_name)
         await self._publish_secret_invalidation(secret_name)
 
+    async def _mcp_secret_names(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> list[str]:
+        response = await self._client.request(
+            "LIST",
+            self._metadata_list_path(workspace_id, "_global"),
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return []
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Vault MCP secret inventory failed ({response.status_code})"
+            )
+        keys = response.json().get("data", {}).get("keys", [])
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise RuntimeError("Vault MCP secret inventory returned invalid keys")
+        return sorted(
+            key
+            for key in keys
+            if not key.endswith("/")
+            and matches_mcp_secret_name(
+                key,
+                workspace_id,
+                server_id=server_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+            )
+        )
+
+    async def count_mcp_secrets(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> int:
+        return len(
+            await self._mcp_secret_names(
+                workspace_id,
+                server_id=server_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+            )
+        )
+
+    async def purge_mcp_secrets(
+        self,
+        workspace_id: str,
+        *,
+        server_id: str | None = None,
+        owner_type: McpSecretOwnerType | None = None,
+        owner_id: str | None = None,
+    ) -> int:
+        names = await self._mcp_secret_names(
+            workspace_id,
+            server_id=server_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+        )
+        for name in names:
+            await self.delete_secret(name, {"workspace_id": workspace_id})
+        return len(names)
+
+    async def _all_mcp_secret_locations(
+        self, owner_type: McpSecretOwnerType
+    ) -> list[tuple[str, str]]:
+        """Inventory exact MCP identities in every Vault workspace."""
+
+        response = await self._client.request(
+            "LIST",
+            self._metadata_list_path(),
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return []
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Vault MCP workspace inventory failed ({response.status_code})"
+            )
+        keys = response.json().get("data", {}).get("keys", [])
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise RuntimeError("Vault MCP workspace inventory returned invalid keys")
+        locations: list[tuple[str, str]] = []
+        for key in keys:
+            if not key.endswith("/"):
+                continue
+            workspace_id = unquote(key[:-1])
+            if not workspace_id or workspace_id == "_readiness":
+                continue
+            for name in await self._mcp_secret_names(
+                workspace_id,
+                owner_type=owner_type,
+            ):
+                locations.append((workspace_id, name))
+        return locations
+
+    async def count_all_mcp_user_secrets(self) -> int:
+        return len(await self._all_mcp_secret_locations("user"))
+
+    async def count_all_mcp_installation_secrets(self) -> int:
+        return len(await self._all_mcp_secret_locations("installation"))
+
+    async def purge_all_mcp_user_secrets(self) -> int:
+        locations = await self._all_mcp_secret_locations("user")
+        for workspace_id, name in locations:
+            await self.delete_secret(name, {"workspace_id": workspace_id})
+        return len(locations)
+
+    async def _generated_catalog_secret_names(self, workspace_id: str) -> list[str]:
+        response = await self._client.request(
+            "LIST",
+            self._metadata_list_path(workspace_id, "_global"),
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return []
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Vault catalog secret inventory failed ({response.status_code})"
+            )
+        keys = response.json().get("data", {}).get("keys", [])
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise RuntimeError("Vault catalog secret inventory returned invalid keys")
+        return sorted(
+            key for key in keys if matches_generated_catalog_secret_name(key)
+        )
+
+    async def count_generated_catalog_secrets(self, workspace_id: str) -> int:
+        return len(await self._generated_catalog_secret_names(workspace_id))
+
+    async def purge_generated_catalog_secrets(self, workspace_id: str) -> int:
+        names = await self._generated_catalog_secret_names(workspace_id)
+        for name in names:
+            await self.delete_secret(name, {"workspace_id": workspace_id})
+        return len(names)
+
     async def health_check(self) -> None:
         response = await self._client.get("/v1/sys/health", headers=self._headers())
         if response.status_code not in {200, 429, 472, 473}:
             raise RuntimeError(f"Vault health check failed with status {response.status_code}")
+        list_response = await self._client.request(
+            "LIST",
+            # Exercise the same path shape used by workspace inventory. A
+            # parent-prefix LIST is neither sufficient nor necessary under
+            # path-specific Vault policies.
+            self._metadata_list_path("_readiness", "_global"),
+            headers=self._headers(),
+        )
+        if list_response.status_code not in {200, 404}:
+            raise RuntimeError(
+                "Vault token must have list capability on the configured metadata prefix"
+            )
 
     async def close(self) -> None:
         if self._listener_task is not None:

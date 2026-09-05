@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.api.mcp_admin_schemas import McpServerCreateRequest
+from app.api.mcp_admin_schemas import (
+    McpOAuthCompleteRequest,
+    McpOAuthPrepareRequest,
+    McpOAuthStartRequest,
+    McpServerCreateRequest,
+)
 from app.config.settings import settings
 from app.mcp.egress_policy import ValidatedMcpRequestTarget
 from app.mcp.oauth.discovery import _resource_matches_server, discover_mcp_oauth
@@ -57,6 +62,44 @@ def _test_token_binding_fingerprint() -> str:
         client_id="public-client",
         resource="https://mcp.example/mcp",
     )
+
+
+@pytest.mark.parametrize(
+    ("request_model", "payload"),
+    [
+        (
+            McpOAuthPrepareRequest,
+            {
+                "workspace_id": "ws-1",
+                "owner_id": "user-1",
+                "browser_binding_hash": "a" * 64,
+                "return_path": "/workspaces/ws-1",
+            },
+        ),
+        (
+            McpOAuthStartRequest,
+            {
+                "workspace_id": "ws-1",
+                "owner_id": "user-1",
+                "browser_binding_hash": "a" * 64,
+                "preparation_handle": "p" * 32,
+                "consent_granted": True,
+            },
+        ),
+        (
+            McpOAuthCompleteRequest,
+            {
+                "code": "code",
+                "state": "s" * 32,
+                "owner_id": "user-1",
+                "browser_binding_hash": "a" * 64,
+            },
+        ),
+    ],
+)
+def test_oauth_requests_require_membership_generation(request_model, payload) -> None:
+    with pytest.raises(ValueError):
+        request_model.model_validate(payload)
 
 
 class _AsyncBytes(httpx.AsyncByteStream):
@@ -136,12 +179,9 @@ async def test_discovery_prefers_cimd_and_uses_challenge_scope() -> None:
     assert result.candidates[0].registration_method == "cimd"
     assert result.candidates[0].scopes == ["mcp:write", "offline_access"]
     assert result.candidates[0].offline_access_requested is True
-    assert result.endpoint_snapshots[
-        result.candidates[0].issuer
-    ].registration_endpoint is None
+    assert result.endpoint_snapshots[result.candidates[0].issuer].registration_endpoint is None
     assert all(
-        call.args[0] != "https://auth.example/register"
-        for call in validate_egress.await_args_list
+        call.args[0] != "https://auth.example/register" for call in validate_egress.await_args_list
     )
 
 
@@ -400,9 +440,7 @@ async def test_discovery_rejects_cimd_without_public_token_auth() -> None:
                     _response(
                         200,
                         _asm(
-                            token_endpoint_auth_methods_supported=[
-                                "client_secret_basic"
-                            ],
+                            token_endpoint_auth_methods_supported=["client_secret_basic"],
                             client_id_metadata_document_supported=True,
                         ),
                     ),
@@ -457,11 +495,7 @@ async def test_discovery_defers_dcr_public_auth_compatibility_to_registration() 
                     _response(200, _prm()),
                     _response(
                         200,
-                        _asm(
-                            token_endpoint_auth_methods_supported=[
-                                "client_secret_basic"
-                            ]
-                        ),
+                        _asm(token_endpoint_auth_methods_supported=["client_secret_basic"]),
                     ),
                 ]
             ),
@@ -497,10 +531,7 @@ async def test_discovery_requires_explicit_code_response_metadata() -> None:
     ):
         await discover_mcp_oauth("https://mcp.example/mcp")
 
-    assert (
-        exc_info.value.code
-        == "MCP_OAUTH_AUTHORIZATION_SERVER_METADATA_MISSING"
-    )
+    assert exc_info.value.code == "MCP_OAUTH_AUTHORIZATION_SERVER_METADATA_MISSING"
 
 
 @pytest.mark.anyio
@@ -536,10 +567,13 @@ async def test_public_dcr_rejects_client_secrets() -> None:
             ],
         },
     )
-    with patch(
-        "app.mcp.oauth.registration.oauth_http_request",
-        new=AsyncMock(return_value=response),
-    ), pytest.raises(McpOAuthError) as exc_info:
+    with (
+        patch(
+            "app.mcp.oauth.registration.oauth_http_request",
+            new=AsyncMock(return_value=response),
+        ),
+        pytest.raises(McpOAuthError) as exc_info,
+    ):
         await register_public_client(
             method="dcr",
             endpoints=OAuthEndpointSnapshot(
@@ -668,6 +702,7 @@ async def test_flow_store_consumes_preparation_once() -> None:
         workspace_id="ws-1",
         server_id="server-1",
         owner_id="user-1",
+        membership_generation=1,
         browser_binding_hash="a" * 64,
         return_path="/workspaces/ws-1",
         resource="https://mcp.example/mcp",
@@ -705,16 +740,19 @@ async def test_flow_store_creates_redis_record_and_disconnect_index_atomically()
         workspace_id="ws-1",
         server_id="server-1",
         owner_id="user-1",
+        membership_generation=1,
         browser_binding_hash="a" * 64,
         return_path="/workspaces/ws-1",
         resource="https://mcp.example/mcp",
-        candidates=[{
-            "issuer": "https://auth.example",
-            "issuer_origin": "https://auth.example",
-            "registration_method": "cimd",
-            "scopes": [],
-            "offline_access_requested": False,
-        }],
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": [],
+                "offline_access_requested": False,
+            }
+        ],
         endpoint_snapshots={
             "https://auth.example": OAuthEndpointSnapshot(
                 issuer="https://auth.example",
@@ -735,12 +773,14 @@ async def test_flow_store_creates_redis_record_and_disconnect_index_atomically()
 async def test_prepare_does_not_degrade_an_existing_connected_connection() -> None:
     discovery = OAuthDiscoveryResult(
         resource="https://mcp.example/mcp",
-        candidates=[{
-            "issuer": "https://auth.example",
-            "issuer_origin": "https://auth.example",
-            "registration_method": "cimd",
-            "scopes": ["mcp:read"],
-        }],
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": ["mcp:read"],
+            }
+        ],
         endpoint_snapshots={
             "https://auth.example": OAuthEndpointSnapshot(
                 issuer="https://auth.example",
@@ -753,6 +793,7 @@ async def test_prepare_does_not_degrade_an_existing_connected_connection() -> No
     existing = SimpleNamespace(
         id="22222222-2222-4222-8222-222222222222",
         status="connected",
+        membership_generation=1,
     )
     upsert = AsyncMock()
     with (
@@ -786,6 +827,7 @@ async def test_prepare_does_not_degrade_an_existing_connected_connection() -> No
             ),
             workspace_id="ws-1",
             owner_id="user-1",
+            membership_generation=1,
             browser_binding_hash="a" * 64,
             return_path="/workspaces/ws-1",
         )
@@ -798,12 +840,14 @@ async def test_prepare_does_not_degrade_an_existing_connected_connection() -> No
 async def test_prepare_cannot_recreate_a_connection_after_concurrent_disconnect() -> None:
     discovery = OAuthDiscoveryResult(
         resource="https://mcp.example/mcp",
-        candidates=[{
-            "issuer": "https://auth.example",
-            "issuer_origin": "https://auth.example",
-            "registration_method": "cimd",
-            "scopes": ["mcp:read"],
-        }],
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": ["mcp:read"],
+            }
+        ],
         endpoint_snapshots={
             "https://auth.example": OAuthEndpointSnapshot(
                 issuer="https://auth.example",
@@ -813,7 +857,10 @@ async def test_prepare_cannot_recreate_a_connection_after_concurrent_disconnect(
         },
         metadata_fingerprints={"https://auth.example": "f" * 64},
     )
-    existing = SimpleNamespace(id="22222222-2222-4222-8222-222222222222")
+    existing = SimpleNamespace(
+        id="22222222-2222-4222-8222-222222222222",
+        membership_generation=1,
+    )
     create_preparation = AsyncMock()
     with (
         patch(
@@ -843,6 +890,7 @@ async def test_prepare_cannot_recreate_a_connection_after_concurrent_disconnect(
             ),
             workspace_id="ws-1",
             owner_id="user-1",
+            membership_generation=1,
             browser_binding_hash="a" * 64,
             return_path="/workspaces/ws-1",
         )
@@ -857,15 +905,18 @@ async def test_start_refuses_to_recreate_a_disconnected_connection() -> None:
         workspace_id="ws-1",
         server_id="11111111-1111-4111-8111-111111111111",
         owner_id="user-1",
+        membership_generation=1,
         browser_binding_hash="a" * 64,
         return_path="/workspaces/ws-1",
         resource="https://mcp.example/mcp",
-        candidates=[{
-            "issuer": "https://auth.example",
-            "issuer_origin": "https://auth.example",
-            "registration_method": "cimd",
-            "scopes": [],
-        }],
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": [],
+            }
+        ],
         endpoint_snapshots={
             "https://auth.example": OAuthEndpointSnapshot(
                 issuer="https://auth.example",
@@ -900,6 +951,7 @@ async def test_start_refuses_to_recreate_a_disconnected_connection() -> None:
             workspace_id="ws-1",
             server_id=record.server_id,
             owner_id="user-1",
+            membership_generation=record.membership_generation,
             browser_binding_hash="a" * 64,
             issuer=None,
             consent_granted=True,
@@ -915,15 +967,18 @@ async def test_start_binds_pkce_state_callback_and_resource_before_navigation() 
         workspace_id="ws-1",
         server_id="11111111-1111-4111-8111-111111111111",
         owner_id="user-1",
+        membership_generation=1,
         browser_binding_hash="a" * 64,
         return_path="/workspaces/ws-1",
         resource="https://mcp.example/mcp",
-        candidates=[{
-            "issuer": "https://auth.example",
-            "issuer_origin": "https://auth.example",
-            "registration_method": "cimd",
-            "scopes": ["mcp:read"],
-        }],
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": ["mcp:read"],
+            }
+        ],
         endpoint_snapshots={
             "https://auth.example": OAuthEndpointSnapshot(
                 issuer="https://auth.example",
@@ -933,8 +988,35 @@ async def test_start_binds_pkce_state_callback_and_resource_before_navigation() 
         },
         metadata_fingerprints={"https://auth.example": "f" * 64},
     )
-    connection = SimpleNamespace()
-    create_flow = AsyncMock()
+    connection = SimpleNamespace(
+        membership_generation=record.membership_generation,
+        oauth_client_id="old-client",
+        oauth_resource="https://old.example/mcp",
+        oauth_endpoint_snapshot={
+            "issuer": "https://old-auth.example",
+            "authorization_endpoint": "https://old-auth.example/authorize",
+            "token_endpoint": "https://old-auth.example/token",
+        },
+    )
+    events: list[str] = []
+
+    async def _record_revoke(**_kwargs) -> None:
+        events.append("revoke")
+
+    async def _record_delete(*_args) -> None:
+        events.append("delete")
+
+    async def _record_supersede(*_args) -> None:
+        events.append("supersede")
+
+    async def _record_flow(*_args) -> None:
+        events.append("flow")
+
+    async def _record_state(*_args, **kwargs):
+        events.append("bind" if kwargs.get("oauth_client_id") else "pending")
+        return connection
+
+    create_flow = AsyncMock(side_effect=_record_flow)
     with (
         patch(
             "app.mcp.oauth.service.oauth_flow_store.consume_preparation",
@@ -965,15 +1047,28 @@ async def test_start_binds_pkce_state_callback_and_resource_before_navigation() 
             new=create_flow,
         ),
         patch(
+            "app.mcp.oauth.service.oauth_token_service.revoke",
+            new=AsyncMock(side_effect=_record_revoke),
+        ) as revoke,
+        patch(
+            "app.mcp.oauth.service.oauth_token_service.delete_tokens",
+            new=AsyncMock(side_effect=_record_delete),
+        ) as delete_tokens,
+        patch(
+            "app.mcp.oauth.service.oauth_flow_store.delete_for_connection",
+            new=AsyncMock(side_effect=_record_supersede),
+        ) as delete_flow_state,
+        patch(
             "app.mcp.oauth.service.mcp_connection_store.set_state",
-            new=AsyncMock(return_value=connection),
-        ),
+            new=AsyncMock(side_effect=_record_state),
+        ) as set_state,
     ):
         authorization_url, state, _changed = await start_authorization(
             preparation_handle="p" * 43,
             workspace_id="ws-1",
             server_id=record.server_id,
             owner_id="user-1",
+            membership_generation=record.membership_generation,
             browser_binding_hash="a" * 64,
             issuer=None,
             consent_granted=True,
@@ -987,13 +1082,132 @@ async def test_start_binds_pkce_state_callback_and_resource_before_navigation() 
     stored_flow = create_flow.await_args.args[1]
     assert stored_flow.code_verifier
     assert stored_flow.browser_binding_hash == "a" * 64
+    assert set_state.await_args.kwargs["oauth_client_id"] == stored_flow.client_id
+    assert (
+        set_state.await_args.kwargs["oauth_endpoint_snapshot"]
+        == stored_flow.endpoint_snapshot.model_dump()
+    )
+    assert events == ["pending", "revoke", "delete", "supersede", "flow", "bind"]
+    assert set_state.await_count == 2
+    assert set_state.await_args_list[0].args == (connection, "pending_authorization")
+    assert set_state.await_args_list[0].kwargs == {}
+    assert revoke.await_args.kwargs["connection"] is connection
+    delete_tokens.assert_awaited_once_with(
+        "ws-1",
+        record.server_id,
+        "user-1",
+    )
+    delete_flow_state.assert_awaited_once_with(
+        "ws-1",
+        record.server_id,
+        "user-1",
+    )
 
 
-def _flow() -> OAuthFlowRecord:
+@pytest.mark.anyio
+async def test_start_flow_store_failure_leaves_existing_connection_non_ready() -> None:
+    record = OAuthPreparationRecord(
+        workspace_id="ws-1",
+        server_id="11111111-1111-4111-8111-111111111111",
+        owner_id="user-1",
+        membership_generation=1,
+        browser_binding_hash="a" * 64,
+        return_path="/workspaces/ws-1",
+        resource="https://mcp.example/mcp",
+        candidates=[
+            {
+                "issuer": "https://auth.example",
+                "issuer_origin": "https://auth.example",
+                "registration_method": "cimd",
+                "scopes": ["mcp:read"],
+            }
+        ],
+        endpoint_snapshots={
+            "https://auth.example": OAuthEndpointSnapshot(
+                issuer="https://auth.example",
+                authorization_endpoint="https://auth.example/authorize",
+                token_endpoint="https://auth.example/token",
+            )
+        },
+        metadata_fingerprints={"https://auth.example": "f" * 64},
+    )
+    connection = SimpleNamespace(
+        id="connection-1",
+        membership_generation=1,
+        status="connected",
+        verified_tool_names=["approved.tool"],
+        oauth_client_id="old-client",
+        oauth_resource="https://old.example/mcp",
+        oauth_endpoint_snapshot={"token_endpoint": "https://old.example/token"},
+    )
+    persisted_pending = SimpleNamespace(**{**vars(connection), "status": "pending_authorization"})
+    set_state = AsyncMock(return_value=persisted_pending)
+
+    with (
+        patch(
+            "app.mcp.oauth.service.oauth_flow_store.consume_preparation",
+            new=AsyncMock(return_value=record),
+        ),
+        patch("app.mcp.oauth.service.mcp_connection_store.mutation_lock", new=_no_lock),
+        patch(
+            "app.mcp.oauth.service.mcp_connection_store.get",
+            new=AsyncMock(return_value=connection),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_registration_store.registration_lock",
+            new=_no_lock,
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_registration_store.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_registration_store.put",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch(
+            "app.mcp.oauth.service.mcp_connection_store.set_state",
+            new=set_state,
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_token_service.revoke",
+            new=AsyncMock(),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_token_service.delete_tokens",
+            new=AsyncMock(),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_flow_store.delete_for_connection",
+            new=AsyncMock(),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_flow_store.create_flow",
+            new=AsyncMock(side_effect=RuntimeError("redis unavailable")),
+        ),
+        pytest.raises(RuntimeError, match="redis unavailable"),
+    ):
+        await start_authorization(
+            preparation_handle="p" * 43,
+            workspace_id="ws-1",
+            server_id=record.server_id,
+            owner_id="user-1",
+            membership_generation=1,
+            browser_binding_hash="a" * 64,
+            issuer=None,
+            consent_granted=True,
+        )
+
+    set_state.assert_awaited_once_with(connection, "pending_authorization")
+    assert persisted_pending.status == "pending_authorization"
+
+
+def _flow(*, membership_generation: int = 1) -> OAuthFlowRecord:
     return OAuthFlowRecord(
         workspace_id="ws-1",
         server_id="11111111-1111-4111-8111-111111111111",
         owner_id="user-1",
+        membership_generation=membership_generation,
         browser_binding_hash="a" * 64,
         return_path="/workspaces/ws-1",
         resource="https://mcp.example/mcp",
@@ -1013,11 +1227,65 @@ def _flow() -> OAuthFlowRecord:
 
 
 @pytest.mark.anyio
+async def test_new_authorization_state_supersedes_older_connection_flow() -> None:
+    with patch.object(settings, "REDIS_URL", ""):
+        store = OAuthFlowStore()
+    old_state = "old-state-" + "a" * 32
+    new_state = "new-state-" + "b" * 32
+    old_flow = _flow()
+    new_flow = old_flow.model_copy(update={"client_id": "replacement-client"})
+
+    await store.create_flow(old_state, old_flow)
+    await store.delete_for_connection(
+        old_flow.workspace_id,
+        old_flow.server_id,
+        old_flow.owner_id,
+    )
+    await store.create_flow(new_state, new_flow)
+
+    with pytest.raises(McpOAuthError) as expired:
+        await store.consume_flow(old_state)
+    assert expired.value.code == "MCP_OAUTH_FLOW_INVALID"
+    assert (await store.consume_flow(new_state)).client_id == "replacement-client"
+
+
+@pytest.mark.anyio
+async def test_callback_rejects_generation_mismatch_before_token_exchange() -> None:
+    flow = _flow(membership_generation=7)
+    exchange = AsyncMock()
+    with (
+        patch(
+            "app.mcp.oauth.service.oauth_flow_store.consume_flow",
+            new=AsyncMock(return_value=flow),
+        ),
+        patch(
+            "app.mcp.oauth.service.oauth_token_service.exchange_authorization_code",
+            new=exchange,
+        ),
+        pytest.raises(McpOAuthError) as exc_info,
+    ):
+        await complete_authorization(
+            code="authorization-code",
+            state="s" * 43,
+            issuer=flow.issuer,
+            provider_error=None,
+            owner_id=flow.owner_id,
+            membership_generation=6,
+            browser_binding_hash=flow.browser_binding_hash,
+            verify_connection=_pass_verification,
+        )
+
+    assert exc_info.value.code == "MCP_OAUTH_FLOW_BINDING_MISMATCH"
+    exchange.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_callback_exchange_is_bound_to_user_browser_issuer_and_resource() -> None:
     flow = _flow()
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     bundle = OAuthTokenBundle(
         access_token="access",
@@ -1054,6 +1322,7 @@ async def test_callback_exchange_is_bound_to_user_browser_issuer_and_resource() 
             issuer=flow.issuer,
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1076,6 +1345,7 @@ async def test_callback_exchange_and_verification_share_one_connection_lock() ->
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     bundle = OAuthTokenBundle(access_token="access", scopes=["mcp:read"])
     lock_held = False
@@ -1122,6 +1392,7 @@ async def test_callback_exchange_and_verification_share_one_connection_lock() ->
             issuer=flow.issuer,
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=verify,
         )
@@ -1135,6 +1406,7 @@ async def test_callback_revokes_new_bundle_if_connection_disappears_after_exchan
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     bundle = OAuthTokenBundle(
         access_token="access",
@@ -1181,6 +1453,7 @@ async def test_callback_revokes_new_bundle_if_connection_disappears_after_exchan
             issuer=flow.issuer,
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=verify,
         )
@@ -1201,6 +1474,7 @@ async def test_callback_cleans_up_tokens_if_binding_metadata_cannot_be_persisted
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     bundle = OAuthTokenBundle(
         access_token="access",
@@ -1247,6 +1521,7 @@ async def test_callback_cleans_up_tokens_if_binding_metadata_cannot_be_persisted
             issuer=flow.issuer,
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1285,6 +1560,7 @@ async def test_callback_rejects_user_or_browser_mismatch_before_exchange() -> No
             issuer=flow.issuer,
             provider_error=None,
             owner_id="other-user",
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1299,6 +1575,7 @@ async def test_callback_rejects_rfc9207_issuer_mismatch_before_exchange() -> Non
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     exchange = AsyncMock()
     with (
@@ -1330,6 +1607,7 @@ async def test_callback_rejects_rfc9207_issuer_mismatch_before_exchange() -> Non
             issuer="https://other.example",
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1345,6 +1623,7 @@ async def test_callback_requires_issuer_when_advertised_before_exchange() -> Non
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     exchange = AsyncMock()
     with (
@@ -1376,6 +1655,7 @@ async def test_callback_requires_issuer_when_advertised_before_exchange() -> Non
             issuer=None,
             provider_error=None,
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1390,6 +1670,7 @@ async def test_callback_validates_issuer_before_accepting_provider_denial() -> N
     connection = SimpleNamespace(
         status="pending_authorization",
         oauth_issuer=flow.issuer,
+        membership_generation=flow.membership_generation,
     )
     with (
         patch(
@@ -1416,6 +1697,7 @@ async def test_callback_validates_issuer_before_accepting_provider_denial() -> N
             issuer="https://other.example",
             provider_error="access_denied",
             owner_id=flow.owner_id,
+            membership_generation=flow.membership_generation,
             browser_binding_hash=flow.browser_binding_hash,
             verify_connection=_pass_verification,
         )
@@ -1866,10 +2148,7 @@ async def test_refresh_persists_rotation_before_releasing_connected_state() -> N
     assert request.await_args.kwargs["form_body"]["client_id"] == "public-client"
     assert request.await_args.kwargs["form_body"]["resource"] == "https://mcp.example/mcp"
     assert save.await_args.args[3].refresh_token == "new-refresh"
-    assert (
-        save.await_args.args[3].binding_fingerprint
-        == _test_token_binding_fingerprint()
-    )
+    assert save.await_args.args[3].binding_fingerprint == _test_token_binding_fingerprint()
 
 
 @pytest.mark.anyio
@@ -2009,10 +2288,7 @@ async def test_ambiguous_refresh_requires_reauthorization_without_retry() -> Non
     assert exc_info.value.code == "MCP_OAUTH_REAUTHORIZATION_REQUIRED"
     assert request.await_count == 1
     assert set_state.await_args.args[1] == "reauthorization_required"
-    assert (
-        set_state.await_args.kwargs["error_code"]
-        == "MCP_OAUTH_REFRESH_OUTCOME_UNKNOWN"
-    )
+    assert set_state.await_args.kwargs["error_code"] == "MCP_OAUTH_REFRESH_OUTCOME_UNKNOWN"
 
 
 def test_oauth_installations_are_individual_and_secret_free() -> None:
@@ -2044,6 +2320,4 @@ def test_public_client_metadata_has_no_secret_or_tenant_state() -> None:
     assert metadata["token_endpoint_auth_method"] == "none"
     assert "client_secret" not in serialized
     assert "workspace" not in serialized
-    assert metadata["redirect_uris"] == [
-        "http://localhost:3000/api/v1/mcp/oauth/callback"
-    ]
+    assert metadata["redirect_uris"] == ["http://localhost:3000/api/v1/mcp/oauth/callback"]

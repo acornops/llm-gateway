@@ -87,6 +87,7 @@ class ToolRegistry:
         scope_type: str = "target",
         server_id: str | None = None,
         include_disabled: bool = False,
+        bypass_cache: bool = False,
     ) -> Tool | None:
         """
         Retrieves a target-scoped tool from cache or database.
@@ -100,7 +101,7 @@ class ToolRegistry:
             server_id,
             include_disabled,
         )
-        if cache_key in self._cache:
+        if not bypass_cache and cache_key in self._cache:
             tool, expires_at = self._cache[cache_key]
             if time.time() < expires_at:
                 return tool
@@ -123,7 +124,7 @@ class ToolRegistry:
             matches = list(result.scalars().all())
             tool = matches[0] if len(matches) == 1 else None
 
-            if tool:
+            if tool and not bypass_cache:
                 self._cache[cache_key] = (tool, time.time() + self._cache_ttl)
 
             return tool
@@ -164,7 +165,6 @@ class ToolRegistry:
     async def upsert_tool(
         self,
         tool_name: str,
-        mcp_server_url: str,
         workspace_id: str,
         destination_id: str,
         server_id: str,
@@ -187,7 +187,6 @@ class ToolRegistry:
             server, existing = await resolve_tool_registration(
                 session,
                 tool_name=tool_name,
-                mcp_server_url=mcp_server_url,
                 workspace_id=workspace_id,
                 scope_type=scope_type,
                 destination_id=destination_id,
@@ -203,7 +202,7 @@ class ToolRegistry:
                         f"cannot update through target_type={target_type}"
                     )
                 existing.server_id = server.id
-                existing.mcp_server_url = mcp_server_url
+                existing.mcp_server_url = server.server_url
                 existing.timeout_ms = timeout_ms
                 existing.scope_type = scope_type
                 existing.agent_id = destination_id if scope_type == "agent" else None
@@ -237,7 +236,7 @@ class ToolRegistry:
                 target_id=destination_id if scope_type == "target" else None,
                 target_type=target_type if scope_type == "target" else None,
                 tool_name=tool_name,
-                mcp_server_url=mcp_server_url,
+                mcp_server_url=server.server_url,
                 enabled=enabled,
                 input_schema=input_schema,
                 output_schema=output_schema,
@@ -433,6 +432,31 @@ class ToolRegistry:
                 error=str(exc),
             )
 
+    async def invalidate_scope_tools(
+        self,
+        workspace_id: str,
+        scope_type: str,
+        destination_id: str,
+        tool_names: set[str],
+        *,
+        target_type: str | None = None,
+    ) -> None:
+        for tool_name in tool_names:
+            self._evict_scope_cache(
+                workspace_id,
+                scope_type,
+                destination_id,
+                tool_name,
+                target_type=target_type,
+            )
+            await self._publish_scope_invalidation(
+                workspace_id,
+                scope_type,
+                destination_id,
+                tool_name,
+                target_type=target_type,
+            )
+
     async def start_cache_invalidation_listener(self) -> None:
         if self._redis is None or self._listener_task is not None:
             return
@@ -476,26 +500,6 @@ class ToolRegistry:
         if self._redis is not None:
             await self._redis.aclose()
         await self.engine.dispose()
-
-    async def register_tool(self, tool: Tool) -> None:
-        async with self.async_session() as session:
-            session.add(tool)
-            await session.commit()
-            self._evict_scope_cache(
-                tool.workspace_id,
-                tool.scope_type,
-                tool.agent_id if tool.scope_type == "agent" else tool.target_id,
-                tool.tool_name,
-                target_type=tool.target_type,
-            )
-            await self._publish_scope_invalidation(
-                tool.workspace_id,
-                tool.scope_type,
-                tool.agent_id if tool.scope_type == "agent" else tool.target_id,
-                tool.tool_name,
-                target_type=tool.target_type,
-            )
-
 
 tool_registry = ToolRegistry(settings.DATABASE_URL)
 mcp_server_registry = McpServerRegistry(settings.DATABASE_URL)

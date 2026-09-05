@@ -99,11 +99,11 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 - Config must keep `AUTH_ISSUER` and `AUTH_AUDIENCE` aligned with the control-plane run-token issuer and audience.
 - `ADMIN_API_TOKEN` gates internal MCP, workspace provider-credential, and
   platform-default provider-credential administration.
-- Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after an enabled workspace registry entry identifies the tool as built-in.
+- Workspace workflow built-in tool calls are forwarded to the control-plane built-in MCP bridge only after the exact enabled server/tool registration identifies the tool as platform-owned.
 - Workspace workflow scope uses `scope.type = "workspace"` and explicit workflow identifiers; ordinary workflow selection does not imply an agent id.
 - Direct Agent conversations use `scope.type = "agent_chat"`, require the exact Agent id, and forbid Workflow and target identity fields. Optional target calls use only the generic `targets` MCP reference signed into the run token.
 - Target scope requires target identity and rejects Agent and Workflow identity fields. This is enforced independently on JWT claims, LLM requests, and tool-call requests.
-- Target adapters register their live built-in tools against the configured internal bridge URL (the local deployment default is `http://control-plane:8081/internal/v1/mcp`). The server identity comes from the registered target, not a seeded workspace integration.
+- Target adapters publish authoritative built-in definitions through `PUT /api/v1/internal/mcp/servers/builtin`. The gateway owns the configured bridge URL (local default `http://control-plane:8081/internal/v1/mcp`) and fixed secret-free auth shape. Generic CRUD may toggle built-in enablement only and rejects definition replacement or deletion.
 - Connection readiness accepts enabled tools only when their server and tool identities match. Trusted built-in tools do not require remote MCP review or a credential connection snapshot; remote tools remain review-gated, and the exact resolved credential must include the tool in its verified snapshot.
 - Built-in bridge calls use `Authorization: Bearer <run-scoped-jwt>`, scope source `run-scoped-jwt-claims`, and call path `POST /internal/v1/mcp/tools/call`.
 - Optional `tool_call_id` values are forwarded as `toolCallId` only on this
@@ -112,11 +112,17 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 
 ## Generic MCP Boundary Notes
 
+The workspace product currently provisions MCP servers only through direct
+administrator registration or platform-owned built-in synchronization. The
+gateway catalog producer, adapter, and storage contracts below remain dormant
+for a future Platform Admin Console boundary; Management Console and public
+Agent/target routes do not browse, import, or reimport these records.
+
 - MCP registries use the `mcp_registry_v0_1` adapter over a direct HTTPS base URL. The configured URL is a registry root or path prefix without `/v0.1`, query parameters, fragments, or credentials; the gateway appends `/v0.1`. Connector routing is not available.
 - Catalog source list responses expose secret-free source-management capabilities. Omitted authentication on update preserves the stored credential, `auth.type = none` clears it, and bearer or custom-header replacement requires a new write-only credential. URL and authentication changes are probed before persistence, clear stale artifacts, and perform a full synchronization.
 - Bootstrap registries are reconciled by display name and are configuration-read-only through APIs, although authorized control-plane callers may synchronize them. Removed bootstrap configuration disables a source instead of deleting its cached snapshot. Disabled sources disappear from browsing immediately; deleting a workspace source removes its cache and registry credential without deleting installed MCP servers.
 - Registry availability is per-source operational state and does not participate in global gateway readiness. Synchronization logs and metrics use bounded labels and exclude source credentials, authorization headers, and URL query values.
-- Active registry records have an explicit `scope_type` of `agent` or `target`. Target records belong to a target adapter; Agent records belong to the workspace Agent named by `agent_id`.
+- Persisted catalog installation records have an explicit `scope_type` of `agent` or `target`. Target records belong to a target adapter; Agent records belong to the workspace Agent named by `agent_id`.
 - Catalog import is a discriminated contract: Agent requests carry only
   `agent_id`; target requests carry `target_id` and `target_type`. Duplicate and re-import
   checks include workspace, scope type, and destination identity.
@@ -124,6 +130,16 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   `workspace`, or `individual`. Workspace mode resolves one installation-owned
   service or bot credential; individual mode resolves only the exact user's
   credential. Target and Agent installations never share or copy a connection.
+- Individual connections, OAuth state, readiness, and runtime tokens bind to the
+  control plane's exact positive `membership_generation` (capped at the JSON
+  safe integer `9007199254740991`). Every individual request requires that
+  generation and an exact active lifecycle row; missing or inexact state fails
+  closed. Removal commits before cleanup; a higher generation drains all
+  older individual connection/secret/flow state before becoming active.
+- The pinned pre-production rollout explicitly resets existing individual MCP
+  credentials and OAuth authorizations offline. Workspace-owned credentials are
+  unaffected by owner lifecycle reconciliation. Gateway and control-plane replicas are scaled to zero for the
+  paired migration; mixed-version operation is not supported.
 - The installation derives bearer or custom-header formatting. Connecting or
   rotating a credential persists it before authenticated tool discovery. A failed
   discovery retains an error state; the verify endpoint retries that stored
@@ -150,7 +166,7 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
   401/403 responses mark the connection erroneous. Workspace credentials support
   user and service-identity principals; individual credentials reject service
   identities with `MCP_INDIVIDUAL_USER_PRINCIPAL_REQUIRED`.
-- Import metrics use only bounded scope, operation, and outcome labels; artifact
+- Dormant import metrics use only bounded scope, operation, and outcome labels; artifact
   and destination IDs stay in neither labels nor sanitized logs.
 - The greenfield schema contains only the final installation and credential-owner
   records. In-place migration from an earlier schema epoch is unsupported.

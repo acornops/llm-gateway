@@ -2,6 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.mcp.user_lifecycle_contract import MAX_MCP_MEMBERSHIP_GENERATION
 from app.target_types import TargetType
 
 
@@ -18,6 +19,12 @@ class McpToolRef(BaseModel):
 class RunPrincipalRef(BaseModel):
     type: Literal["user", "service_identity"]
     id: str
+    membership_generation: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_MCP_MEMBERSHIP_GENERATION,
+        strict=True,
+    )
 
 
 class Scope(BaseModel):
