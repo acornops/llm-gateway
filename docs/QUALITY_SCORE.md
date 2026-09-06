@@ -10,3 +10,9 @@ Assessment date: July 31, 2026.
 | MCP broker behavior | 4/5 | Registry and transport docs, compatibility fallbacks, malformed-response regression coverage | More end-to-end coverage against live third-party MCP servers would help |
 | Image and dependency readiness | 4/5 | Non-root gateway image, pinned constraints, `.dockerignore`, SBOM/provenance workflow, vulnerability scan workflow | Supply-chain workflow should be validated in CI |
 | Harness knowledge base | 4/5 | AGENTS entry point, indexed docs tree, plan directories, quality/security/reliability docs | Freshness still depends on docs being updated with behavior changes |
+
+## Hosted-readiness evidence — September 6, 2026
+
+723 unit tests and 52 keyless evaluations passed. Independent scoped review exercised post-initialize MCP suspension, first-provider-dispatch lease loss and definite fallback operation identities.
+The replica probe substitutes a deterministic operation body; it does not measure
+live provider reliability or model outcome quality. Existing scores are unchanged.

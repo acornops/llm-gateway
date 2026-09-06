@@ -53,3 +53,25 @@ def isolate_global_mcp_lifecycle_store(monkeypatch, request: pytest.FixtureReque
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def isolate_execution_authority_http(monkeypatch, request):
+    """Unit handlers use a deterministic CP transport; authority tests override it."""
+    if "integration" in request.node.path.parts:
+        return
+    from app.config.settings import settings
+    from app.execution_capacity import execution_authority
+
+    async def post(_run_id, action, _payload):
+        return {
+            "status": "ok",
+            "contractVersion": 1,
+            **(
+                {"capacityEnabled": settings.WORKSPACE_CAPACITY_ENABLED}
+                if action == "authorize"
+                else {}
+            ),
+        }
+
+    monkeypatch.setattr(execution_authority, "_post", post)

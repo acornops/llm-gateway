@@ -394,3 +394,30 @@ Before release or deployment chart changes:
 ```bash
 task validate
 ```
+
+
+## Workspace capacity rollout
+
+`WORKSPACE_CAPACITY_ENABLED` defaults to `false` and must match the control plane
+and execution engine/gateway deployment. Verify `GET /health` capacity capability
+fields before activating the control-plane contract. Lifecycle authorization is
+mandatory even when workspace counters are disabled. Gateway deployments require
+`ORCH_BASE_URL` and `ORCH_SERVICE_TOKEN` using the existing control-plane service
+credential, with the existing internal TLS settings where configured.
+
+Engine `MAX_CONCURRENT_RUNS` remains an independent local worker limit. Queued work
+does not hold local/distributed execution gates; a waiting coordinator or approval
+releases both gates after checkpointing. Initial queue expiry is 600 seconds and
+CP maintenance owns authoritative expiry/cancellation settlement. Redis delivery
+records retain owner/generation identity for cleanup retries. Redis locks use
+owner-aware compare-and-delete and never replace CP execution authority.
+
+Provider validation corrections following definitive HTTP 400 rejection use fresh
+operation IDs. Hidden retries after an uncertain dispatch are rejected. Existing
+workspace provider secret lookup followed by optional platform default is unchanged.
+
+Operation contexts validate request lifecycle and bound setup time, but do not grant
+upstream execution during setup. The first provider HTTP request and every corrected
+request register their operation at the HTTP request hook. Remote MCP registers after
+session initialization, immediately before `tools/call`; builtin MCP registers before
+its actual HTTP dispatch. A suspension or lease loss during setup prevents the call.

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app.outbound_tls as outbound_tls
+from app.execution_capacity import provider_dispatch_hook, provider_response_hook
 
 
 def test_additional_ca_extends_system_trust(monkeypatch: pytest.MonkeyPatch):
@@ -32,10 +33,13 @@ def test_internal_ca_context_uses_only_explicit_trust(monkeypatch: pytest.Monkey
     context_factory = MagicMock(return_value=context)
     monkeypatch.setattr(outbound_tls.ssl, "SSLContext", context_factory)
 
-    assert outbound_tls.internal_httpx_ssl_context(
-        "/tls/internal-ca.pem",
-        "/trust/additional-ca.pem",
-    ) is context
+    assert (
+        outbound_tls.internal_httpx_ssl_context(
+            "/tls/internal-ca.pem",
+            "/trust/additional-ca.pem",
+        )
+        is context
+    )
     context_factory.assert_called_once_with(outbound_tls.ssl.PROTOCOL_TLS_CLIENT)
     assert context.load_verify_locations.call_count == 2
     context.load_verify_locations.assert_any_call(cafile="/tls/internal-ca.pem")
@@ -72,7 +76,11 @@ def test_provider_client_preserves_sdk_defaults_and_is_reused(
 
     assert outbound_tls.provider_http_client(provider) is client
     assert outbound_tls.provider_http_client(provider) is client
-    client_factory.assert_called_once_with(verify=context, **expected_kwargs)
+    client_factory.assert_called_once_with(
+        verify=context,
+        event_hooks={"request": [provider_dispatch_hook], "response": [provider_response_hook]},
+        **expected_kwargs,
+    )
 
 
 @pytest.mark.anyio
@@ -110,9 +118,10 @@ def test_database_trust_requires_explicit_tls(monkeypatch: pytest.MonkeyPatch):
 
     database_url = "postgresql+asyncpg://db/gateway"
     assert outbound_tls.sqlalchemy_connection_config(database_url) == (database_url, {})
-    assert outbound_tls.sqlalchemy_connection_config(
-        f"{database_url}?ssl=verify-full"
-    ) == (database_url, {"ssl": context})
+    assert outbound_tls.sqlalchemy_connection_config(f"{database_url}?ssl=verify-full") == (
+        database_url,
+        {"ssl": context},
+    )
 
 
 def test_database_sslmode_is_normalized_for_asyncpg(monkeypatch: pytest.MonkeyPatch):

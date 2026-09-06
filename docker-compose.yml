@@ -2,6 +2,9 @@ services:
   gateway:
     image: ${LLM_GATEWAY_IMAGE:-ghcr.io/acornops/llm-gateway:0.0.1-experimental.1}
     environment:
+      WORKSPACE_CAPACITY_ENABLED: ${WORKSPACE_CAPACITY_ENABLED:-false}
+      ORCH_BASE_URL: ${ORCH_BASE_URL:-http://control-plane:8081}
+      ORCH_SERVICE_TOKEN: ${ORCH_SERVICE_TOKEN:-change-me}
       DATABASE_URL: postgresql+asyncpg://gateway_user:gateway_password@postgres:5432/gateway
       REDIS_URL: redis://redis:6379/0
       SECRETS_BACKEND: ${SECRETS_BACKEND:-database}

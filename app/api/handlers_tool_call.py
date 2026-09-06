@@ -1,7 +1,7 @@
 import time
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as jsonschema_validate
 
@@ -25,6 +25,7 @@ from app.api.tool_result_normalization import ToolCallResponse, _normalize_tool_
 from app.auth.claims import TokenClaims
 from app.auth.jwt_validator import TokenContext, get_current_token_context
 from app.config.settings import settings
+from app.execution_capacity import GENERATION_HEADER, OWNER_HEADER, execution_authority
 from app.internal_model_tools import is_reserved_internal_tool_name
 from app.internal_transport import post_builtin_mcp_tool
 from app.mcp.approval_receipts import ApprovalReceiptError, validate_and_claim_approval_receipt
@@ -162,7 +163,8 @@ def _enforce_current_tool_operation(
 
 @router.post("/tool-call", response_model=ToolCallResponse)
 async def execute_tool_call(
-    req: ToolCallRequest, token_context: TokenContext = Depends(get_current_token_context)
+    req: ToolCallRequest, token_context: TokenContext = Depends(get_current_token_context),
+    request: Request = None
 ):
     claims: TokenClaims = token_context.claims
     # Audit log: tool call received
@@ -201,6 +203,8 @@ async def execute_tool_call(
             claims_trigger_id=claims.trigger_id,
         )
         raise HTTPException(status_code=403, detail="Scope mismatch between token and request")
+    await execution_authority.authorize(claims)
+    authority_headers = dict(request.headers) if request else {}
     if is_reserved_internal_tool_name(req.tool):
         raise HTTPException(
             status_code=403,
@@ -326,24 +330,32 @@ async def execute_tool_call(
                 )
 
         try:
-            if is_builtin_tool:
-                mcp_response = await post_builtin_mcp_tool(
-                    dispatch_server_url,
-                    tool.tool_name,
-                    tool_arguments,
-                    tool.timeout_ms,
-                    request_headers,
-                    req.tool_call_id,
-                    tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
-                )
-            else:
-                mcp_response = await mcp_transport.call_tool(
-                    dispatch_server_url,
-                    tool.tool_name,
-                    tool_arguments,
-                    tool.timeout_ms,
-                    request_headers,
-                )
+            async with execution_authority.operation(
+                claims, authority_headers, tool.timeout_ms + 5000,
+            ):
+                if is_builtin_tool:
+                    request_headers.update({
+                        key: authority_headers[key]
+                        for key in (OWNER_HEADER, GENERATION_HEADER) if key in authority_headers
+                    })
+                if is_builtin_tool:
+                    mcp_response = await post_builtin_mcp_tool(
+                        dispatch_server_url,
+                        tool.tool_name,
+                        tool_arguments,
+                        tool.timeout_ms,
+                        request_headers,
+                        req.tool_call_id,
+                        tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
+                    )
+                else:
+                    mcp_response = await mcp_transport.call_tool(
+                        dispatch_server_url,
+                        tool.tool_name,
+                        tool_arguments,
+                        tool.timeout_ms,
+                        request_headers,
+                    )
             is_error = mcp_response.get("isError") is True
             GATEWAY_MCP_SCOPED_INVOCATIONS_TOTAL.labels(
                 scope_type="agent",
@@ -536,26 +548,34 @@ async def execute_tool_call(
 
     # Execute tool call
     try:
-        if is_builtin_tool:
-            mcp_response = await post_builtin_mcp_tool(
-                dispatch_server_url,
-                tool.tool_name,
-                target_tool_arguments,
-                tool.timeout_ms,
-                request_headers,
-                req.tool_call_id,
-                target_id=dispatch_target_id,
-                target_type=dispatch_target_type,
-                tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
-            )
-        else:
-            mcp_response = await mcp_transport.call_tool(
-                dispatch_server_url,
-                tool.tool_name,
-                target_tool_arguments,
-                tool.timeout_ms,
-                request_headers,
-            )
+        async with execution_authority.operation(
+                claims, authority_headers, tool.timeout_ms + 5000,
+            ):
+            if is_builtin_tool:
+                request_headers.update({
+                        key: authority_headers[key]
+                        for key in (OWNER_HEADER, GENERATION_HEADER) if key in authority_headers
+                    })
+            if is_builtin_tool:
+                mcp_response = await post_builtin_mcp_tool(
+                    dispatch_server_url,
+                    tool.tool_name,
+                    target_tool_arguments,
+                    tool.timeout_ms,
+                    request_headers,
+                    req.tool_call_id,
+                    target_id=dispatch_target_id,
+                    target_type=dispatch_target_type,
+                    tool_ref=req.tool_ref.model_dump() if req.tool_ref else None,
+                )
+            else:
+                mcp_response = await mcp_transport.call_tool(
+                    dispatch_server_url,
+                    tool.tool_name,
+                    target_tool_arguments,
+                    tool.timeout_ms,
+                    request_headers,
+                )
 
         is_error = mcp_response.get("isError") is True
         GATEWAY_MCP_SCOPED_INVOCATIONS_TOTAL.labels(

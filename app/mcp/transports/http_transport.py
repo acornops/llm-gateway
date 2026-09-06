@@ -344,11 +344,16 @@ class McpHttpTransport:
     ) -> dict[str, Any]:
         """Initialize a remote MCP session and execute one tools/call request."""
         dependency_key = f"mcp:call:{url.rstrip('/')}"
+        tool_dispatched = False
         try:
             target = await prepare_mcp_egress_request(url)
             await dependency_circuit_breaker.before_call(dependency_key, "mcp", url)
 
             async def call(session: ClientSession) -> types.CallToolResult:
+                from app.execution_capacity import begin_dispatch
+                nonlocal tool_dispatched
+                await begin_dispatch()
+                tool_dispatched = True
                 # ClientSession.call_tool() performs a tools/list request after a
                 # successful call to validate output schemas. The gateway already
                 # validates against the registry schema, and a post-call discovery

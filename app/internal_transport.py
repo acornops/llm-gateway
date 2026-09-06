@@ -60,9 +60,12 @@ async def post_builtin_mcp_tool(
 ) -> dict[str, Any]:
     import httpx
 
+    from app.execution_capacity import begin_dispatch, finish_rejected_dispatch
+
     async def post_bounded(
         client: httpx.AsyncClient, target_url: str, **kwargs: Any
     ) -> httpx.Response:
+        await begin_dispatch()
         async with client.stream("POST", target_url, **kwargs) as streamed:
             chunks: list[bytes] = []
             received = 0
@@ -98,6 +101,7 @@ async def post_builtin_mcp_tool(
             follow_redirects=False,
         )
         if response.status_code in (404, 405):
+            await finish_rejected_dispatch()
             response = await post_bounded(
                 client,
                 url,

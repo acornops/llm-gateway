@@ -3,13 +3,14 @@ from collections import Counter
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.auth.claims import TokenClaims
 from app.auth.jwt_validator import get_current_claims
 from app.auth.tool_permissions import disallowed_tools
 from app.config.settings import settings
+from app.execution_capacity import execution_authority
 from app.internal_model_tools import (
     is_internal_model_only_tool_name,
     is_reserved_internal_tool_name,
@@ -284,6 +285,7 @@ async def _deterministic_dev_events(req: NormalizedLLMRequest):
 async def stream_generation(
     req: NormalizedLLMRequest,
     claims: TokenClaims = Depends(get_current_claims),
+    request: Request = None,
 ):
     # Audit log: request received
     api_surface = (
@@ -390,6 +392,7 @@ async def stream_generation(
             )
 
     _validate_native_tools(req, claims)
+    await execution_authority.authorize(claims)
 
     if settings.LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES:
         logger.info(
@@ -487,61 +490,64 @@ async def stream_generation(
         text_delta_count = 0
         text_delta_chars = 0
         try:
-            async for event in adapter.stream(req, api_key):
-                if saw_terminal:
-                    saw_error = True
-                    logger.warning(
-                        "llm_stream_event_after_terminal",
-                        run_id=req.run_id,
-                        workspace_id=req.workspace_id,
-                        provider=req.provider,
-                        api_surface=api_surface,
-                        model=req.model,
-                        event_type=event.type,
-                    )
-                    break
-                if event.type == "error":
-                    saw_error = True
-                is_terminal = event.type in {"final", "error"}
-                if event.type == "delta":
-                    text_delta_count += 1
-                    text_delta_chars += len(event.text or "")
-                elif event.type == "reasoning_summary_delta":
-                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
-                        provider=event.provider or req.provider,
-                        model=req.model,
-                        status="delta",
-                    ).inc()
-                elif event.type == "reasoning_summary_completed":
-                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
-                        provider=event.provider or req.provider,
-                        model=req.model,
-                        status="completed",
-                    ).inc()
-                elif event.type == "reasoning_summary_unavailable":
-                    reason = event.reason or "provider_omitted"
-                    GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
-                        provider=event.provider or req.provider,
-                        model=req.model,
-                        status="unavailable",
-                    ).inc()
-                    GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL.labels(
-                        provider=event.provider or req.provider,
-                        model=req.model,
-                        reason=reason,
-                    ).inc()
-                    logger.info(
-                        "llm_reasoning_summary_unavailable",
-                        run_id=req.run_id,
-                        workspace_id=req.workspace_id,
-                        provider=event.provider or req.provider,
-                        model=req.model,
-                        reason=reason,
-                    )
-                serialized_event = event.model_dump_json() + "\n"
-                yield serialized_event
-                if is_terminal:
-                    saw_terminal = True
+            async with execution_authority.operation(
+                claims, dict(request.headers) if request else {}, settings.LLM_DEFAULT_TIMEOUT_MS,
+            ):
+                async for event in adapter.stream(req, api_key):
+                    if saw_terminal:
+                        saw_error = True
+                        logger.warning(
+                            "llm_stream_event_after_terminal",
+                            run_id=req.run_id,
+                            workspace_id=req.workspace_id,
+                            provider=req.provider,
+                            api_surface=api_surface,
+                            model=req.model,
+                            event_type=event.type,
+                        )
+                        break
+                    if event.type == "error":
+                        saw_error = True
+                    is_terminal = event.type in {"final", "error"}
+                    if event.type == "delta":
+                        text_delta_count += 1
+                        text_delta_chars += len(event.text or "")
+                    elif event.type == "reasoning_summary_delta":
+                        GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                            provider=event.provider or req.provider,
+                            model=req.model,
+                            status="delta",
+                        ).inc()
+                    elif event.type == "reasoning_summary_completed":
+                        GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                            provider=event.provider or req.provider,
+                            model=req.model,
+                            status="completed",
+                        ).inc()
+                    elif event.type == "reasoning_summary_unavailable":
+                        reason = event.reason or "provider_omitted"
+                        GATEWAY_LLM_REASONING_SUMMARY_EVENTS_TOTAL.labels(
+                            provider=event.provider or req.provider,
+                            model=req.model,
+                            status="unavailable",
+                        ).inc()
+                        GATEWAY_LLM_REASONING_SUMMARY_UNAVAILABLE_TOTAL.labels(
+                            provider=event.provider or req.provider,
+                            model=req.model,
+                            reason=reason,
+                        ).inc()
+                        logger.info(
+                            "llm_reasoning_summary_unavailable",
+                            run_id=req.run_id,
+                            workspace_id=req.workspace_id,
+                            provider=event.provider or req.provider,
+                            model=req.model,
+                            reason=reason,
+                        )
+                    serialized_event = event.model_dump_json() + "\n"
+                    yield serialized_event
+                    if is_terminal:
+                        saw_terminal = True
             if not saw_terminal:
                 saw_error = True
                 logger.warning(

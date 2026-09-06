@@ -64,14 +64,22 @@ def httpx_tls_kwargs() -> dict[str, Any]:
 
 def provider_http_client(provider: str) -> httpx.AsyncClient | None:
     """Return a pooled client preserving the selected provider SDK defaults."""
-    if not settings.ADDITIONAL_CA_BUNDLE_FILE:
+    from app.execution_capacity import (
+        current_operation,
+        provider_dispatch_hook,
+        provider_response_hook,
+    )
+    if not settings.ADDITIONAL_CA_BUNDLE_FILE and current_operation.get() is None:
         return None
     normalized = provider.strip().lower()
     client = _provider_http_clients.get(normalized)
     if client is not None and not client.is_closed:
         return client
 
-    client_kwargs = {"verify": httpx_additional_ca_ssl_context()}
+    client_kwargs = {
+        "verify": httpx_additional_ca_ssl_context(),
+        "event_hooks": {"request": [provider_dispatch_hook], "response": [provider_response_hook]},
+    }
     if normalized == "openai":
         client = OpenAIHttpClient(**client_kwargs)
     elif normalized == "anthropic":

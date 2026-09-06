@@ -85,6 +85,9 @@ def _is_canonical_public_origin(value: str) -> bool:
 
 
 class Settings(BaseSettings):
+    WORKSPACE_CAPACITY_ENABLED: bool = False
+    ORCH_BASE_URL: str = "http://control-plane:8081"
+    ORCH_SERVICE_TOKEN: str = "default_token"
     APP_ENV: str = "development"
     NODE_ENV: str | None = None
 
