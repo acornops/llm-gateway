@@ -1,9 +1,12 @@
 # Provider-Native Tool Transcript
 
+> Archive review — 2026-10-18: Implementation landed (execution-engine 00b459e; llm-gateway 4922e70). Conditional provider canaries were not proven by deterministic tests. Preserve the recorded skipped checks and deploy compatible engine/gateway versions together.
+> Original scope, checklists, and validation below are historical; this is not a new runtime or rollout validation report.
+
 Implement the llm-gateway half of the coordinated breaking transcript contract
 described by the workspace change set:
 
-- `../change-sets/active/provider-native-tool-transcript-00-overview.md`
+- `../change-sets/completed/provider-native-tool-transcript-00-overview.md`
 - Phase 1: strict Pydantic provider-neutral transcript models and sequence
   validation.
 - Phase 2: replace loose `messages` with `runtime_instruction` plus

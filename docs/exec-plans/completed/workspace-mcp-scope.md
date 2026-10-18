@@ -1,5 +1,8 @@
 # Workspace MCP Scope
 
+> Archive review — 2026-10-18: Superseded by Agent-scoped capability ownership and the later MCP lifecycle hardening. The workspace-workflow scope proposal below is historical, not the current contract.
+> Original scope, checklists, and validation below are historical; this is not a new runtime or rollout validation report.
+
 ## Goal
 
 Extend the existing secure MCP registry and broker from target-only records to explicit `workspace` and `target` scopes so workflow runs can execute agent-granted remote tools.

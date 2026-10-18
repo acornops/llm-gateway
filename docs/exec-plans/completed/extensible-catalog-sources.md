@@ -1,5 +1,8 @@
 # Extensible catalog sources
 
+> Archive review — 2026-10-18: Historical catalog implementation. Workspace catalog browsing and source management were subsequently removed from Management Console; the disabled registry placeholder remains, while backend catalog endpoints are dormant. This archive does not propose restoring that UI.
+> Original scope, checklists, and validation below are historical; this is not a new runtime or rollout validation report.
+
 ## Goal
 
 Add a generic, workspace-owned catalog registry in the gateway, implement the

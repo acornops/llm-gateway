@@ -1,5 +1,8 @@
 # Automatic MCP OAuth
 
+> Status review — 2026-10-18: Implementation complete; authenticated discovery, refresh, revocation, and reconnect canaries against eligible external providers still pending.
+> Existing validation entries are historical; no new live acceptance was performed in this review.
+
 ## Goal
 
 Add provider-neutral individual OAuth for remote HTTP MCP installations using
