@@ -24,6 +24,16 @@ python -m venv .venv
 .venv/bin/python -m pip install '.[test]' -c constraints.txt
 ```
 
+For focused dependency security updates, keep `requirements.txt`,
+`pyproject.toml`, and the affected `constraints.txt` pins consistent. Regenerate
+`requirements.lock` using `pip-compile --generate-hashes --strip-extras
+--output-file=requirements.lock requirements.txt`, adding explicit
+`--upgrade-package package==version` options for only the selected packages.
+Review the resolved version diff, run `pip check` and `pip-audit` for both the
+lockfile and installed test environment, then run validation. The production
+Dockerfile separately pins updated `pip` in both shipped Python environments;
+the application lockfile does not cover that base-image packaging tool.
+
 Run canonical validation:
 
 ```bash

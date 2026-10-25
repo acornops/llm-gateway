@@ -14,7 +14,8 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+RUN pip install --no-cache-dir --upgrade pip==26.2.2 \
+    && pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Stage 2: Final image
 FROM python:3.12.11-slim
@@ -30,6 +31,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
+
+# Update the base interpreter's pip as well as the copied virtualenv's pip.
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.2
 
 # Copy virtualenv from builder
 COPY --from=builder /opt/venv /opt/venv
