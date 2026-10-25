@@ -11,6 +11,10 @@ from app.llm.service import StreamEvent
 from app.resilience.outbound import extract_status_code
 
 _MODEL_UNAVAILABLE_CODES = frozenset({"model_not_found"})
+_BILLING_LIMIT_CODES = frozenset({
+    "insufficient_quota", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded", "usage_limit_exceeded",
+})
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 500, 502, 503, 504})
 
 
@@ -76,6 +80,22 @@ def provider_failure_event(
 ) -> StreamEvent:
     """Build a bounded error event only when provider metadata is decisive."""
     status_code = _provider_status_code(exc)
+    error = _structured_error(exc)
+    code = error.get("code")
+    provider_code = code.strip().lower() if isinstance(code, str) else ""
+    if fallback_code == "OPENAI_ERROR" and (
+        provider_code == "credit_balance_exhausted"
+        or provider_code in _BILLING_LIMIT_CODES
+        or error.get("type") == "insufficient_quota"
+    ):
+        message = (
+            "The AI provider has no credits remaining. Ask a workspace administrator "
+            "to add credits or configure a funded provider key in AI Settings."
+            if provider_code == "credit_balance_exhausted"
+            else "The AI provider billing or usage limit was reached. Ask a workspace "
+            "administrator to check provider billing and AI Settings."
+        )
+        return StreamEvent(type="error", code=fallback_code, message=message, retryable=False)
     if _is_model_unavailable(exc):
         return StreamEvent(
             type="error",

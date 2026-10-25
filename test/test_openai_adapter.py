@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from openai import APIError, RateLimitError
 from provider_replay_fixtures import load_replay_cases, to_namespace
 
 from app.llm.adapters.common import (
@@ -11,7 +12,7 @@ from app.llm.adapters.common import (
     should_retry_openai_without_temperature,
     supports_openai_custom_temperature,
 )
-from app.llm.adapters.openai_adapter import OpenAIAdapter
+from app.llm.adapters.openai_adapter import OpenAIAdapter, OpenAIResponsesAdapter
 from app.llm.adapters.openai_chat_completions_adapter import (
     OpenAIChatCompletionsAdapter,
 )
@@ -34,6 +35,66 @@ def _build_request(model: str) -> NormalizedLLMRequest:
         transcript=[{"type": "user", "content": "hello"}],
         max_output_tokens=128,
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("adapter_class,module_name", [
+    (OpenAIResponsesAdapter, "app.llm.adapters.openai_adapter"),
+    (OpenAIChatCompletionsAdapter, "app.llm.adapters.openai_chat_completions_adapter"),
+])
+@pytest.mark.parametrize("stream_error", [False, True])
+async def test_openai_billing_errors_are_terminal_without_gateway_retries(
+    monkeypatch, adapter_class, module_name, stream_error,
+) -> None:
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    body = {
+        "code": "credit_balance_exhausted", "type": "insufficient_quota",
+        "message": "private upstream detail",
+    }
+    error = (
+        APIError("private upstream detail", request, body=body)
+        if stream_error
+        else RateLimitError(
+            "private upstream detail", response=httpx.Response(429, request=request), body=body,
+        )
+    )
+    calls = 0
+
+    async def failed_stream():
+        raise error
+        yield  # The SDK can raise APIError while iterating an established stream.
+
+    async def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if stream_error:
+            return failed_stream()
+        raise error
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    )
+    monkeypatch.setattr(f"{module_name}.AsyncOpenAI", lambda **_kwargs: client)
+    monkeypatch.setattr(f"{module_name}.settings.PROVIDER_RETRY_ATTEMPTS", 3)
+    monkeypatch.setattr(f"{module_name}.settings.PROVIDER_RETRY_BACKOFF_MS", 1)
+    monkeypatch.setattr(f"{module_name}.dependency_circuit_breaker.before_call", AsyncMock())
+    circuit_failure = AsyncMock(return_value=False)
+    monkeypatch.setattr(f"{module_name}.dependency_circuit_breaker.record_failure", circuit_failure)
+
+    events = [
+        event async for event in adapter_class().stream(_build_request("gpt-4o-mini"), "fake-key")
+    ]
+
+    assert calls == 1
+    circuit_failure.assert_not_awaited()
+    assert len(events) == 1
+    assert events[0].type == "error"
+    assert events[0].code == "OPENAI_ERROR"
+    assert events[0].retryable is False
+    assert "no credits remaining" in events[0].message
+    assert "AI Settings" in events[0].message
+    assert "private upstream detail" not in events[0].message
 
 
 def test_openai_output_token_param_resolution() -> None:
