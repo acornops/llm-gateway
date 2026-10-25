@@ -35,7 +35,7 @@ specific compatibility regression proves it necessary.
   compare every changed locked version with the allowlist above.
 - [x] Install the hash-locked runtime and constrained development dependencies;
   run `pip check`, lockfile/environment `pip-audit`, and `task validate`.
-- [ ] Review JWT rejection behavior, MCP transports, TLS trust behavior, and
+- [x] Review JWT rejection behavior, MCP transports, TLS trust behavior, and
   OpenTelemetry instrumentation through existing unit/integration tests. Run
   platform contract checks and obtain a focused independent review.
 - [ ] Build and scan the final image, including its separately bundled `pip`;
@@ -101,3 +101,19 @@ after the previous release stopped at the security gate.
   passed. A disposable container confirmed both pip installations are 26.2.2,
   `pip check` passes, the application imports, and the runtime user is non-root.
   The CI image scan and full integration suite remain mandatory before merge.
+- PR CI 40161099271 passed lint, unit, integration, and dependency-audit checks,
+  but its image scan found four high-severity entries in pip's vendored msgpack,
+  setuptools, and urllib3. The application and OS packages had no actionable
+  high/critical findings. Inspecting pip 26.2.2's `vendor.txt` confirmed the old
+  bundled versions; independently upgrading app dependencies cannot replace them.
+- No application, migration, or runtime entrypoint uses pip/ensurepip. Retain
+  pinned pip only during the build, run `pip check` before uninstalling it, and
+  remove both runtime pip installations plus the base ensurepip bootstrap. This
+  removes unused installer code, not scanner evidence or exclusions. A runtime
+  absence assertion fails before this change; rebuilt-image smoke and CI scan
+  must pass before release. Local/development pip remains available.
+- Rebuilt image passed the installer-absence assertions for both interpreters,
+  non-root application import, `alembic --version`, `alembic history`, and
+  `uvicorn --version`. Build-time `pip check` passed. `task validate` passed
+  again (735 tests and 52 keyless evaluations). The hosted image scan remains
+  the final gate for this packaging correction.
