@@ -7,6 +7,7 @@ This repository owns the FastAPI LLM gateway, provider adapters, MCP broker path
 ## Prerequisites
 
 - Python 3.12.11. The local interpreter should match `.python-version`; CI and production images use the same Python patch release.
+- Python CI jobs use Ubuntu 24.04 because the pinned interpreter has no Ubuntu 26.04 build in `actions/python-versions`.
 - Task CLI
 - Postgres for migration-backed development
 - Redis for production-like rate limit behavior
