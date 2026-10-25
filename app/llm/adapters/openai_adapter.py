@@ -417,7 +417,12 @@ class OpenAIResponsesAdapter(LLMAdapter):
                 return
             except Exception as exc:
                 note_dependency_event("provider", "failure")
-                retryable = is_retryable_dependency_error(exc)
+                failure = provider_failure_event(
+                    exc,
+                    fallback_code="OPENAI_ERROR",
+                    retryable=is_retryable_dependency_error(exc),
+                )
+                retryable = failure.retryable is True
                 log_provider_stream_failure(
                     logger,
                     provider="openai",
@@ -445,11 +450,7 @@ class OpenAIResponsesAdapter(LLMAdapter):
                         )
                         attempt += 1
                         continue
-                yield provider_failure_event(
-                    exc,
-                    fallback_code="OPENAI_ERROR",
-                    retryable=retryable,
-                )
+                yield failure
                 return
 
 

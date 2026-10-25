@@ -88,8 +88,15 @@ default. Error categories are:
 - `other`
 
 Production logs contain bounded, credential-redacted error summaries. Endpoint
-URLs and raw errors are not placed in metric labels, and client-facing stream
-errors remain deliberately generic.
+URLs and raw errors are not placed in metric labels or returned to clients.
+Unknown provider failures remain generic. Explicit OpenAI
+`credit_balance_exhausted` errors tell users that credits are exhausted; structured
+`insufficient_quota`, spend-limit, and usage-limit errors instead direct them to
+provider billing and workspace AI Settings without assuming the exact billing
+cause. These use the existing `OPENAI_ERROR` code with `retryable: false`.
+Both OpenAI API surfaces skip gateway-level retries and circuit-breaker penalties
+for these billing failures. SDK retry configuration is unchanged. Ordinary rate
+limits still produce retryable `PROVIDER_RATE_LIMITED` errors.
 
 ## Remote MCP Connectivity
 
