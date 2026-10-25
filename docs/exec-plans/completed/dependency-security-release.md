@@ -1,6 +1,6 @@
 # Dependency security release plan
 
-Status: in progress, 2026-10-25. User approved the bounded dependency-security
+Status: completed, 2026-10-25. User approved the bounded dependency-security
 work needed to release the VM telemetry and provider-credit fixes.
 
 Goal: clear the gateway's existing security gates without unrelated upgrades,
@@ -38,7 +38,7 @@ specific compatibility regression proves it necessary.
 - [x] Review JWT rejection behavior, MCP transports, TLS trust behavior, and
   OpenTelemetry instrumentation through existing unit/integration tests. Run
   platform contract checks and obtain a focused independent review.
-- [ ] Build and scan the final image, including its separately bundled `pip`;
+- [x] Build and scan the final image, including its separately bundled `pip`;
   retain existing security gates with no new exclusions.
 
 Expected: `pip check`, both `pip-audit` checks, and `task validate` exit zero;
@@ -46,12 +46,12 @@ all changed locked versions are from the selected security-update set.
 
 ## Task 2: Release and demo verification
 
-- [ ] Commit the dependency repair separately and rerun all PR CI gates. Merge
+- [x] Commit the dependency repair separately and rerun all PR CI gates. Merge
   both service fixes only after green checks, then require successful main CI
   for the exact commits tagged for release.
-- [ ] Publish the two service images, update only their demo image pins, validate
+- [x] Publish the two service images, update only their demo image pins, validate
   demo-infra, and perform the normal non-destructive demo rollout.
-- [ ] Verify live VM samples, app readiness, deployed versions, and unchanged
+- [x] Verify live VM samples, app readiness, deployed versions, and unchanged
   persistent-volume identities. Archive plans with evidence after completion.
 
 ## Review focus
@@ -94,13 +94,9 @@ after the previous release stopped at the security gate.
 - Independent dependency review found no critical, important, or minor issues;
   requested real JWT checks are recorded above. Image/integration and deployment
   evidence remain executor-owned release gates.
-- Image inspection found bundled `pip` 25.0.1; its separate audit reports 12
-  entries (including duplicate aliases). Pin `pip` 26.2.2 in both shipped Python
-  environments rather than changing the Python runtime or suppressing findings.
-- `docker build -f deployments/Dockerfile.gateway -t acornops/llm-gateway:security-smoke .`:
-  passed. A disposable container confirmed both pip installations are 26.2.2,
-  `pip check` passes, the application imports, and the runtime user is non-root.
-  The CI image scan and full integration suite remain mandatory before merge.
+- Image inspection found bundled `pip` 25.0.1 outside the application lock.
+  Upgrading to 26.2.2 alone was insufficient because its vendored dependencies
+  remained vulnerable; the final design below removes unused runtime installers.
 - PR CI 40161099271 passed lint, unit, integration, and dependency-audit checks,
   but its image scan found four high-severity entries in pip's vendored msgpack,
   setuptools, and urllib3. The application and OS packages had no actionable
@@ -110,10 +106,33 @@ after the previous release stopped at the security gate.
   pinned pip only during the build, run `pip check` before uninstalling it, and
   remove both runtime pip installations plus the base ensurepip bootstrap. This
   removes unused installer code, not scanner evidence or exclusions. A runtime
-  absence assertion fails before this change; rebuilt-image smoke and CI scan
-  must pass before release. Local/development pip remains available.
+  absence assertion failed before this change; rebuilt-image smoke and CI scan
+  guard the final design. Local/development pip remains available.
 - Rebuilt image passed the installer-absence assertions for both interpreters,
   non-root application import, `alembic --version`, `alembic history`, and
   `uvicorn --version`. Build-time `pip check` passed. `task validate` passed
-  again (735 tests and 52 keyless evaluations). The hosted image scan remains
-  the final gate for this packaging correction.
+  again (735 tests and 52 keyless evaluations). The subsequent hosted image scan
+  also passed, as recorded below.
+- Final PR CI 40161882679 and main CI 40162272016 passed every required gate.
+  PR #10 merged as `817a1b0e9177e410f405da6ddbb784ef86fd594e`; that exact main
+  commit is tagged `v0.0.1-experimental.21`. The unchanged actionable image gate
+  reports zero fixable high/critical findings. The full scan still lists 44
+  high-severity base-OS entries with no fixed version, also present before the
+  installer cleanup. Track these in the quality score and tech-debt record;
+  do not describe the image as free of all known vulnerabilities.
+- Release 40162701739 published gateway `.21` from the tagged commit; verified
+  OCI index `sha256:d860f46a369667d1d578a57d791cf4357ab0bbb677731a65ff3aeb0b857ce362`.
+  Control-plane `.36` was published after its own successful main CI. Demo
+  commit `60a91ca` changes only those two image pins/defaults and records the
+  rollout; infrastructure CI 40162896215 and local Ansible validation passed.
+  Deployment 40162896202 completed successfully.
+- Live acceptance passed: both image digests match publication, all five services
+  are ready, all public readiness checks pass, and all three PVC identities are
+  preserved. The affected VM recovered from zero samples to two fresh CPU/memory
+  samples without reinstalling AgentV. New pod logs show no inventory duplicate
+  errors. The deployed billing classifier returns the expected non-retryable
+  guidance for a synthetic SDK exception without contacting a provider.
+- The deployed gateway also passes installer-absence and non-root assertions.
+  No reset, secret/key change, policy relaxation, paid request, or user-VM mutation
+  was performed. Authenticated browser/paid chat checks remain outside this run;
+  unfixed base-OS advisories remain an explicit follow-up, not a cleared finding.
