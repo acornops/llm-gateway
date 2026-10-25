@@ -47,3 +47,7 @@ Companion telemetry repair: `control-plane/docs/exec-plans/active/vm-telemetry-p
 - Independent read-only review found no blocking or minor findings; independently
   reran 43 gateway tests. SDK-internal retries, other providers, and historical
   backfill remain unchanged by design. No live provider call or key change made.
+- Initial PR CI could not provision Python 3.12.11 on the new Ubuntu 26.04
+  `ubuntu-latest` runner. Pin only Python jobs to Ubuntu 24.04, which the official
+  interpreter manifest supports; keep production dependencies and release jobs
+  unchanged. Rerun all CI gates before merging.
