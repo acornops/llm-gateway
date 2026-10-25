@@ -31,8 +31,10 @@ For focused dependency security updates, keep `requirements.txt`,
 `--upgrade-package package==version` options for only the selected packages.
 Review the resolved version diff, run `pip check` and `pip-audit` for both the
 lockfile and installed test environment, then run validation. The production
-Dockerfile separately pins updated `pip` in both shipped Python environments;
-the application lockfile does not cover that base-image packaging tool.
+Dockerfile pins `pip` for the build, checks the installed dependencies, and removes
+`pip` and its `ensurepip` bootstrap from the runtime image. Their vendored libraries
+are outside the application lockfile; dependencies must be installed at build time,
+not into a running production container.
 
 Run canonical validation:
 
