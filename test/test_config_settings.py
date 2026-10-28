@@ -12,6 +12,12 @@ from app.auth.service_token import require_admin_service_token
 from app.config.settings import Settings
 
 
+@pytest.mark.parametrize("timeout", [0, -1, "inf", "-inf", "NaN"])
+def test_drain_timeout_must_be_finite_and_positive(timeout):
+    with pytest.raises(ValidationError, match="SERVICE_DRAIN_TIMEOUT_SECONDS"):
+        Settings(SERVICE_DRAIN_TIMEOUT_SECONDS=timeout)
+
+
 def generated_kek() -> str:
     return base64.b64encode(bytes([9]) * 32).decode()
 

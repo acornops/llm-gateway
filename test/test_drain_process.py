@@ -255,3 +255,81 @@ def test_drain_deadline_reserves_cleanup_time_for_authority_and_lifespan(tmp_pat
             tmp_path / "lifespan_cleanup"
         ).stat().st_mtime_ns
         assert time.monotonic() - signalled_at < 3.5
+
+
+WATCHDOG_PROCESS = """
+import asyncio, importlib, os, runpy, threading, time
+from pathlib import Path
+import uvicorn
+from app.service_server import ServiceServers
+
+original_init = ServiceServers.__init__
+def short_reserve(self, configs, **kwargs):
+    kwargs.update(healthy=lambda: True, shutdown_timeout=0.3)
+    original_init(self, configs, **kwargs)
+ServiceServers.__init__ = short_reserve
+root = Path(os.environ['WATCHDOG_TEST_ROOT'])
+mode = os.environ['WATCHDOG_TEST_MODE']
+
+class Listener:
+    def __init__(self, config):
+        self.config, self.started, self.should_exit = config, False, False
+    async def serve(self):
+        if mode == 'lingering_thread':
+            entered = threading.Event()
+            def dependency_call():
+                entered.set()
+                time.sleep(1.5)
+            asyncio.create_task(asyncio.to_thread(dependency_call))
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+        self.started = True
+        (root / 'listener_ready').touch()
+        while not self.should_exit:
+            await asyncio.sleep(0.001)
+        (root / 'listener_closed').touch()
+
+uvicorn.Server = Listener
+if mode == 'embedded':
+    launcher = importlib.import_module('app.serve')
+    asyncio.run(launcher.main())
+    time.sleep(0.6)
+    (root / 'embedding_survived').touch()
+else:
+    runpy.run_module('app.serve', run_name='__main__')
+"""
+
+
+@pytest.mark.parametrize("mode", ["lingering_thread", "healthy", "embedded"])
+def test_native_watchdog_covers_executor_teardown_without_delaying_clean_exit(tmp_path, mode):
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd()),
+        "INTERNAL_TRANSPORT_TLS_ENABLED": "false",
+        "WORKSPACE_CAPACITY_ENABLED": "false",
+        "SERVICE_DRAIN_TIMEOUT_SECONDS": "0.2",
+        "WATCHDOG_TEST_ROOT": str(tmp_path),
+        "WATCHDOG_TEST_MODE": mode,
+    }
+    with (tmp_path / "watchdog.log").open("w") as log:
+        child = subprocess.Popen(
+            [sys.executable, "-c", WATCHDOG_PROCESS], env=env, stdout=log, stderr=log
+        )
+        try:
+            wait_for(lambda: (tmp_path / "listener_ready").exists())
+            started = time.monotonic()
+            child.send_signal(signal.SIGTERM)
+            exit_code = child.wait(timeout=3)
+            elapsed = time.monotonic() - started
+            assert (tmp_path / "listener_closed").exists()
+            assert exit_code == (1 if mode == "lingering_thread" else 0), (
+                tmp_path / "watchdog.log"
+            ).read_text()
+            if mode == "embedded":
+                assert (tmp_path / "embedding_survived").exists()
+            else:
+                assert elapsed < 0.9, "Process exceeded the first-signal drain and cleanup bound"
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)

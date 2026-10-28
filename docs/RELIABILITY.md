@@ -67,9 +67,13 @@ drain. The first signal sets the deadline; execution is cancelled at that deadli
 The 20-second final shutdown reserve is available to request finalizers, bounded
 authority settlement and then lifespan cleanup. Authority settlement is shielded
 from streaming cancellation but remains bounded to five seconds. Cancellation-
-resistant request or lifespan tasks cannot extend the reserve.
+resistant request or lifespan tasks cannot extend the reserve. The native watchdog
+remains armed until the outer asynchronous runner finishes executor teardown;
+listener-task completion alone cannot prove that the process can exit. Embedded
+callers release the watchdog after their own supervised work settles.
 
 Native subprocess tests cover SIGTERM after stream headers, repeated SIGTERM,
 capacity on/off, plaintext/mTLS listeners, receipt admission, body/finalizer
-completion, authority cleanup, and forced deadline exit. They exercise the
+completion, authority cleanup, lingering executor threads, clean early exit,
+embedded timer cleanup, and forced deadline exit. They exercise the
 locked Uvicorn 0.47 capture-signals behavior; rerun them when upgrading Uvicorn.

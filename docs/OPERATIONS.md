@@ -450,7 +450,9 @@ Request finalizers settle before Uvicorn closes lifespan dependencies. Idle TLS
 connection shutdown cannot consume the remainder of that cleanup reserve. Authority
 settlement is shielded from the cancelled streaming scope and keeps its own
 five-second timeout. A process watchdog
-exits nonzero when work or cleanup refuses cancellation. Work exceeding this
+exits nonzero when work or cleanup refuses cancellation. The native launcher keeps
+it armed through asynchronous runner and executor teardown, including threads
+whose awaiting tasks were cancelled. Work exceeding this
 window cannot be promised uninterrupted completion. Keep the Helm termination
 grace at 240 seconds; probes and mTLS ports are unchanged. Use rollout settings
 `maxUnavailable: 0`, `maxSurge: 1`, `minReadySeconds: 5`, with enough resource and

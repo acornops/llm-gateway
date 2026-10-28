@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 
 import uvicorn
 from fastapi import FastAPI
@@ -40,7 +41,7 @@ async def probe_ready():
     return response if servers and servers.serving and not service_drain.draining else unavailable()
 
 
-async def main() -> None:
+async def main(process_lifetime: ExitStack | None = None) -> None:
     logger.info(
         "llm_gateway_launcher_started",
         internal_transport_tls_enabled=settings.INTERNAL_TRANSPORT_TLS_ENABLED,
@@ -69,6 +70,8 @@ async def main() -> None:
         )
     global servers
     servers = ServiceServers(configs, healthy=essential_tasks_healthy, drain=service_drain)
+    if process_lifetime is not None:
+        process_lifetime.enter_context(servers.process_lifetime())
     try:
         await servers.run()
     finally:
@@ -76,4 +79,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Executor threads can outlive all async tasks. Keep the process watchdog
+    # through asyncio.run's executor shutdown, then release it for clean exit.
+    with ExitStack() as process_lifetime:
+        asyncio.run(main(process_lifetime))
