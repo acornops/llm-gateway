@@ -4,10 +4,12 @@ import asyncio
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.config.settings import settings
 from app.internal_transport import uvicorn_ssl_kwargs
 from app.main import health, logger, ready
+from app.service_server import ServiceServers
 
 probe_app = FastAPI(
     title="llm-gateway probe endpoints",
@@ -15,20 +17,23 @@ probe_app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+servers: ServiceServers | None = None
+
+
+def unavailable():
+    return JSONResponse(
+        status_code=503, content={"status": "not_ready", "detail": "API listener unavailable"}
+    )
 
 
 @probe_app.get("/health")
 async def probe_health():
-    return await health()
+    return await health() if servers and servers.serving else unavailable()
 
 
 @probe_app.get("/ready")
 async def probe_ready():
-    return await ready()
-
-
-async def _serve(config: uvicorn.Config) -> None:
-    await uvicorn.Server(config).serve()
+    return await ready() if servers and servers.serving else unavailable()
 
 
 async def main() -> None:
@@ -44,20 +49,26 @@ async def main() -> None:
         log_level=settings.LOG_LEVEL,
         **uvicorn_ssl_kwargs(),
     )
-    if not settings.INTERNAL_TRANSPORT_TLS_ENABLED:
-        await _serve(business)
-        return
-    if not settings.INTERNAL_TRANSPORT_HEALTH_PORT:
-        raise RuntimeError(
-            "INTERNAL_TRANSPORT_HEALTH_PORT is required when internal transport TLS is enabled"
+    configs = [business]
+    if settings.INTERNAL_TRANSPORT_TLS_ENABLED:
+        if not settings.INTERNAL_TRANSPORT_HEALTH_PORT:
+            raise RuntimeError(
+                "INTERNAL_TRANSPORT_HEALTH_PORT is required when internal transport TLS is enabled"
+            )
+        configs.append(
+            uvicorn.Config(
+                probe_app,
+                host=settings.GATEWAY_HTTP_ADDR,
+                port=settings.INTERNAL_TRANSPORT_HEALTH_PORT,
+                log_level=settings.LOG_LEVEL,
+            )
         )
-    probe = uvicorn.Config(
-        probe_app,
-        host=settings.GATEWAY_HTTP_ADDR,
-        port=settings.INTERNAL_TRANSPORT_HEALTH_PORT,
-        log_level=settings.LOG_LEVEL,
-    )
-    await asyncio.gather(_serve(business), _serve(probe))
+    global servers
+    servers = ServiceServers(configs)
+    try:
+        await servers.run()
+    finally:
+        servers = None
 
 
 if __name__ == "__main__":

@@ -428,3 +428,11 @@ upstream execution during setup. The first provider HTTP request and every corre
 request register their operation at the HTTP request hook. Remote MCP registers after
 session initialization, immediately before `tools/call`; builtin MCP registers before
 its actual HTTP dispatch. A suspension or lease loss during setup prevents the call.
+
+## Listener lifecycle
+
+When internal TLS is enabled, the HTTP health and readiness endpoints require
+successful startup of the business listener. If either listener fails to bind,
+returns after a lifespan failure, or exits unexpectedly, the launcher stops its
+sibling and exits nonzero. SIGTERM/SIGINT stops both listeners gracefully, with
+a 30-second shutdown bound. Existing probe paths and ports are unchanged.
