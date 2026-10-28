@@ -12,10 +12,12 @@ import httpx
 from fastapi import HTTPException
 
 from app.config.settings import settings
+from app.drain import is_trusted_drain_response, wait_retry
 from app.internal_transport import httpx_tls_kwargs
 
 OWNER_HEADER = "x-acornops-execution-owner"
 GENERATION_HEADER = "x-acornops-execution-generation"
+AUTHORITY_RETRY_BUDGET_SECONDS = 5.0
 
 
 @dataclass
@@ -34,24 +36,47 @@ class ExecutionAuthority:
     async def _post(self, run_id, action, payload):
         base = settings.ORCH_BASE_URL.rstrip("/")
         url = f"{base}/internal/v1/runs/{quote(run_id, safe='')}/capacity/{action}"
+        idempotent = action in {"authorize", "operations/finish"}
+        deadline = time.monotonic() + AUTHORITY_RETRY_BUDGET_SECONDS
         try:
-            async with httpx.AsyncClient(timeout=5, **httpx_tls_kwargs()) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {settings.ORCH_SERVICE_TOKEN}"},
-                )
-            if response.status_code >= 400:
-                raise HTTPException(
-                    response.status_code if response.status_code < 500 else 503,
-                    detail={
-                        "code": "EXECUTION_AUTHORITY_DENIED",
-                        "message": "Run execution is not authorized.",
-                    },
-                )
-            return response.json()
-        except (httpx.HTTPError, ValueError) as error:
+            async with asyncio.timeout(AUTHORITY_RETRY_BUDGET_SECONDS):
+                async with httpx.AsyncClient(timeout=5, **httpx_tls_kwargs()) as client:
+                    while True:
+                        try:
+                            response = await client.post(
+                                url,
+                                json=payload,
+                                headers={"Authorization": f"Bearer {settings.ORCH_SERVICE_TOKEN}"},
+                                follow_redirects=False,
+                            )
+                        except httpx.HTTPError:
+                            if idempotent and await wait_retry(0.1, deadline):
+                                continue
+                            raise
+                        trusted_drain = is_trusted_drain_response(response)
+                        if (
+                            trusted_drain or (idempotent and response.status_code >= 500)
+                        ) and await wait_retry(1 if trusted_drain else 0.1, deadline):
+                            continue
+                        if not 200 <= response.status_code < 300:
+                            raise HTTPException(
+                                response.status_code if 400 <= response.status_code < 500 else 503,
+                                detail={
+                                    "code": "EXECUTION_AUTHORITY_DENIED",
+                                    "message": "Run execution is not authorized.",
+                                },
+                            )
+                        result = response.json()
+                        if not isinstance(result, dict):
+                            raise ValueError("Invalid authority response")
+                        return result
+        except (httpx.HTTPError, ValueError, TimeoutError) as error:
             raise HTTPException(503, detail="Execution authority unavailable") from error
+
+    async def finish(self, run_id, payload):
+        result = await self._post(run_id, "operations/finish", payload)
+        if result.get("status") != "ok" or result.get("contractVersion") != 1:
+            raise HTTPException(503, detail="Execution operation finish unconfirmed")
 
     async def authorize(self, claims):
         result = await self._post(claims.run_id, "authorize", {"workspaceId": claims.workspace_id})
@@ -83,8 +108,8 @@ class ExecutionAuthority:
         finally:
             current_operation.reset(token)
             if operation.payload:
-                # Finish is idempotent; one bounded call, including cancellation cleanup.
-                await self._post(claims.run_id, "operations/finish", operation.payload)
+                # Finish is idempotent and retry-bounded, including cancellation cleanup.
+                await self.finish(claims.run_id, operation.payload)
 
 
 execution_authority = ExecutionAuthority()
@@ -108,6 +133,9 @@ async def begin_dispatch():
             "generation": int(operation.headers[GENERATION_HEADER]),
             "operationId": uuid.uuid4().hex,
         }
+        # An interrupted begin may have registered remotely. Retain its identity
+        # for cleanup while the dispatched fence prevents all uncertain replay.
+        operation.payload = payload
         result = await execution_authority._post(
             operation.claims.run_id, "operations/begin", {**payload, "timeoutMs": remaining}
         )
@@ -133,8 +161,6 @@ async def finish_rejected_dispatch():
     if operation is None:
         return
     if operation.payload:
-        await execution_authority._post(
-            operation.claims.run_id, "operations/finish", operation.payload
-        )
+        await execution_authority.finish(operation.claims.run_id, operation.payload)
         operation.payload = None
     operation.dispatched = False

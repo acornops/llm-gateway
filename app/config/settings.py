@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     # Server
     GATEWAY_HTTP_ADDR: str = "0.0.0.0"
     GATEWAY_PORT: int = 8001
+    SERVICE_DRAIN_TIMEOUT_SECONDS: float = Field(default=210, gt=0)
+    AGENT_HANDOFF_TIMEOUT_MS: int = Field(default=45000, ge=0, le=45000)
     LOG_LEVEL: str = "info"
     ENABLE_API_DOCS: bool = False
     MAX_REQUEST_BODY_BYTES: int = 1_000_000

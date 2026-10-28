@@ -435,5 +435,23 @@ When internal TLS is enabled, the HTTP health and readiness endpoints require
 the business listener to be serving. Readiness rechecks this after its dependency
 checks finish, so shutdown during a check cannot return a stale success. If either listener fails to bind,
 returns after a lifespan failure, or exits unexpectedly, the launcher stops its
-sibling and exits nonzero. SIGTERM/SIGINT stops both listeners gracefully, with
-a 30-second shutdown bound. Existing probe paths and ports are unchanged.
+sibling and exits nonzero. SIGTERM/SIGINT closes application admission on the event loop. Both listeners stay
+open while accepted ASGI work finishes; `/ready` returns 503, `/health` remains
+healthy unless an essential task fails, and new application requests receive
+`SERVICE_DRAINING`. Repeated signals keep the first deadline.
+
+`SERVICE_DRAIN_TIMEOUT_SECONDS` defaults to 210. Once requests finish, shutdown
+starts immediately. At the deadline Uvicorn cancels outstanding work, reserving
+at most 20 further seconds for dependency/lifespan cleanup. A process watchdog
+exits nonzero when work or cleanup refuses cancellation. Work exceeding this
+window cannot be promised uninterrupted completion. Keep the Helm termination
+grace at 240 seconds; probes and mTLS ports are unchanged. Use rollout settings
+`maxUnavailable: 0`, `maxSurge: 1`, `minReadySeconds: 5`, with enough resource and
+provider-capacity headroom for terminating and replacement pods to overlap.
+
+`AGENT_HANDOFF_TIMEOUT_MS` defaults to 45000 and cannot exceed that bound. Builtin
+HTTP and authority-operation budgets include it without changing tool execution
+timeouts. Internal authority reads/finishes use bounded retries; builtin writes
+retry only trusted pre-admission drain rejections within their admitted handler,
+without claiming the approval receipt again. Older binaries and uncontrolled
+rollback do not provide these restart guarantees.

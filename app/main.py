@@ -17,6 +17,7 @@ from app.api.router import api_router
 from app.auth.jwks import jwks_manager
 from app.catalog.store import catalog_store
 from app.config.settings import settings
+from app.drain import DrainMiddleware, service_drain
 from app.errors.codes import ErrorCode
 from app.errors.envelope import ErrorEnvelope
 from app.mcp.approval_receipts import approval_receipt_cleanup_loop, approval_receipt_store
@@ -51,6 +52,11 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+essential_tasks: list[asyncio.Task] = []
+
+
+def essential_tasks_healthy() -> bool:
+    return all(not task.done() for task in essential_tasks)
 
 
 class RequestBodyTooLargeError(Exception):
@@ -127,6 +133,11 @@ async def lifespan(app: FastAPI):
     await secret_store.start_cache_invalidation_listener()
     approval_receipt_cleanup_task = asyncio.create_task(approval_receipt_cleanup_loop())
 
+    essential_tasks[:] = [approval_receipt_cleanup_task] + [
+        task for store in (tool_registry, secret_store)
+        if (task := getattr(store, "_listener_task", None)) is not None
+    ]
+
     yield
 
     # Shutdown logic
@@ -163,6 +174,8 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    if not essential_tasks_healthy():
+        return JSONResponse(status_code=503, content={"status": "unhealthy"})
     return {"status": "ok"}
 
 
@@ -318,6 +331,8 @@ def _record_readiness_metrics(checks: dict[str, dict[str, object]]) -> None:
 
 @app.get("/ready")
 async def ready():
+    if service_drain.draining or not essential_tasks_healthy():
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
     database_check, redis_check, jwks_check, secret_backend_check = await asyncio.gather(
         _check_database_ready(),
         _check_redis_ready(),
@@ -330,6 +345,8 @@ async def ready():
         "jwks": jwks_check,
         "secret_backend": secret_backend_check,
     }
+    if service_drain.draining or not essential_tasks_healthy():
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
     _record_readiness_metrics(checks)
     failed_checks = [
         dependency
@@ -375,3 +392,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             }
         ).model_dump(),
     )
+
+
+# Outermost pure ASGI middleware: includes BaseHTTPMiddleware task-group cleanup.
+app.add_middleware(DrainMiddleware, drain=service_drain)

@@ -90,6 +90,8 @@ Important variables:
 - `AUTH_ISSUER`
 - `AUTH_AUDIENCE`
 - `ADMIN_API_TOKEN`
+- `SERVICE_DRAIN_TIMEOUT_SECONDS=210`
+- `AGENT_HANDOFF_TIMEOUT_MS=45000`
 - `SECRETS_BACKEND`
 - `SECRETS_KEK_BASE64`
 - workspace AI Settings for real provider-backed flows; no provider credential
@@ -120,3 +122,9 @@ If docs are intentionally unchanged, record `Docs impact: none` and the reason i
 ## Documentation Harness
 
 Keep `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `docs/index.md`, this file, and `docs/OPERATIONS.md` in sync when changing repo behavior. `task validate` runs the harness checks.
+
+
+Graceful shutdown tests run isolated local subprocess listeners without Postgres,
+Redis or provider calls: `.venv/bin/python -m pytest test/test_drain_process.py`.
+They generate ephemeral test certificates and need permission to bind loopback
+ports and signal their own child processes. `task validate` includes these tests.

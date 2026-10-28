@@ -8,6 +8,13 @@ import app.serve as launcher
 from app.config.settings import settings
 
 
+@pytest.fixture(autouse=True)
+def isolated_launcher_drain(monkeypatch):
+    from app.drain import ServiceDrain
+
+    monkeypatch.setattr(launcher, "service_drain", ServiceDrain(1))
+
+
 @pytest.mark.asyncio
 async def test_probe_rechecks_listener_after_awaiting_readiness(monkeypatch):
     listener = SimpleNamespace(serving=True)
@@ -91,10 +98,68 @@ async def test_signal_starts_deadline_even_when_server_never_returns(monkeypatch
         )
 
     monkeypatch.setattr(asyncio, "wait", fast_deadline)
-    supervisor = ServiceServers([])
+    supervisor = ServiceServers([], shutdown_timeout=0.1)
     supervisor.servers = [Server()]
     task = asyncio.create_task(supervisor.run())
     await asyncio.wait_for(started.wait(), 1)
     supervisor.stop()
     await asyncio.wait_for(task, 1)
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_drain_keeps_listeners_until_admitted_cleanup_and_ignores_repeat_signal(monkeypatch):
+    from app.drain import ServiceDrain
+    from app.service_server import ServiceServers
+
+    class Server:
+        started = True
+        should_exit = False
+
+        async def serve(self):
+            while not self.should_exit:
+                await asyncio.sleep(0.001)
+
+    drain = ServiceDrain(1)
+    drain.active = 1
+    supervisor = ServiceServers([], drain=drain, shutdown_timeout=0.2)
+    supervisor.servers = [Server()]
+    running = asyncio.create_task(supervisor.run())
+    await asyncio.sleep(0)
+    supervisor.stop()
+    deadline = drain.deadline
+    supervisor.stop()
+    await asyncio.sleep(0.02)
+    assert drain.deadline == deadline
+    assert supervisor.serving
+    assert not supervisor.accepting
+    assert not supervisor.servers[0].should_exit
+    drain.active = 0
+    await asyncio.wait_for(running, 1)
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_still_fails_fast_during_drain():
+    from app.drain import ServiceDrain
+    from app.service_server import ServiceServers
+
+    class Server:
+        started = True
+        should_exit = False
+
+        async def serve(self):
+            while not self.should_exit:
+                await asyncio.sleep(0.001)
+
+    healthy = True
+    drain = ServiceDrain(1)
+    drain.active = 1
+    supervisor = ServiceServers([], healthy=lambda: healthy, drain=drain, shutdown_timeout=0.2)
+    supervisor.servers = [Server()]
+    running = asyncio.create_task(supervisor.run())
+    await asyncio.sleep(0)
+    supervisor.stop()
+    healthy = False
+    with pytest.raises(RuntimeError, match="Essential"):
+        await asyncio.wait_for(running, 1)
+    drain.active = 0

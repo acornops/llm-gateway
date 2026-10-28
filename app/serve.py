@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config.settings import settings
+from app.drain import service_drain
 from app.internal_transport import uvicorn_ssl_kwargs
-from app.main import health, logger, ready
+from app.main import essential_tasks_healthy, health, logger, ready
 from app.service_server import ServiceServers
 
 probe_app = FastAPI(
@@ -33,10 +34,10 @@ async def probe_health():
 
 @probe_app.get("/ready")
 async def probe_ready():
-    if not servers or not servers.serving:
+    if not servers or not servers.serving or service_drain.draining:
         return unavailable()
     response = await ready()
-    return response if servers and servers.serving else unavailable()
+    return response if servers and servers.serving and not service_drain.draining else unavailable()
 
 
 async def main() -> None:
@@ -67,7 +68,7 @@ async def main() -> None:
             )
         )
     global servers
-    servers = ServiceServers(configs)
+    servers = ServiceServers(configs, healthy=essential_tasks_healthy, drain=service_drain)
     try:
         await servers.run()
     finally:

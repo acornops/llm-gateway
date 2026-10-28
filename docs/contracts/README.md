@@ -231,3 +231,36 @@ Coordinator waits persist the full ReAct transcript through
 GET returns `{kind:"dependency",runId,generation,state}` for these waits. The worker
 releases its gates after durable save and unwinding, resumes the same run identity,
 and injects settled child results without repeating delegation writes.
+
+
+## Graceful rolling restarts
+
+The gateway rejects new application requests before authentication or approval
+receipt claims while draining. It returns HTTP 503, `Retry-After: 1`, HTTP/1.1
+connection close and the exact error classification:
+`{"error":{"code":"SERVICE_DRAINING","message":"Service is draining","retryable":true,"outcome":"not_started"}}`.
+Accepted requests remain tracked through complete ASGI execution, including
+stream bodies, generator finalizers, client-disconnect cleanup and operation finish.
+
+Authority reads and idempotent operation finishes retry transport failures and
+5xx responses within a five-second total budget. Operation begin retries only
+a direct trusted drain rejection, retaining its operation ID. An interrupted
+begin retains that ID for cleanup and never grants dispatch permission.
+Redirects and authentication failures do not authorize replay.
+
+Builtin drain retries occur inside the original admitted request, after the
+previous operation has been successfully finished. Each retry obtains a fresh
+operation ID while retaining logical tool-call identity, arguments and the one
+approval receipt claim. Uncertain dispatch or unconfirmed finish prevents retry.
+The builtin transport and enclosing authority operation include the maximum
+45-second pre-dispatch agent handoff allowance; the actual tool execution timeout
+is unchanged. Remote MCP execution retry policy is unchanged.
+
+The mirrored `gracefulDrainContract` also documents producer additions consumed
+by the execution engine: optional PostgreSQL-derived `leaseRemainingMs`, durable
+cancellation-status polling, and fenced Redis owner state and RPC execution
+metadata. The gateway does not acquire execution leases or own agent connections.
+Contract versions remain unchanged. Deploy consumers of these additive fields
+and drain errors before enabling coordinated restarts throughout the deployment.
+Initial cutover and rollback require a controlled window; old binaries do not
+gain drain guarantees. No database migration or agent protocol change is required.

@@ -103,7 +103,7 @@ def test_additional_ca_bundle_must_be_readable(tmp_path: Path):
 
 
 def test_builtin_transport_timeout_leaves_headroom_for_producer_error():
-    assert internal_transport_module.builtin_tool_transport_timeout_seconds(20_000) == 25.0
+    assert internal_transport_module.builtin_tool_transport_timeout_seconds(20_000) == 70.0
     assert internal_transport_module.builtin_tool_transport_timeout_seconds(1) > 5.0
 
 

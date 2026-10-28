@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ssl
+import time
 from typing import Any
 
 from app import outbound_tls
 from app.config.settings import settings
+from app.drain import is_trusted_drain_response, wait_retry
 from app.mcp.transports.http_transport import McpToolTransportError
 
 BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS = 5.0
@@ -12,7 +14,11 @@ BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS = 5.0
 
 def builtin_tool_transport_timeout_seconds(timeout_ms: int) -> float:
     """Leave enough transport headroom for the producer to return its own timeout result."""
-    return max(timeout_ms / 1000.0, 0.001) + BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS
+    return (
+        max(timeout_ms / 1000.0, 0.001)
+        + BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS
+        + settings.AGENT_HANDOFF_TIMEOUT_MS / 1000.0
+    )
 
 
 def httpx_tls_kwargs() -> dict[str, Any]:
@@ -83,9 +89,22 @@ async def post_builtin_mcp_tool(
                 request=streamed.request,
             )
 
+    retry_deadline = time.monotonic() + settings.AGENT_HANDOFF_TIMEOUT_MS / 1000.0
+
+    async def post_with_drain_retry(client, target_url, **kwargs):
+        while True:
+            response = await post_bounded(client, target_url, **kwargs)
+            if not is_trusted_drain_response(response):
+                return response
+            # The receipt was claimed once by the enclosing handler. Settle the
+            # registered operation before resetting its fence and making a new ID.
+            await finish_rejected_dispatch()
+            if not await wait_retry(1, retry_deadline):
+                return response
+
     transport_timeout = builtin_tool_transport_timeout_seconds(timeout_ms)
     async with httpx.AsyncClient(**httpx_tls_kwargs()) as client:
-        response = await post_bounded(
+        response = await post_with_drain_retry(
             client,
             f"{url.rstrip('/')}/tools/call",
             json={
@@ -102,7 +121,7 @@ async def post_builtin_mcp_tool(
         )
         if response.status_code in (404, 405):
             await finish_rejected_dispatch()
-            response = await post_bounded(
+            response = await post_with_drain_retry(
                 client,
                 url,
                 json={

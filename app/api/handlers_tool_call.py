@@ -331,7 +331,9 @@ async def execute_tool_call(
 
         try:
             async with execution_authority.operation(
-                claims, authority_headers, tool.timeout_ms + 5000,
+                claims, authority_headers, tool.timeout_ms + 5000 + (
+                    settings.AGENT_HANDOFF_TIMEOUT_MS if is_builtin_tool else 0
+                ),
             ):
                 if is_builtin_tool:
                     request_headers.update({
@@ -549,7 +551,9 @@ async def execute_tool_call(
     # Execute tool call
     try:
         async with execution_authority.operation(
-                claims, authority_headers, tool.timeout_ms + 5000,
+                claims, authority_headers, tool.timeout_ms + 5000 + (
+                    settings.AGENT_HANDOFF_TIMEOUT_MS if is_builtin_tool else 0
+                ),
             ):
             if is_builtin_tool:
                 request_headers.update({

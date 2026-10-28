@@ -41,7 +41,7 @@
   `max_completion_tokens` with `max_tokens`. It does not retry alternate tool
   schemas or replay emitted output.
 - MCP tool discovery and Vault secret reads use bounded exponential backoff for retryable timeout, connection, rate-limit, and 5xx failure modes.
-- MCP tool execution does not automatically retry because tool side effects may be non-idempotent; repeated retryable failures instead trip a short-lived circuit breaker.
+- Remote MCP tool execution does not automatically retry because tool side effects may be non-idempotent; repeated retryable failures instead trip a short-lived circuit breaker. Builtin calls retry only the trusted internal pre-admission drain rejection after successfully settling their previous capacity operation.
 - Remote MCP discovery and tool execution each use a fresh initialized
   Streamable HTTP session. Discovery is retried once only when the peer
   explicitly reports that the attached session was terminated. Tool calls,
@@ -55,3 +55,18 @@
 - Provider adapters should use actively supported SDKs. Gemini uses
   `google-genai`; do not reintroduce the deprecated `google-generativeai`
   package.
+
+
+## Bounded process drain
+
+The ASGI admission wrapper owns accepted request bodies and finalizers, including
+operation cleanup after a disconnect. Signals use event-loop callbacks so
+admission cannot be interrupted between its check and request registration.
+Essential worker/listener failure still fails liveness and the process during
+drain. The first signal sets the deadline; cancellation-resistant request or
+lifespan tasks cannot extend the 20-second final shutdown reserve.
+
+Native subprocess tests cover SIGTERM after stream headers, repeated SIGTERM,
+capacity on/off, plaintext/mTLS listeners, receipt admission, body/finalizer
+completion, authority cleanup, and forced deadline exit. They exercise the
+locked Uvicorn 0.47 capture-signals behavior; rerun them when upgrading Uvicorn.

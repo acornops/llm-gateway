@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
+    SERVICE_DRAINING = "SERVICE_DRAINING"
     # Auth errors
     UNAUTHORIZED = "UNAUTHORIZED"
     FORBIDDEN = "FORBIDDEN"
