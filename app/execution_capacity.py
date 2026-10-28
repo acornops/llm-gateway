@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
+from anyio import CancelScope
 from fastapi import HTTPException
 
 from app.config.settings import settings
@@ -108,8 +109,11 @@ class ExecutionAuthority:
         finally:
             current_operation.reset(token)
             if operation.payload:
-                # Finish is idempotent and retry-bounded, including cancellation cleanup.
-                await self.finish(claims.run_id, operation.payload)
+                # Stream cancellation leaves AnyIO's parent scope cancelled. Shield
+                # this idempotent settlement, which retains its own five-second bound,
+                # so the process cleanup reserve can actually finish authority work.
+                with CancelScope(shield=True):
+                    await self.finish(claims.run_id, operation.payload)
 
 
 execution_authority = ExecutionAuthority()

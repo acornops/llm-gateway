@@ -77,7 +77,7 @@ def process(root, *, tls=False, capacity=True, mode="stream", timeout=3, cleanup
         "SERVICE_DRAIN_TIMEOUT_SECONDS": str(timeout),
         "WORKSPACE_CAPACITY_ENABLED": str(capacity).lower(),
         "INTERNAL_TRANSPORT_TLS_ENABLED": str(tls).lower(),
-        "LOG_LEVEL": "warning",
+        "LOG_LEVEL": "info",
     }
     context = True
     if tls:
@@ -164,7 +164,8 @@ def test_shutdown_deadline_bounds_noncooperative_work(tmp_path, mode):
             assert child.wait(timeout=4) == 1
         else:
             with client.stream("GET", f"{url}/fixture/stream") as stream:
-                assert next(stream.iter_lines()) == "first"
+                lines = stream.iter_lines()
+                assert next(lines) == "first"
                 started = time.monotonic()
                 child.send_signal(signal.SIGTERM)
                 time.sleep(0.15)
@@ -204,7 +205,8 @@ def test_signal_during_awaited_authorization_keeps_admitted_handler_tracked(tmp_
 def test_real_essential_worker_failure_still_exits_nonzero_during_drain(tmp_path):
     with process(tmp_path, mode="worker_failure", timeout=10) as (child, client, url, probe):
         with client.stream("GET", f"{url}/fixture/stream") as stream:
-            assert next(stream.iter_lines()) == "first"
+            lines = stream.iter_lines()
+            assert next(lines) == "first"
             child.send_signal(signal.SIGTERM)
             wait_for(lambda: client.get(f"{probe}/ready").status_code == 503)
             (tmp_path / "fail_worker").touch()
@@ -216,3 +218,29 @@ def test_real_essential_worker_failure_still_exits_nonzero_during_drain(tmp_path
         assert (
             "Essential service task stopped unexpectedly" in (tmp_path / "process.log").read_text()
         )
+
+
+def test_drain_deadline_reserves_cleanup_time_for_authority_and_lifespan(tmp_path):
+    with (
+        process(tmp_path, mode="deadline_cleanup", timeout=0.25, cleanup=3) as (
+            child,
+            client,
+            url,
+            probe,
+        ),
+        client.stream("GET", f"{url}/fixture/stream") as stream,
+    ):
+        lines = stream.iter_lines()
+        assert next(lines) == "first"
+        signalled_at = time.monotonic()
+        child.send_signal(signal.SIGTERM)
+        wait_for(lambda: (tmp_path / "cancelled").exists(), timeout=4)
+        cancelled_at = float((tmp_path / "cancelled").read_text())
+        assert cancelled_at - signalled_at < 1, "Cancel at drain deadline, not near reserve expiry"
+        assert child.wait(timeout=4) == 0, (tmp_path / "process.log").read_text()
+        assert (tmp_path / "authority_finished").exists()
+        assert (tmp_path / "lifespan_finished").exists()
+        assert (tmp_path / "authority_finished").stat().st_mtime_ns <= (
+            tmp_path / "lifespan_cleanup"
+        ).stat().st_mtime_ns
+        assert time.monotonic() - signalled_at < 3.5

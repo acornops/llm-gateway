@@ -27,7 +27,7 @@ from app.auth.jwt_validator import TokenContext, get_current_token_context
 from app.config.settings import settings
 from app.execution_capacity import GENERATION_HEADER, OWNER_HEADER, execution_authority
 from app.internal_model_tools import is_reserved_internal_tool_name
-from app.internal_transport import post_builtin_mcp_tool
+from app.internal_transport import builtin_tool_operation_timeout_ms, post_builtin_mcp_tool
 from app.mcp.approval_receipts import ApprovalReceiptError, validate_and_claim_approval_receipt
 from app.mcp.logging import loggable_mcp_server_origin
 from app.mcp.registry.store import mcp_server_registry, tool_registry
@@ -331,8 +331,9 @@ async def execute_tool_call(
 
         try:
             async with execution_authority.operation(
-                claims, authority_headers, tool.timeout_ms + 5000 + (
-                    settings.AGENT_HANDOFF_TIMEOUT_MS if is_builtin_tool else 0
+                claims, authority_headers, (
+                    builtin_tool_operation_timeout_ms(tool.timeout_ms)
+                    if is_builtin_tool else tool.timeout_ms + 5000
                 ),
             ):
                 if is_builtin_tool:
@@ -551,8 +552,9 @@ async def execute_tool_call(
     # Execute tool call
     try:
         async with execution_authority.operation(
-                claims, authority_headers, tool.timeout_ms + 5000 + (
-                    settings.AGENT_HANDOFF_TIMEOUT_MS if is_builtin_tool else 0
+                claims, authority_headers, (
+                    builtin_tool_operation_timeout_ms(tool.timeout_ms)
+                    if is_builtin_tool else tool.timeout_ms + 5000
                 ),
             ):
             if is_builtin_tool:

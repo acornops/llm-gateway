@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +39,9 @@ async def lifespan(app):
         with suppress(asyncio.CancelledError):
             await worker
     mark("lifespan_cleanup")
+    if mode == "deadline_cleanup":
+        await asyncio.sleep(0.8)
+        mark("lifespan_finished")
     if mode == "stuck_lifespan":
         while True:
             with suppress(asyncio.CancelledError):
@@ -50,6 +54,8 @@ async def ready_check():
 
 async def authority_post(run, action, body):
     if action == "operations/finish":
+        if mode == "deadline_cleanup":
+            await asyncio.sleep(0.8)
         mark("authority_finished")
     return {
         "status": "ok",
@@ -90,8 +96,8 @@ async def stream():
                 yield b"last\n"
             finally:
                 mark("finalizing")
-                if mode == "deadline":
-                    mark("cancelled")
+                if mode in {"deadline", "deadline_cleanup"}:
+                    (root / "cancelled").write_text(str(time.monotonic()))
                 else:
                     await gate("release_cleanup")
 

@@ -18,6 +18,7 @@ class ServiceDrain:
         self.deadline: float | None = None
         self.active = 0
         self.tasks: set[asyncio.Task] = set()
+        self.request_tasks: set[asyncio.Task] = set()
 
     @property
     def draining(self) -> bool:
@@ -76,11 +77,13 @@ class DrainMiddleware:
             return
         task = asyncio.current_task()
         self.drain.tasks.add(task)
+        self.drain.request_tasks.add(task)
         self.drain.active += 1
         try:
             await self.app(scope, receive, send)
         finally:
             self.drain.active -= 1
+            self.drain.request_tasks.discard(task)
             self.drain.tasks.discard(task)
 
 

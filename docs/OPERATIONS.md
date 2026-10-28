@@ -441,8 +441,12 @@ healthy unless an essential task fails, and new application requests receive
 `SERVICE_DRAINING`. Repeated signals keep the first deadline.
 
 `SERVICE_DRAIN_TIMEOUT_SECONDS` defaults to 210. Once requests finish, shutdown
-starts immediately. At the deadline Uvicorn cancels outstanding work, reserving
-at most 20 further seconds for dependency/lifespan cleanup. A process watchdog
+starts immediately. At the deadline the supervisor cancels outstanding requests immediately, reserving
+at most 20 further seconds for authority settlement and dependency/lifespan cleanup.
+Request finalizers settle before Uvicorn closes lifespan dependencies. Idle TLS
+connection shutdown cannot consume the remainder of that cleanup reserve. Authority
+settlement is shielded from the cancelled streaming scope and keeps its own
+five-second timeout. A process watchdog
 exits nonzero when work or cleanup refuses cancellation. Work exceeding this
 window cannot be promised uninterrupted completion. Keep the Helm termination
 grace at 240 seconds; probes and mTLS ports are unchanged. Use rollout settings
@@ -450,8 +454,10 @@ grace at 240 seconds; probes and mTLS ports are unchanged. Use rollout settings
 provider-capacity headroom for terminating and replacement pods to overlap.
 
 `AGENT_HANDOFF_TIMEOUT_MS` defaults to 45000 and cannot exceed that bound. Builtin
-HTTP and authority-operation budgets include it without changing tool execution
-timeouts. Internal authority reads/finishes use bounded retries; builtin writes
+HTTP budgets include it without changing tool execution timeouts. The enclosing
+builtin operation also reserves an independent 45-second HTTP drain-retry budget,
+so retrying a draining HTTP listener does not consume the subsequent producer
+owner-handoff or tool execution window. Internal authority reads/finishes use bounded retries; builtin writes
 retry only trusted pre-admission drain rejections within their admitted handler,
 without claiming the approval receipt again. Older binaries and uncontrolled
 rollback do not provide these restart guarantees.

@@ -99,11 +99,27 @@ class ServiceServers:
                 max(0, self.drain.deadline + self.shutdown_timeout - time.monotonic()),
             )
             self._arm_watchdog(remaining)
-            for server in self.servers:
-                server.should_exit = True
-                if hasattr(server, "config"):
-                    server.config.timeout_graceful_shutdown = max(0, remaining - 1)
+            cleanup_deadline = time.monotonic() + remaining
+            # Cancel execution now, then await its finalizers before asking Uvicorn
+            # to close dependencies. TLS close-notify can otherwise spend the whole
+            # reserve waiting for idle clients even after application work is done.
+            request_tasks = tuple(self.drain.request_tasks)
+            for task in request_tasks:
+                task.cancel("Service drain deadline or essential service failure")
             try:
+                if request_tasks:
+                    _, pending_requests = await asyncio.wait(
+                        request_tasks, timeout=max(0, remaining - 0.05)
+                    )
+                    if pending_requests:
+                        raise RuntimeError("Service request cleanup did not finish")
+                for server in self.servers:
+                    server.should_exit = True
+                    if hasattr(server, "config"):
+                        # Accepted ASGI work has already settled. Do not spend the
+                        # remaining lifespan budget waiting for idle TLS connections.
+                        server.config.timeout_graceful_shutdown = 0
+                remaining = max(0, cleanup_deadline - time.monotonic())
                 _, pending = await asyncio.wait(tasks, timeout=max(0, remaining - 0.05))
                 for task in pending:
                     task.cancel()

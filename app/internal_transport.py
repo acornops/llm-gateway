@@ -10,6 +10,7 @@ from app.drain import is_trusted_drain_response, wait_retry
 from app.mcp.transports.http_transport import McpToolTransportError
 
 BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS = 5.0
+BUILTIN_DRAIN_RETRY_TIMEOUT_SECONDS = 45.0
 
 
 def builtin_tool_transport_timeout_seconds(timeout_ms: int) -> float:
@@ -18,6 +19,14 @@ def builtin_tool_transport_timeout_seconds(timeout_ms: int) -> float:
         max(timeout_ms / 1000.0, 0.001)
         + BUILTIN_TOOL_TIMEOUT_HEADROOM_SECONDS
         + settings.AGENT_HANDOFF_TIMEOUT_MS / 1000.0
+    )
+
+
+def builtin_tool_operation_timeout_ms(timeout_ms: int) -> int:
+    """Keep HTTP drain retries separate from the producer's handoff/execution window."""
+    return int(
+        (BUILTIN_DRAIN_RETRY_TIMEOUT_SECONDS + builtin_tool_transport_timeout_seconds(timeout_ms))
+        * 1000
     )
 
 
@@ -89,7 +98,7 @@ async def post_builtin_mcp_tool(
                 request=streamed.request,
             )
 
-    retry_deadline = time.monotonic() + settings.AGENT_HANDOFF_TIMEOUT_MS / 1000.0
+    retry_deadline = time.monotonic() + BUILTIN_DRAIN_RETRY_TIMEOUT_SECONDS
 
     async def post_with_drain_retry(client, target_url, **kwargs):
         while True:

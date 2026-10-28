@@ -253,8 +253,10 @@ previous operation has been successfully finished. Each retry obtains a fresh
 operation ID while retaining logical tool-call identity, arguments and the one
 approval receipt claim. Uncertain dispatch or unconfirmed finish prevents retry.
 The builtin transport and enclosing authority operation include the maximum
-45-second pre-dispatch agent handoff allowance; the actual tool execution timeout
-is unchanged. Remote MCP execution retry policy is unchanged.
+45-second pre-dispatch agent handoff allowance. The enclosing operation separately
+reserves 45 seconds for HTTP drain retries before the producer accepts a request.
+Those retries cannot consume the producer handoff or actual tool execution
+window; the actual tool execution timeout is unchanged. Remote MCP execution retry policy is unchanged.
 
 The mirrored `gracefulDrainContract` also documents producer additions consumed
 by the execution engine: optional PostgreSQL-derived `leaseRemainingMs`, durable

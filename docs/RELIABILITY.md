@@ -63,8 +63,11 @@ The ASGI admission wrapper owns accepted request bodies and finalizers, includin
 operation cleanup after a disconnect. Signals use event-loop callbacks so
 admission cannot be interrupted between its check and request registration.
 Essential worker/listener failure still fails liveness and the process during
-drain. The first signal sets the deadline; cancellation-resistant request or
-lifespan tasks cannot extend the 20-second final shutdown reserve.
+drain. The first signal sets the deadline; execution is cancelled at that deadline.
+The 20-second final shutdown reserve is available to request finalizers, bounded
+authority settlement and then lifespan cleanup. Authority settlement is shielded
+from streaming cancellation but remains bounded to five seconds. Cancellation-
+resistant request or lifespan tasks cannot extend the reserve.
 
 Native subprocess tests cover SIGTERM after stream headers, repeated SIGTERM,
 capacity on/off, plaintext/mTLS listeners, receipt admission, body/finalizer

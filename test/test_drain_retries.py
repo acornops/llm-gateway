@@ -360,3 +360,95 @@ async def test_retry_pause_stops_at_shutdown_deadline(monkeypatch):
     drain.start()
     monkeypatch.setattr(drain_module, "service_drain", drain)
     assert await drain_module.wait_retry(0.1, drain.deadline + 100) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_builtin_http_drain_then_owner_handoff_preserves_tool_window(
+    monkeypatch, capacity_enabled
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from test_tool_call import (
+        build_token_claims,
+        build_tool_call_payload,
+        enabled_server,
+        reviewed_tool,
+    )
+    from test_tool_result_normalization import OUTPUT_SCHEMA, producer_result
+
+    import app.api.handlers_tool_call as handler
+    import app.internal_transport as transport
+    from app.api.tool_call_contract import ToolCallRequest
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import TokenContext
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
+    monkeypatch.setattr(settings, "AGENT_HANDOFF_TIMEOUT_MS", 7000)
+    # The old implementation derives its retry budget from the handoff setting.
+    # The fixed implementation gives that HTTP phase an independent budget.
+    monkeypatch.setattr(transport, "BUILTIN_DRAIN_RETRY_TIMEOUT_SECONDS", 7, raising=False)
+    tool = reviewed_tool(
+        source="builtin",
+        timeout_ms=1000,
+        output_schema=OUTPUT_SCHEMA,
+        artifact_policy="never",
+        mcp_server_url=settings.BUILTIN_TARGET_MCP_SERVER_URL,
+    )
+    server = enabled_server(
+        provenance_type="builtin", server_url=settings.BUILTIN_TARGET_MCP_SERVER_URL
+    )
+    monkeypatch.setattr(handler.tool_registry, "get_tool", AsyncMock(return_value=tool))
+    monkeypatch.setattr(handler.mcp_server_registry, "get_server", AsyncMock(return_value=server))
+    operations = []
+
+    async def post(run, action, body):
+        operations.append((action, dict(body)))
+        return {**OK, "capacityEnabled": capacity_enabled}
+
+    monkeypatch.setattr(execution_authority, "_post", post)
+    requests = []
+    execution_completed = False
+
+    async def peer(request):
+        nonlocal execution_completed
+        requests.append(request)
+        if len(requests) <= 6:
+            return httpx.Response(503, json=DRAIN)
+        # CP accepts the seventh HTTP request, then starts its own handoff budget.
+        await asyncio.sleep(6.5)
+        await asyncio.sleep(0.9)  # Near the unchanged one-second tool execution policy.
+        execution_completed = True
+        return httpx.Response(
+            200,
+            json=producer_result(
+                {
+                    "schemaVersion": "acornops.model-context.v1",
+                    "tool": "get_weather",
+                    "status": "success",
+                    "summary": "Completed.",
+                    "data": {},
+                    "omissions": [],
+                },
+                {"completed": True},
+                artifact_policy="never",
+            ),
+        )
+
+    install_peer(monkeypatch, peer)
+    request = ToolCallRequest(**build_tool_call_payload(tool_call_id="logical-call"))
+    token = TokenContext(claims=TokenClaims(**build_token_claims()), token="run-token")
+    result = await handler.execute_tool_call(
+        request, token, request=SimpleNamespace(headers=HEADERS)
+    )
+    assert execution_completed, "HTTP retry and owner handoff must not truncate tool execution"
+    assert result.is_error is False
+    assert len(requests) == 7
+    assert len({r.content for r in requests}) == 1
+    assert tool.timeout_ms == 1000
+    assert requests[-1].extensions["timeout"]["read"] == 13
+    begins = [b["operationId"] for a, b in operations if a == "operations/begin"]
+    finishes = [b["operationId"] for a, b in operations if a == "operations/finish"]
+    assert begins == finishes
+    assert len(set(begins)) == (7 if capacity_enabled else 0)
