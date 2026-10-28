@@ -432,7 +432,8 @@ its actual HTTP dispatch. A suspension or lease loss during setup prevents the c
 ## Listener lifecycle
 
 When internal TLS is enabled, the HTTP health and readiness endpoints require
-successful startup of the business listener. If either listener fails to bind,
+the business listener to be serving. Readiness rechecks this after its dependency
+checks finish, so shutdown during a check cannot return a stale success. If either listener fails to bind,
 returns after a lifespan failure, or exits unexpectedly, the launcher stops its
 sibling and exits nonzero. SIGTERM/SIGINT stops both listeners gracefully, with
 a 30-second shutdown bound. Existing probe paths and ports are unchanged.

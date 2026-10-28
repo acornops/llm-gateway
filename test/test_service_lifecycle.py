@@ -1,10 +1,24 @@
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 import app.serve as launcher
 from app.config.settings import settings
+
+
+@pytest.mark.asyncio
+async def test_probe_rechecks_listener_after_awaiting_readiness(monkeypatch):
+    listener = SimpleNamespace(serving=True)
+
+    async def stop_during_readiness():
+        listener.serving = False
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(launcher, "servers", listener)
+    monkeypatch.setattr(launcher, "ready", stop_during_readiness)
+    assert (await launcher.probe_ready()).status_code == 503
 
 
 @pytest.mark.asyncio
