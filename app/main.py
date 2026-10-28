@@ -13,6 +13,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
+from app.api.handlers_health import health as api_health
 from app.api.router import api_router
 from app.auth.jwks import jwks_manager
 from app.catalog.store import catalog_store
@@ -176,7 +177,7 @@ app.add_middleware(
 async def health():
     if not essential_tasks_healthy():
         return JSONResponse(status_code=503, content={"status": "unhealthy"})
-    return {"status": "ok"}
+    return await api_health()
 
 
 @app.middleware("http")

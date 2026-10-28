@@ -2,7 +2,10 @@
 
 ## Runtime Contract
 
-- `GET /health` is liveness only.
+- `GET /health` reports liveness plus `capacity_contract_version: 1` and the actual
+  `capacity_enabled` setting for capacity-rollout compatibility checks. Healthy
+  root, `/api/v1/health`, and TLS probe responses share that metadata. Root/probe
+  health still returns 503 when an essential worker fails.
 - `GET /ready` gates production traffic and checks database, Redis, JWKS readiness, and the configured secret backend.
 - API docs must stay disabled in production unless deliberately enabled for a private environment.
 - The gateway should not be publicly exposed by default; browser and execution traffic should flow through the control plane and internal service network.

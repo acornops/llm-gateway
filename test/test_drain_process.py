@@ -117,11 +117,22 @@ def process(root, *, tls=False, capacity=True, mode="stream", timeout=3, cleanup
             child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("tls,capacity", [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "tls,capacity", [(False, False), (False, True), (True, False), (True, True)]
+)
 def test_sigterm_after_headers_finishes_body_finalizer_authority_and_keeps_probes(
     tmp_path, tls, capacity
 ):
     with process(tmp_path, tls=tls, capacity=capacity) as (child, client, url, probe):
+        expected_health = {
+            "status": "ok",
+            "capacity_contract_version": 1,
+            "capacity_enabled": capacity,
+        }
+        for endpoint in (f"{url}/health", f"{url}/api/v1/health", f"{probe}/health"):
+            response = client.get(endpoint)
+            assert response.status_code == 200
+            assert response.json() == expected_health
         if tls:
             with (
                 httpx.Client(

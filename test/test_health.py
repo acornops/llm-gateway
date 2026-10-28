@@ -10,11 +10,48 @@ from app.main import app
 
 
 @pytest.mark.anyio
-async def test_health():
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_health_capacity_metadata_matches_api_and_tls_probe(monkeypatch, capacity_enabled):
+    import app.serve as launcher
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
+    monkeypatch.setattr(launcher, "servers", SimpleNamespace(serving=True))
+    expected = {
+        "status": "ok",
+        "capacity_contract_version": 1,
+        "capacity_enabled": capacity_enabled,
+    }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+        root = await ac.get("/health")
+        api = await ac.get("/api/v1/health")
+    async with AsyncClient(
+        transport=ASGITransport(app=launcher.probe_app), base_url="http://probe"
+    ) as ac:
+        probe = await ac.get("/health")
+    for response in (root, api, probe):
+        assert response.status_code == 200
+        assert response.json() == expected
+        assert response.json()["capacity_enabled"] is capacity_enabled
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_capacity_metadata_does_not_mask_root_or_probe_worker_failure(
+    monkeypatch, capacity_enabled
+):
+    import app.main as main
+    import app.serve as launcher
+
+    failed_worker = asyncio.create_task(asyncio.sleep(0))
+    await failed_worker
+    monkeypatch.setattr(main, "essential_tasks", [failed_worker])
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
+    monkeypatch.setattr(launcher, "servers", SimpleNamespace(serving=True))
+    for target in (app, launcher.probe_app):
+        async with AsyncClient(transport=ASGITransport(app=target), base_url="http://test") as ac:
+            response = await ac.get("/health")
+        assert response.status_code == 503
+        assert response.json() == {"status": "unhealthy"}
 
 
 @pytest.mark.anyio
@@ -317,7 +354,6 @@ async def test_redis_readiness_failure_is_sanitized(monkeypatch: pytest.MonkeyPa
         "ok": False,
         "required": True,
         "detail": (
-            "Redis readiness check failed. "
-            "Check Redis availability and REDIS_URL configuration."
+            "Redis readiness check failed. Check Redis availability and REDIS_URL configuration."
         ),
     }
