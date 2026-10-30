@@ -49,6 +49,26 @@ The LLM gateway normalizes model streaming and MCP tool execution for execution-
 
 ## Execution-Engine Boundary Notes
 
+- `permissions.max_output_tokens` is a per-provider-request output ceiling.
+  An omitted or null request limit inherits the signed ceiling before either
+  provider or deterministic development dispatch. Explicit limits at or below
+  the ceiling are preserved; higher limits return HTTP 403 before execution
+  authorization, credential lookup, or generation. Without a signed ceiling,
+  the request limit or existing provider default remains in effect:
+
+  | Request limit | Signed ceiling | Effective limit |
+  | --- | --- | --- |
+  | Omitted or null | 16 | 16 |
+  | 8 | 16 | 8 |
+  | 16 | 16 | 16 |
+  | 17 | 16 | HTTP 403 |
+  | Omitted or null | Absent | Provider default |
+  | 8 | Absent | 8 |
+
+  Provider compatibility retries retain this limit. A provider may reject a low
+  limit, but the gateway must not enlarge it to accommodate reasoning. This is
+  not an input-token, cumulative run-token, or monetary budget; deterministic
+  development responses are fixed fixtures, not token-metered provider output.
 - The gateway accepts requested built-in native tool policy only through `allowed_native_tools`.
 - Model streaming accepts exactly one non-empty `runtime_instruction` plus a
   strictly sequenced provider-neutral `transcript`; loose `messages`,

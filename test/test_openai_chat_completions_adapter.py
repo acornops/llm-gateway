@@ -343,8 +343,10 @@ async def test_chat_completions_adapter_rejects_eof_without_finish_reason(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("token_limit", [8, 16, 128, None])
 async def test_chat_completions_adapter_maps_request_parameters(
     monkeypatch: pytest.MonkeyPatch,
+    token_limit: int | None,
 ) -> None:
     calls: list[dict] = []
 
@@ -369,7 +371,7 @@ async def test_chat_completions_adapter_maps_request_parameters(
     request = _build_request(
         tools=[ToolSpec(name="lookup_pod", description="Look up a pod.")],
         reasoning=ReasoningConfig(effort="high"),
-    )
+    ).model_copy(update={"max_output_tokens": token_limit})
 
     events = [
         event
@@ -382,7 +384,10 @@ async def test_chat_completions_adapter_maps_request_parameters(
         {"role": "system", "content": "Be precise."},
         {"role": "user", "content": "hello"},
     ]
-    assert calls[0]["max_completion_tokens"] == 128
+    if token_limit is None:
+        assert "max_completion_tokens" not in calls[0]
+    else:
+        assert calls[0]["max_completion_tokens"] == token_limit
     assert calls[0]["reasoning_effort"] == "high"
     assert calls[0]["stream_options"] == {"include_usage": True}
     assert calls[0]["tool_choice"] == "auto"
@@ -459,7 +464,9 @@ async def test_chat_completions_adapter_retries_without_reasoning_effort(
         "app.llm.adapters.openai_chat_completions_adapter.BadRequestError",
         FakeBadRequestError,
     )
-    request = _build_request(reasoning=ReasoningConfig(effort="medium"))
+    request = _build_request(reasoning=ReasoningConfig(effort="medium")).model_copy(
+        update={"max_output_tokens": 16}
+    )
 
     events = [
         event
@@ -470,6 +477,7 @@ async def test_chat_completions_adapter_retries_without_reasoning_effort(
     assert len(calls) == 2
     assert calls[0]["reasoning_effort"] == "medium"
     assert "reasoning_effort" not in calls[1]
+    assert [call["max_completion_tokens"] for call in calls] == [16, 16]
 
 
 @pytest.mark.anyio
@@ -486,8 +494,13 @@ async def test_chat_completions_adapter_retries_without_reasoning_effort(
             "max_completion_tokens",
             "max_tokens",
         ),
+        (
+            "Unsupported parameter: 'temperature'.",
+            "temperature",
+            None,
+        ),
     ],
-    ids=["stream-options", "max-tokens-name"],
+    ids=["stream-options", "max-tokens-name", "temperature"],
 )
 async def test_chat_completions_adapter_degrades_optional_compatible_parameters(
     monkeypatch: pytest.MonkeyPatch,
@@ -528,7 +541,7 @@ async def test_chat_completions_adapter_degrades_optional_compatible_parameters(
         async for event in OpenAIChatCompletionsAdapter().stream(
             _build_request(
                 tools=[ToolSpec(name="lookup_pod", description="Look up a pod.")]
-            ),
+            ).model_copy(update={"max_output_tokens": 16}),
             "fake-key",
         )
     ]
@@ -538,7 +551,8 @@ async def test_chat_completions_adapter_degrades_optional_compatible_parameters(
     assert first_parameter not in calls[1]
     assert calls[1]["tools"][0]["function"]["name"] == "lookup_pod"
     if second_parameter:
-        assert calls[1][second_parameter] == 128
+        assert calls[1][second_parameter] == 16
+    assert [call.get("max_completion_tokens", call.get("max_tokens")) for call in calls] == [16, 16]
 
 
 @pytest.mark.anyio

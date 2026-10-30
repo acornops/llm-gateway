@@ -144,7 +144,10 @@ async def test_gemini_adapter_replays_stream_contract_fixtures(
 
 
 @pytest.mark.anyio
-async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("token_limit", [8, 16, 128, None])
+async def test_gemini_adapter_uses_google_genai_stream(
+    monkeypatch: pytest.MonkeyPatch, token_limit: int | None,
+):
     calls: list[dict[str, object]] = []
 
     class FakeModels:
@@ -180,7 +183,8 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
         AsyncMock(),
     )
 
-    events = [event async for event in GeminiAdapter().stream(_request(), "gemini-key")]
+    request = _request().model_copy(update={"max_output_tokens": token_limit})
+    events = [event async for event in GeminiAdapter().stream(request, "gemini-key")]
 
     assert fake_client is not None
     assert fake_client.api_key == "gemini-key"
@@ -189,7 +193,7 @@ async def test_gemini_adapter_uses_google_genai_stream(monkeypatch: pytest.Monke
     assert calls[0]["contents"] == [{"role": "user", "parts": [{"text": "hello"}]}]
 
     config = calls[0]["config"]
-    assert config.max_output_tokens == 128
+    assert config.max_output_tokens == token_limit
     assert config.temperature == 0.2
     assert config.tools[0].function_declarations[0].name == "get_weather"
     assert config.tool_config.function_calling_config.mode.value == "AUTO"
@@ -256,6 +260,7 @@ async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
         update={
             "model": "gemini-2.5-pro",
             "reasoning": ReasoningConfig(summary_mode="off", effort="high"),
+            "max_output_tokens": 16,
         }
     )
     events = [
@@ -266,6 +271,7 @@ async def test_gemini_adapter_sends_thinking_effort_without_streaming_summaries(
     thinking_config = calls[0]["config"].thinking_config
     assert thinking_config.include_thoughts is False
     assert thinking_config.thinking_budget == 8192
+    assert calls[0]["config"].max_output_tokens == 16
     assert events == [
         {
             "type": "final",

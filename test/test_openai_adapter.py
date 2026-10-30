@@ -186,8 +186,10 @@ async def test_openai_adapter_replays_stream_contract_fixtures(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("token_limit", [8, 16, 128, None])
 async def test_openai_adapter_uses_responses_max_output_tokens(
     monkeypatch: pytest.MonkeyPatch,
+    token_limit: int | None,
 ) -> None:
     calls: list[dict] = []
 
@@ -212,10 +214,17 @@ async def test_openai_adapter_uses_responses_max_output_tokens(
     monkeypatch.setattr("app.llm.adapters.openai_adapter.AsyncOpenAI", FakeClient)
 
     adapter = OpenAIAdapter()
-    events = [event async for event in adapter.stream(_build_request("o4-mini"), "fake-key")]
+    request = _build_request("o4-mini").model_copy(update={
+        "max_output_tokens": token_limit,
+        "reasoning": ReasoningConfig(effort="high"),
+    })
+    events = [event async for event in adapter.stream(request, "fake-key")]
     assert any(event.type == "final" for event in events)
     assert len(calls) == 1
-    assert calls[0]["max_output_tokens"] == 128
+    if token_limit is None:
+        assert "max_output_tokens" not in calls[0]
+    else:
+        assert calls[0]["max_output_tokens"] == token_limit
     assert "max_tokens" not in calls[0]
     assert "max_completion_tokens" not in calls[0]
 
@@ -553,6 +562,7 @@ async def test_openai_adapter_retries_without_reasoning_when_unsupported(
     req = _build_request("gpt-4o-mini").model_copy(
         update={
             "reasoning": ReasoningConfig(summary_mode="auto", effort="off"),
+            "max_output_tokens": 16,
         }
     )
     events = [
@@ -563,6 +573,7 @@ async def test_openai_adapter_retries_without_reasoning_when_unsupported(
     assert len(calls) == 2
     assert calls[0]["reasoning"] == {"summary": "auto"}
     assert "reasoning" not in calls[1]
+    assert [call["max_output_tokens"] for call in calls] == [16, 16]
     assert events == [
         {
             "type": "reasoning_summary_unavailable",
@@ -770,11 +781,13 @@ async def test_openai_adapter_retries_without_temperature_when_rejected(
     monkeypatch.setattr("app.llm.adapters.openai_adapter.BadRequestError", FakeBadRequestError)
 
     adapter = OpenAIAdapter()
-    events = [event async for event in adapter.stream(_build_request("gpt-4o-mini"), "fake-key")]
+    request = _build_request("gpt-4o-mini").model_copy(update={"max_output_tokens": 16})
+    events = [event async for event in adapter.stream(request, "fake-key")]
     assert any(event.type == "final" for event in events)
     assert len(calls) == 2
     assert "temperature" in calls[0]
     assert "temperature" not in calls[1]
+    assert [call["max_output_tokens"] for call in calls] == [16, 16]
 
 
 @pytest.mark.anyio

@@ -138,7 +138,12 @@ async def test_anthropic_adapter_replays_stream_contract_fixtures(
 
 
 @pytest.mark.anyio
-async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("token_limit", "expected_tokens"), [(8, 8), (16, 16), (128, 128), (None, 8192)]
+)
+async def test_anthropic_adapter_streams_text_tool_calls_and_usage(
+    monkeypatch: pytest.MonkeyPatch, token_limit: int | None, expected_tokens: int,
+):
     messages = FakeMessages(
         [
             FakeStreamContext(
@@ -207,14 +212,15 @@ async def test_anthropic_adapter_streams_text_tool_calls_and_usage(monkeypatch: 
         record_success,
     )
 
-    events = [event async for event in AnthropicAdapter().stream(_request(), "anthropic-key")]
+    request = _request().model_copy(update={"max_output_tokens": token_limit})
+    events = [event async for event in AnthropicAdapter().stream(request, "anthropic-key")]
 
     assert messages.calls == [
         {
             "model": "claude-3-7-sonnet",
             "messages": [{"role": "user", "content": "hello"}],
             "system": "Be concise.",
-            "max_tokens": 128,
+            "max_tokens": expected_tokens,
             "temperature": 0.2,
             "tools": [
                 {
@@ -589,8 +595,10 @@ async def test_anthropic_adapter_omits_temperature_for_always_on_fable_thinking(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("token_limit", [16, 1024])
 async def test_anthropic_adapter_omits_thinking_when_token_budget_cannot_support_it(
     monkeypatch: pytest.MonkeyPatch,
+    token_limit: int,
 ):
     messages = FakeMessages(
         [
@@ -620,7 +628,7 @@ async def test_anthropic_adapter_omits_thinking_when_token_budget_cannot_support
 
     req = _request(include_tools=False).model_copy(
         update={
-            "max_output_tokens": 1024,
+            "max_output_tokens": token_limit,
             "reasoning": ReasoningConfig(summary_mode="auto", effort="high"),
         }
     )
@@ -632,6 +640,7 @@ async def test_anthropic_adapter_omits_thinking_when_token_budget_cannot_support
     assert "thinking" not in messages.calls[0]
     assert "output_config" not in messages.calls[0]
     assert messages.calls[0]["temperature"] == 0.2
+    assert messages.calls[0]["max_tokens"] == token_limit
     assert events == [
         {
             "type": "reasoning_summary_unavailable",

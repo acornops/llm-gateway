@@ -7,3 +7,4 @@ Reviewed 2026-10-18. Implementation-only plans that have landed are in
 - [Production Tool Results](production-tool-results.md) — Implementation complete; coordinated staging soak and production release acceptance still pending.
 
 - [Gateway graceful rolling restarts](graceful-gateway-drain.md) — Gateway implementation and validation.
+- [Output Token Permission Enforcement](2026-10-30-output-token-permission-enforcement.md) — Omitted/null cap enforcement implemented and locally validated; independent review passed; release/provider canary pending.

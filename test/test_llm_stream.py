@@ -69,6 +69,202 @@ def test_normalized_llm_request_rejects_non_positive_max_output_tokens(max_outpu
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("deterministic", [False, True])
+@pytest.mark.parametrize(
+    "scope_fields",
+    [
+        {},
+        {
+            "scope": {"type": "agent_chat"},
+            "target_id": None,
+            "target_type": None,
+            "agent_id": "agent-1",
+        },
+        {
+            "scope": {"type": "workspace"},
+            "target_id": None,
+            "target_type": None,
+            "workflow_id": "workflow-1",
+            "execution_id": "execution-1",
+            "workflow_session_id": "workflow-session-1",
+            "executor_role": "coordinator",
+        },
+    ],
+    ids=["target", "agent-chat", "workflow"],
+)
+@pytest.mark.parametrize(
+    ("requested", "permission_limit", "expected"),
+    [
+        ("omitted", 16, 16),
+        (None, 16, 16),
+        (8, 16, 8),
+        (16, 16, 16),
+        ("omitted", None, None),
+        (None, None, None),
+        (8, None, 8),
+    ],
+    ids=[
+        "omitted",
+        "null",
+        "lower",
+        "equal",
+        "uncapped-omitted",
+        "uncapped-null",
+        "uncapped-explicit",
+    ],
+)
+async def test_llm_stream_resolves_output_token_permission(
+    monkeypatch,
+    deterministic,
+    scope_fields,
+    requested,
+    permission_limit,
+    expected,
+):
+    from app.api import handlers_llm_stream as handler
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+
+    monkeypatch.setattr(handler.settings, "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES", deterministic)
+    claims = TokenClaims(
+        **build_token_claims(
+            **scope_fields,
+            permissions={"max_output_tokens": permission_limit},
+        )
+    )
+    payload = build_llm_stream_payload(**scope_fields)
+    if requested == "omitted":
+        del payload["max_output_tokens"]
+    else:
+        payload["max_output_tokens"] = requested
+
+    async def override_validate():
+        return claims
+
+    async def provider_events(*_args, **_kwargs):
+        yield StreamEvent(type="final", usage={})
+
+    app.dependency_overrides[validator.validate] = override_validate
+    try:
+        with (
+            patch.object(
+                handler.secret_store,
+                "get_secret",
+                new_callable=AsyncMock,
+                return_value="fake-api-key",
+            ) as get_secret,
+            patch(
+                "app.llm.adapters.openai_adapter.OpenAIAdapter.stream", side_effect=provider_events
+            ) as stream,
+            patch.object(
+                handler, "_deterministic_dev_events", wraps=handler._deterministic_dev_events
+            ) as dev_events,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=payload,
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+            assert response.status_code == 200
+            assert json.loads(response.text.strip().splitlines()[-1])["type"] == "final"
+            dispatched = dev_events if deterministic else stream
+            assert dispatched.call_count == 1
+            assert dispatched.call_args.args[0].max_output_tokens == expected
+            assert claims.permissions.max_output_tokens == permission_limit
+            if deterministic:
+                get_secret.assert_not_awaited()
+                stream.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("deterministic", [False, True])
+@pytest.mark.parametrize(
+    ("overrides", "status", "detail"),
+    [
+        (
+            {"max_output_tokens": 17},
+            403,
+            "max_output_tokens exceeds token permission limit (17 > 16)",
+        ),
+        ({"max_output_tokens": 0}, 422, None),
+        ({"max_output_tokens": -1}, 422, None),
+        ({"session_id": "different-session"}, 403, "Scope mismatch between token and request"),
+        ({"native_tools": [{"id": "web_search", "config": {}}]}, 403, "not allowed"),
+    ],
+    ids=["over-limit", "zero", "negative", "scope-mismatch", "unapproved-native-tool"],
+)
+async def test_llm_stream_output_token_policy_rejects_before_dispatch(
+    monkeypatch,
+    deterministic,
+    overrides,
+    status,
+    detail,
+):
+    from app.api import handlers_llm_stream as handler
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+
+    monkeypatch.setattr(handler.settings, "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES", deterministic)
+    payload = build_llm_stream_payload()
+    del payload["max_output_tokens"]
+    payload.update(overrides)
+
+    async def override_validate():
+        return TokenClaims(**build_token_claims(permissions={"max_output_tokens": 16}))
+
+    app.dependency_overrides[validator.validate] = override_validate
+    try:
+        with (
+            patch.object(handler.secret_store, "get_secret", new_callable=AsyncMock) as get_secret,
+            patch.object(
+                handler.execution_authority, "authorize", new_callable=AsyncMock
+            ) as authorize,
+            patch.object(handler, "get_adapter") as get_adapter,
+            patch.object(handler, "_deterministic_dev_events") as dev_events,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                response = await ac.post(
+                    "/api/v1/llm/generations:stream",
+                    json=payload,
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+            assert response.status_code == status
+            if detail is not None:
+                assert detail in response.json()["detail"]
+            get_secret.assert_not_awaited()
+            authorize.assert_not_awaited()
+            get_adapter.assert_not_called()
+            dev_events.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_llm_stream_output_token_default_does_not_mutate_inputs(monkeypatch):
+    from app.api import handlers_llm_stream as handler
+    from app.auth.claims import TokenClaims
+
+    monkeypatch.setattr(handler.settings, "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES", True)
+    req = NormalizedLLMRequest(**build_llm_stream_payload(max_output_tokens=None))
+    claims = TokenClaims(**build_token_claims(permissions={"max_output_tokens": 16}))
+    original_request, original_claims = req.model_dump(), claims.model_dump()
+    with patch.object(
+        handler, "_deterministic_dev_events", wraps=handler._deterministic_dev_events
+    ) as dev_events:
+        response = await handler.stream_generation(req, claims)
+        chunks = [json.loads(chunk) async for chunk in response.body_iterator]
+        assert chunks[-1]["type"] == "final"
+        assert dev_events.call_args.args[0].max_output_tokens == 16
+        assert dev_events.call_args.args[0] is not req
+    assert req.model_dump() == original_request
+    assert claims.model_dump() == original_claims
+
+
+@pytest.mark.anyio
 async def test_llm_stream_contract():
     mock_claims = build_token_claims()
 

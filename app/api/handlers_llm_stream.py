@@ -378,6 +378,9 @@ async def stream_generation(
             ),
         )
 
+    if req.max_output_tokens is None and claims.permissions.max_output_tokens is not None:
+        req = req.model_copy(update={"max_output_tokens": claims.permissions.max_output_tokens})
+
     if req.tools:
         _validate_stream_tool_names(req)
         requested_tool_names = _authorization_checked_tool_names(req)

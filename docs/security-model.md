@@ -6,6 +6,10 @@
 - Admin APIs use a separate shared admin token value.
 - Provider secrets and MCP server secrets are sensitive infrastructure state.
 - The gateway must not infer broader permissions than the token or config provide.
+- A signed output-token ceiling applies to every provider request, including
+  omitted or null request limits and compatibility retries. Explicit higher
+  limits fail before generation. See the [effective-limit rules](contracts/README.md#execution-engine-boundary-notes);
+  this ceiling is independent of input-token and cumulative run budgets.
 
 ## Secrets
 
