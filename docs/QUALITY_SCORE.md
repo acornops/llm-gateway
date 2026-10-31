@@ -26,3 +26,10 @@ gate. The scan has zero fixable high/critical findings. Its full report retains
 preceding scan); this is not a claim that the image has no known vulnerabilities.
 No scanner exclusions or auth/TLS policy changes were introduced. Scores outside
 image/dependency readiness were not reassessed by this focused repair.
+
+## Scoped hardening evidence — October 31, 2026
+
+[Validation and retention checks](exec-plans/completed/2026-10-31-validation-retention.md)
+cover webhook bounds, PostgreSQL cleanup races, real-process schema deadlines,
+cancellation and unknown-write outcomes. Fresh review findings have regression
+coverage. Existing scores and broader integration coverage gaps remain unchanged.

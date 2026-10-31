@@ -2,8 +2,6 @@ import time
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from jsonschema import ValidationError as JsonSchemaValidationError
-from jsonschema import validate as jsonschema_validate
 
 from app.api.mcp_lifecycle_guard import guarded_server_operation
 from app.api.mcp_runtime_auth import (
@@ -39,6 +37,7 @@ from app.observability.metrics import (
     GATEWAY_TOOL_CALLS_TOTAL,
 )
 from app.resilience.rate_limit import rate_limiter
+from app.schema_validation import ValidationProcessError, validation_runner
 from app.target_types import KUBERNETES_TARGET_TYPE
 
 router = APIRouter()
@@ -270,19 +269,7 @@ async def execute_tool_call(
                 )
             _enforce_current_tool_operation(current_tool, req, claims)
             if current_tool.input_schema:
-                try:
-                    jsonschema_validate(
-                        instance=tool_arguments,
-                        schema=current_tool.input_schema,
-                    )
-                except JsonSchemaValidationError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "TOOL_ARGS_INVALID",
-                            "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
-                        },
-                    ) from exc
+                await _validate_tool_arguments(current_tool.input_schema, tool_arguments)
             tool = current_tool
             server = current_server
             dispatch_server_url = server.server_url
@@ -392,7 +379,7 @@ async def execute_tool_call(
                     )
                 return _tool_transport_error_response(mcp_response, str(tool.capability))
             return _mark_unknown_write_contract(
-                _normalize_tool_response(
+                await _normalize_tool_response(
                     mcp_response,
                     trusted_builtin=False,
                     output_schema=tool.output_schema,
@@ -480,19 +467,7 @@ async def execute_tool_call(
             raise HTTPException(status_code=403, detail=MCP_SERVER_DISABLED)
         _enforce_current_tool_operation(current_tool, req, claims)
         if current_tool.input_schema:
-            try:
-                jsonschema_validate(
-                    instance=target_tool_arguments,
-                    schema=current_tool.input_schema,
-                )
-            except JsonSchemaValidationError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "TOOL_ARGS_INVALID",
-                        "message": f"Invalid arguments for tool {req.tool}: {exc.message}",
-                    },
-                ) from exc
+            await _validate_tool_arguments(current_tool.input_schema, target_tool_arguments)
         tool = current_tool
         server = current_server
         dispatch_server_url = server.server_url
@@ -617,7 +592,7 @@ async def execute_tool_call(
                 )
             return _tool_transport_error_response(mcp_response, str(tool.capability))
         return _mark_unknown_write_contract(
-            _normalize_tool_response(
+            await _normalize_tool_response(
                 mcp_response,
                 trusted_builtin=(
                     is_builtin_tool and dispatch_target_type == KUBERNETES_TARGET_TYPE
@@ -644,3 +619,17 @@ async def execute_tool_call(
             exc_info=True,
         )
         return _tool_execution_error_response(e, str(tool.capability))
+
+
+async def _validate_tool_arguments(schema, arguments) -> None:
+    try:
+        errors = await validation_runner().validate(schema, arguments)
+    except ValidationProcessError as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "TOOL_VALIDATION_UNAVAILABLE",
+            "message": "Schema validation could not complete safely; tool was not dispatched.",
+        }) from exc
+    if errors:
+        raise HTTPException(status_code=400, detail={
+            "code": "TOOL_ARGS_INVALID", "message": "Invalid arguments: " + errors[0]["message"],
+        })

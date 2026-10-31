@@ -34,6 +34,7 @@ from app.observability.metrics import (
 )
 from app.outbound_tls import close_provider_http_clients
 from app.resilience.rate_limit import rate_limiter
+from app.schema_validation import close_validation_runner
 from app.secrets.store import secret_store
 
 # Setup logging
@@ -139,24 +140,26 @@ async def lifespan(app: FastAPI):
         if (task := getattr(store, "_listener_task", None)) is not None
     ]
 
-    yield
-
-    # Shutdown logic
-    approval_receipt_cleanup_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await approval_receipt_cleanup_task
-    await secret_store.close()
-    await tool_registry.close()
-    await mcp_server_registry.close()
-    await mcp_connection_store.close()
-    await mcp_lifecycle_store.close()
-    await oauth_registration_store.close()
-    await oauth_flow_store.close()
-    await approval_receipt_store.close()
-    await catalog_store.close()
-    await jwks_manager.close()
-    await close_provider_http_clients()
-    logger.info("Shutting down llm-gateway")
+    try:
+        yield
+    finally:
+        await close_validation_runner()
+        # Shutdown logic
+        approval_receipt_cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await approval_receipt_cleanup_task
+        await secret_store.close()
+        await tool_registry.close()
+        await mcp_server_registry.close()
+        await mcp_connection_store.close()
+        await mcp_lifecycle_store.close()
+        await oauth_registration_store.close()
+        await oauth_flow_store.close()
+        await approval_receipt_store.close()
+        await catalog_store.close()
+        await jwks_manager.close()
+        await close_provider_http_clients()
+        logger.info("Shutting down llm-gateway")
 
 
 app = FastAPI(

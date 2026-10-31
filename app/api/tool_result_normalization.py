@@ -3,15 +3,13 @@
 import json
 from typing import Any
 
-from jsonschema import SchemaError as JsonSchemaError
-from jsonschema import ValidationError as JsonSchemaValidationError
-from jsonschema import validate as jsonschema_validate
 from pydantic import BaseModel
 
 from app.observability.metrics import (
     GATEWAY_TOOL_RESULT_BYTES,
     GATEWAY_TOOL_RESULT_NORMALIZATIONS_TOTAL,
 )
+from app.schema_validation import ValidationProcessError, validation_runner
 
 
 class ToolCallResponse(BaseModel):
@@ -43,7 +41,7 @@ def _parse_model_content(content: Any) -> Any:
     return content
 
 
-def _normalize_tool_response(
+async def _normalize_tool_response(
     mcp_response: dict[str, Any], *, trusted_builtin: bool,
     output_schema: dict[str, Any] | None = None,
     artifact_policy: str = "never",
@@ -111,11 +109,11 @@ def _normalize_tool_response(
         valid_output_schema = False
         if isinstance(output_schema, dict):
             try:
-                jsonschema_validate(instance=structured, schema=output_schema)
-            except (JsonSchemaValidationError, JsonSchemaError):
+                errors = await validation_runner().validate(output_schema, structured, output=True)
+            except ValidationProcessError:
                 pass
             else:
-                valid_output_schema = True
+                valid_output_schema = not errors
         valid_context = (
             isinstance(content, list)
             and len(content) == 1

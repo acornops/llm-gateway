@@ -766,8 +766,12 @@ async def test_tool_call_merges_public_and_secret_headers():
 
 
 @pytest.mark.anyio
-async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_headers():
-    mock_claims = build_token_claims()
+@pytest.mark.parametrize("output_timeout", [False, True])
+async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_headers(output_timeout):
+    mock_claims = build_token_claims(
+        permission_mode="auto_allowed_changes",
+        permissions={"allowed_tool_operations": {EXAMPLE_TOOL_ALIAS: "write"}}
+    ) if output_timeout else build_token_claims()
     mock_tool = Tool(
         server_id=EXAMPLE_SERVER_ID,
         workspace_id=EXAMPLE_WORKSPACE_ID,
@@ -777,7 +781,9 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
         mcp_server_url="http://control-plane:8081/internal/v1/mcp",
         enabled=True,
         timeout_ms=10000,
-        capability="read",
+        capability="write" if output_timeout else "read",
+        risk_level="non_destructive_write", auto_allowed=True,
+        output_schema={"properties": {"data": {"pattern": "^(a+)+$"}}},
         review_state="approved",
         source="builtin",
     )
@@ -809,7 +815,8 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
         patch(
             "app.api.handlers_tool_call.post_builtin_mcp_tool",
             new_callable=AsyncMock,
-            return_value={"content": [{"type": "text", "text": "Sunny"}], "isError": False},
+            return_value={"content": [{"type": "text", "text": "Sunny"}], "isError": False,
+                          "structuredContent": {"data": "a" * 1000 + "!"}},
         ) as mock_builtin_call,
         patch(
             "app.api.handlers_tool_call.mcp_transport.call_tool",
@@ -837,6 +844,11 @@ async def test_builtin_tool_call_forwards_run_token_without_configured_mcp_heade
                 )
 
             assert response.status_code == 200
+            mock_builtin_call.assert_awaited_once()
+            if output_timeout:
+                result = response.json()["full_result"]
+                assert result["outcome"] == "unknown"
+                assert result["retryable"] is False
             mock_call_tool.assert_not_awaited()
             assert mock_builtin_call.await_args.args[4] == {
                 "Authorization": "Bearer run-scoped-jwt",
@@ -1405,3 +1417,51 @@ async def test_tool_call_rejects_invalid_secret_header_value():
             mock_call_tool.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("agent_scope", [False, True])
+async def test_validation_timeout_precedes_receipt_secrets_and_dispatch(agent_scope):
+    from app.auth.claims import TokenClaims
+    from app.auth.jwt_validator import validator
+
+    destination = ({"scope_type": "agent", "agent_id": "agent-1", "target_id": None,
+                    "target_type": None} if agent_scope else {})
+    claims = build_token_claims(
+        **({"scope": {"type": "agent_chat"}, "agent_id": "agent-1"} if agent_scope else {}),
+        permissions={"allowed_tool_operations": {EXAMPLE_TOOL_ALIAS: "write"}},
+    )
+    tool = reviewed_tool(**destination, capability="write", input_schema={
+        "type": "object", "properties": {"location": {"pattern": "^(a+)+$"}}
+    })
+    payload = build_tool_call_payload(arguments={"location": "a" * 1000 + "!"},
+                                      tool_call_id="call-1", approval_receipt="unused")
+    if agent_scope:
+        payload.update(scope={"type": "agent_chat"}, agent_id="agent-1",
+                       session_id=EXAMPLE_SESSION_ID, target_id=None, target_type=None)
+    async def auth():
+        return TokenClaims(**claims)
+    app.dependency_overrides[validator.validate] = auth
+    try:
+        with (
+            patch("app.api.handlers_tool_call.tool_registry.get_tool",
+                  AsyncMock(return_value=tool)),
+            patch("app.api.handlers_tool_call.mcp_server_registry.get_server",
+                  AsyncMock(return_value=enabled_server(**destination))),
+            patch("app.api.handlers_tool_call.validate_and_claim_approval_receipt",
+                  AsyncMock()) as claim,
+            patch("app.api.handlers_tool_call.connection_request_headers", AsyncMock()) as secrets,
+            patch("app.api.handlers_tool_call.mcp_transport.call_tool", AsyncMock()) as dispatch,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post("/api/v1/mcp/tool-call", json=payload,
+                                             headers={"Authorization": "Bearer test-token"})
+            assert response.status_code == 503, response.text
+            assert response.json()["detail"]["code"] == "TOOL_VALIDATION_UNAVAILABLE"
+            claim.assert_not_awaited()
+            secrets.assert_not_awaited()
+            dispatch.assert_not_awaited()
+    finally:
+        app.dependency_overrides.clear()
