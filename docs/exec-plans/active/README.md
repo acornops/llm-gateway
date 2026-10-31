@@ -8,3 +8,5 @@ Reviewed 2026-10-18. Implementation-only plans that have landed are in
 
 - [Gateway graceful rolling restarts](graceful-gateway-drain.md) — Gateway implementation and validation.
 - [Output Token Permission Enforcement](2026-10-30-output-token-permission-enforcement.md) — Omitted/null cap enforcement implemented and locally validated; independent review passed; release/provider canary pending.
+
+- [approval-receipt-retention](2026-11-01-approval-receipt-retention.md) — Implementation verified; awaiting integration.

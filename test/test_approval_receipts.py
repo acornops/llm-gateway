@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,9 +10,71 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.config.settings import settings
 from app.mcp.approval_receipts import (
     ApprovalReceiptError,
+    ApprovalReceiptStore,
     validate_and_claim_approval_receipt,
 )
 from app.mcp.canonical_json import canonical_json
+from app.mcp.registry.models import ApprovalReceiptUse
+
+
+@pytest.fixture
+async def receipt_store(tmp_path):
+    store = ApprovalReceiptStore(f"sqlite+aiosqlite:///{tmp_path / 'receipts.db'}")
+    async with store.engine.begin() as connection:
+        await connection.run_sync(ApprovalReceiptUse.__table__.create)
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_cleanup_does_not_reopen_a_receipt_accepted_with_clock_leeway(
+    receipt_keys, receipt_store, monkeypatch
+):
+    monkeypatch.setattr("app.mcp.approval_receipts.approval_receipt_store", receipt_store)
+    monkeypatch.setattr(settings, "AUTH_CLOCK_SKEW_SEC", 30)
+    now = datetime.now(UTC)
+    request = _request()
+    receipt = _receipt(
+        receipt_keys, request, iat=now - timedelta(seconds=61), exp=now - timedelta(seconds=1)
+    )
+    await validate_and_claim_approval_receipt(receipt, request)
+    await receipt_store.cleanup_expired()
+    with pytest.raises(ApprovalReceiptError) as raised:
+        await validate_and_claim_approval_receipt(receipt, request)
+    assert raised.value.code == "MCP_APPROVAL_RECEIPT_REPLAYED"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("skew", [0, 30])
+async def test_cleanup_preserves_existing_rows_until_clock_retention_ends(
+    receipt_store, monkeypatch, skew
+):
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr("app.mcp.approval_receipts.datetime", Clock)
+    monkeypatch.setattr(settings, "AUTH_CLOCK_SKEW_SEC", skew)
+    # One leeway interval plus two clocks each offset by one interval.
+    cutoff = now - timedelta(seconds=3 * skew)
+    for jti, expiration in [("retained", cutoff + timedelta(seconds=1)), ("expired", cutoff)]:
+        assert await receipt_store.claim(jti, expiration)
+    await receipt_store.cleanup_expired()
+    assert not await receipt_store.claim("retained", now)
+    assert await receipt_store.claim("expired", now)
+
+
+@pytest.mark.anyio
+async def test_concurrent_receipt_claims_have_one_winner(receipt_store):
+    expiration = datetime.now(UTC) + timedelta(seconds=60)
+    claims = await asyncio.gather(*(receipt_store.claim("same-jti", expiration) for _ in range(8)))
+    assert claims.count(True) == 1
+    assert claims.count(False) == 7
 
 
 def _request(arguments: dict | None = None) -> SimpleNamespace:
