@@ -216,6 +216,18 @@ Agent/target routes do not browse, import, or reimport these records.
 - Public headers cannot override platform scope headers or credential headers.
 - Public and auth headers cannot override MCP transport lifecycle headers.
 
+## Tool schema metadata preservation
+
+Generic tool metadata preparation preserves accepted constraint values and ordering.
+Only `title`, `description` and `markdownDescription` at schema-node positions are
+sanitized; property names, literal `const`/`enum`/`default` values and unknown
+extensions remain unchanged. Invalid JSON values or exceeded metadata budgets
+reject the complete schema with `TOOL_SCHEMA_REJECTED`, never a truncated or
+permissive replacement. Existing missing optional runtime schemas retain their
+defaults. Bootstrap aborts on rejection; discovery/sync disables matching stale
+registrations within that server's scope. Wire fields, provider-specific adapters
+and argument-validation dialects are unchanged.
+
 ## Change Checklist
 
 When changing model streaming, MCP, JWT, native-tool, or admin surfaces:

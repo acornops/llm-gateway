@@ -25,11 +25,12 @@ from app.mcp.registry.store import mcp_server_registry, tool_registry
 from app.mcp.tool_definition_policy import ensure_discovered_tool_compatible
 from app.mcp.tool_identity import model_tool_alias
 from app.mcp.tool_metadata import (
-    extract_discovery_error as _extract_discovery_error,
-)
-from app.mcp.tool_metadata import (
+    ToolSchemaRejectedError,
     sanitize_discovered_schema,
     sanitize_discovered_text,
+)
+from app.mcp.tool_metadata import (
+    extract_discovery_error as _extract_discovery_error,
 )
 from app.mcp.transports.http_transport import mcp_transport
 
@@ -206,7 +207,9 @@ def _capability_from_annotations(raw_tool: dict[str, Any]) -> str:
     return "write"
 
 
-def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigRequest]:
+def _normalize_discovered_tools(
+    payload: dict[str, Any], rejected: dict[str, str] | None = None
+) -> list[ToolConfigRequest]:
     if payload.get("isError"):
         return []
 
@@ -239,19 +242,24 @@ def _normalize_discovered_tools(payload: dict[str, Any]) -> list[ToolConfigReque
 
         description = sanitize_discovered_text(raw_tool.get("description"))
 
-        input_schema = None
-        for key in ("input_schema", "inputSchema", "parameters", "json_schema", "schema"):
-            candidate = raw_tool.get(key)
-            if isinstance(candidate, dict):
-                input_schema = sanitize_discovered_schema(candidate)
-                break
-
-        output_schema = None
-        for key in ("output_schema", "outputSchema"):
-            candidate = raw_tool.get(key)
-            if isinstance(candidate, dict):
-                output_schema = sanitize_discovered_schema(candidate)
-                break
+        try:
+            schemas = []
+            for keys in (("input_schema", "inputSchema", "parameters", "json_schema", "schema"),
+                         ("output_schema", "outputSchema")):
+                schema = None
+                for key in keys:
+                    if key in raw_tool:
+                        if type(raw_tool[key]) is not dict:
+                            raise ToolSchemaRejectedError("expected_object")
+                        schema = sanitize_discovered_schema(raw_tool[key])
+                        break
+                schemas.append(schema)
+            input_schema, output_schema = schemas
+        except ToolSchemaRejectedError as exc:
+            if rejected is None:
+                raise
+            rejected[tool_name] = exc.reason
+            continue
 
         artifact_policy = raw_tool.get("artifactPolicy", "never")
         if artifact_policy not in ("never", "if_detailed", "always"):
@@ -325,7 +333,25 @@ async def _discover_server_tools(
         )
         return [], discovery_error, discovery_error_code
 
-    discovered = _normalize_discovered_tools(discovery_response)
+    rejected: dict[str, str] = {}
+    discovered = _normalize_discovered_tools(discovery_response, rejected)
+    if rejected:
+        scope = registry_scope_options(server.scope_type, server.target_type)
+        stale = []
+        for name in rejected:
+            existing = await tool_registry.get_tool(
+                workspace_id, destination_id, name, server_id=str(server.id),
+                include_disabled=True, bypass_cache=True, **scope,
+            )
+            if existing is not None:
+                stale.append(ToolConfigUpdateRequest(name=name, enabled=False))
+        if stale:
+            await _apply_tools_for_server(
+                workspace_id, destination_id, stale, server_id=str(server.id),
+                remove_disabled=False, **scope,
+            )
+        detail = "; ".join(f"{name[:128]} ({reason})" for name, reason in rejected.items())[:512]
+        return discovered, f"TOOL_SCHEMA_REJECTED: {detail}", "MCP_DISCOVERY_INVALID_RESPONSE"
     if len(discovered) == 0:
         logger.warning(
             "mcp_tool_discovery_empty",

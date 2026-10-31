@@ -1,5 +1,7 @@
 # Completed Execution Plans
 
+- [Tool schema preservation](2026-10-31-tool-schema-preservation.md) — Preserve constraints and reject unsupported metadata across Control Plane, Gateway and Engine.
+
 Move finished plans here after the work lands.
 
 Keep only completed plans that remain useful as durable design or validation context.
