@@ -83,3 +83,16 @@
 - Provider adapter request/response normalization
 - MCP server auth and header forwarding
 - Secret backend or migration behavior
+## Approval receipt replay retention
+
+Consumed approval receipts remain in the unique-JTI store until their raw JWT
+expiration plus three times `AUTH_CLOCK_SKEW_SEC`: one interval for JWT leeway
+and two for gateway replicas each offset from reference time by at most that
+interval. This does not extend JWT validity. Existing rows need no migration.
+Keep this setting consistent across replicas and keep clocks synchronized.
+
+Every replica runs cleanup. During deployment, an old replica can still delete
+records using the old cutoff; retire all old replicas before treating the replay
+fix as active. Previously deleted receipts cannot be reconstructed. Allow the
+maximum receipt lifetime (60 seconds), JWT leeway, and replica clock allowance
+to elapse after the final old cleanup worker stops before asserting full coverage.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from sqlalchemy import delete
@@ -38,9 +38,12 @@ class ApprovalReceiptStore:
                 return False
 
     async def cleanup_expired(self) -> None:
+        # JWT leeway plus two replicas each offset by at most the configured skew.
+        # Keep raw exp in storage so the same cutoff protects pre-existing rows.
+        cutoff = datetime.now(UTC) - timedelta(seconds=3 * max(0, settings.AUTH_CLOCK_SKEW_SEC))
         async with self.async_session() as session:
             await session.execute(
-                delete(ApprovalReceiptUse).where(ApprovalReceiptUse.expires_at <= datetime.now(UTC))
+                delete(ApprovalReceiptUse).where(ApprovalReceiptUse.expires_at <= cutoff)
             )
             await session.commit()
 
